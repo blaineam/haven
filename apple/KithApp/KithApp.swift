@@ -23,5 +23,6 @@ struct RootView: View {
                 .tag("feed")
                 .tabItem { Label("Feed", systemImage: "bubble.left.and.bubble.right.fill") }
         }
+        .tint(KithTheme.pink)
     }
 }

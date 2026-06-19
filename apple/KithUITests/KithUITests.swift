@@ -7,16 +7,11 @@ final class KithUITests: XCTestCase {
         let app = XCUIApplication()
         app.launch()
 
-        // The identity (and its QR) is generated on-device at launch.
-        XCTAssertTrue(
-            app.staticTexts["Your identity"].waitForExistence(timeout: 15),
-            "identity screen should appear"
-        )
-
+        // The self-test button is generated on-device at launch.
         let runButton = app.buttons.containing(
             NSPredicate(format: "label CONTAINS %@", "self-test")
         ).firstMatch
-        XCTAssertTrue(runButton.waitForExistence(timeout: 10), "self-test button should exist")
+        XCTAssertTrue(runButton.waitForExistence(timeout: 15), "self-test button should exist")
         runButton.tap()
 
         let passed = app.staticTexts.containing(

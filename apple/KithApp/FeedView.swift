@@ -5,6 +5,8 @@ import SwiftUI
 @MainActor
 final class FeedStore: ObservableObject {
     @Published private(set) var items: [FeedItemFfi] = []
+    @Published private(set) var postTick = 0
+    @Published private(set) var reactionTick = 0
     private let demo: SocialDemo
 
     init(seed: Data) {
@@ -18,9 +20,9 @@ final class FeedStore: ObservableObject {
     private func now() -> UInt64 { UInt64(Date().timeIntervalSince1970 * 1000) }
     func refresh() { items = demo.feed() }
 
-    func post(_ body: String) { _ = demo.post(body: body, createdAt: now()); refresh() }
+    func post(_ body: String) { _ = demo.post(body: body, createdAt: now()); postTick += 1; refresh() }
     func comment(_ id: String, _ body: String) { _ = demo.comment(target: id, body: body, createdAt: now()); refresh() }
-    func react(_ id: String, _ emoji: String) { _ = demo.react(target: id, emoji: emoji, createdAt: now()); refresh() }
+    func react(_ id: String, _ emoji: String) { _ = demo.react(target: id, emoji: emoji, createdAt: now()); reactionTick += 1; refresh() }
     func edit(_ id: String, _ body: String) { _ = demo.edit(target: id, body: body, createdAt: now()); refresh() }
     func unsend(_ id: String) { _ = demo.unsend(target: id, createdAt: now()); refresh() }
     func friendReply(_ id: String) { _ = demo.friendComment(target: id, body: "👏 love it", createdAt: now()); refresh() }
@@ -38,6 +40,7 @@ final class FeedStore: ObservableObject {
 struct FeedView: View {
     @StateObject private var store: FeedStore
     @State private var compose = ""
+    @FocusState private var composing: Bool
 
     init(seed: Data) {
         _store = StateObject(wrappedValue: FeedStore(seed: seed))
@@ -45,45 +48,69 @@ struct FeedView: View {
 
     var body: some View {
         NavigationStack {
-            ScrollView {
-                composer
-                LazyVStack(spacing: 14) {
-                    ForEach(store.items, id: \.id) { item in
-                        PostCard(
-                            item: item,
-                            onReact: { store.react(item.id, $0) },
-                            onComment: { store.comment(item.id, $0) },
-                            onEdit: { store.edit(item.id, $0) },
-                            onUnsend: { store.unsend(item.id) },
-                            onFriendReply: { store.friendReply(item.id) }
-                        )
+            ZStack {
+                KithBackground()
+                ScrollView {
+                    LazyVStack(spacing: 16) {
+                        ForEach(store.items, id: \.id) { item in
+                            PostCard(
+                                item: item,
+                                onReact: { emoji in withAnimation(KithTheme.bouncy) { store.react(item.id, emoji) } },
+                                onComment: { body in withAnimation(KithTheme.smooth) { store.comment(item.id, body) } },
+                                onEdit: { body in withAnimation(KithTheme.smooth) { store.edit(item.id, body) } },
+                                onUnsend: { withAnimation(KithTheme.smooth) { store.unsend(item.id) } },
+                                onFriendReply: { withAnimation(KithTheme.smooth) { store.friendReply(item.id) } }
+                            )
+                            .transition(.asymmetric(
+                                insertion: .move(edge: .top).combined(with: .opacity).combined(with: .scale(scale: 0.96)),
+                                removal: .opacity
+                            ))
+                        }
                     }
+                    .animation(KithTheme.bouncy, value: store.items.count)
+                    .padding(.horizontal, 16)
+                    .padding(.bottom, 90)
                 }
-                .padding(.horizontal)
-                .padding(.bottom, 24)
+                composerBar
             }
             .navigationTitle("Feed")
-            .background(Color(.systemGroupedBackground))
+            .navigationBarTitleDisplayMode(.large)
+            .sensoryFeedback(.success, trigger: store.postTick)
+            .sensoryFeedback(.impact(weight: .light), trigger: store.reactionTick)
         }
     }
 
-    private var composer: some View {
-        HStack(spacing: 8) {
-            TextField("Share something…", text: $compose, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .accessibilityIdentifier("composeField")
-            Button {
-                let t = compose.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !t.isEmpty else { return }
-                store.post(t)
-                compose = ""
-            } label: {
-                Image(systemName: "paperplane.fill")
+    private var composerBar: some View {
+        VStack {
+            Spacer()
+            HStack(spacing: 10) {
+                TextField("Share something…", text: $compose, axis: .vertical)
+                    .focused($composing)
+                    .accessibilityIdentifier("composeField")
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(.background, in: Capsule())
+                    .overlay(Capsule().strokeBorder(Color.white.opacity(0.08)))
+                Button {
+                    let t = compose.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !t.isEmpty else { return }
+                    store.post(t)
+                    compose = ""
+                    composing = false
+                } label: {
+                    Image(systemName: "paperplane.fill")
+                        .foregroundStyle(.white)
+                        .padding(14)
+                        .background(KithTheme.brand, in: Circle())
+                        .shadow(color: KithTheme.pink.opacity(0.4), radius: 8, y: 4)
+                }
+                .buttonStyle(PressableStyle())
+                .accessibilityIdentifier("composeSend")
             }
-            .buttonStyle(.borderedProminent)
-            .accessibilityIdentifier("composeSend")
+            .padding(.horizontal, 16)
+            .padding(.vertical, 12)
+            .background(.ultraThinMaterial)
         }
-        .padding()
     }
 }
 
@@ -102,26 +129,21 @@ private struct PostCard: View {
     private let quickReactions = ["❤️", "😂", "🎉", "👍"]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             header
 
             if item.unsent {
-                Text("Message unsent")
+                Label("Message unsent", systemImage: "minus.circle")
                     .font(.subheadline).italic()
                     .foregroundStyle(.secondary)
             } else {
                 Text(item.body).font(.body)
-            }
-
-            if !item.unsent {
                 reactionsRow
                 if !item.comments.isEmpty { commentsList }
                 commentField
             }
         }
-        .padding()
-        .background(.background)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .kithCard()
         .alert("Edit post", isPresented: $showEdit) {
             TextField("New text", text: $editText)
             Button("Save") { if !editText.isEmpty { onEdit(editText) } }
@@ -129,15 +151,30 @@ private struct PostCard: View {
         }
     }
 
+    private var avatar: some View {
+        Circle()
+            .fill(item.isMe ? KithTheme.brand
+                  : LinearGradient(colors: [KithTheme.amber, KithTheme.pink],
+                                   startPoint: .top, endPoint: .bottom))
+            .frame(width: 34, height: 34)
+            .overlay(
+                Text(item.isMe ? "You" : "K")
+                    .font(.caption2.bold()).foregroundStyle(.white)
+            )
+    }
+
     private var header: some View {
-        HStack(spacing: 8) {
-            Circle()
-                .fill(item.isMe ? Color.accentColor : Color.pink)
-                .frame(width: 30, height: 30)
-                .overlay(Text(item.isMe ? "You" : "K").font(.caption2.bold()).foregroundStyle(.white))
+        HStack(spacing: 10) {
+            avatar
             Text(item.isMe ? "You" : "kin·\(item.authorShort)")
                 .font(.subheadline.weight(.semibold))
-            if item.edited { Text("edited").font(.caption2).foregroundStyle(.secondary) }
+            if item.edited {
+                Text("edited")
+                    .font(.caption2)
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Color(.tertiarySystemFill), in: Capsule())
+                    .foregroundStyle(.secondary)
+            }
             Spacer()
             Menu {
                 if item.isMe && !item.unsent {
@@ -146,7 +183,7 @@ private struct PostCard: View {
                 }
                 Button { onFriendReply() } label: { Label("Simulate friend reply", systemImage: "person.fill.badge.plus") }
             } label: {
-                Image(systemName: "ellipsis.circle").foregroundStyle(.secondary)
+                Image(systemName: "ellipsis").foregroundStyle(.secondary).padding(6)
             }
         }
     }
@@ -155,24 +192,33 @@ private struct PostCard: View {
         HStack(spacing: 8) {
             ForEach(item.reactions, id: \.emoji) { r in
                 Text("\(r.emoji) \(r.count)")
-                    .font(.caption)
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(r.mine ? Color.accentColor.opacity(0.2) : Color(.secondarySystemFill))
-                    .clipShape(Capsule())
+                    .font(.caption.weight(.medium))
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(
+                        r.mine ? AnyShapeStyle(KithTheme.brandHorizontal.opacity(0.22))
+                               : AnyShapeStyle(Color(.secondarySystemFill)),
+                        in: Capsule()
+                    )
+                    .overlay(Capsule().strokeBorder(r.mine ? KithTheme.pink.opacity(0.5) : .clear))
+                    .transition(.scale.combined(with: .opacity))
             }
             Spacer()
             ForEach(quickReactions, id: \.self) { e in
-                Button(e) { onReact(e) }.font(.body)
+                Button(e) { onReact(e) }
+                    .font(.body)
+                    .buttonStyle(PressableStyle())
             }
         }
+        .animation(KithTheme.bouncy, value: item.reactions.count)
     }
 
     private var commentsList: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 7) {
             ForEach(item.comments, id: \.id) { c in
                 HStack(alignment: .top, spacing: 6) {
-                    Text(c.isMe ? "You:" : "kin·\(c.authorShort):")
-                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(c.isMe ? "You" : "kin·\(c.authorShort)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(c.isMe ? KithTheme.pink : .secondary)
                     if c.unsent {
                         Text("unsent").font(.caption).italic().foregroundStyle(.secondary)
                     } else {
@@ -183,19 +229,27 @@ private struct PostCard: View {
                 }
             }
         }
-        .padding(.leading, 4)
+        .padding(10)
+        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private var commentField: some View {
-        HStack(spacing: 6) {
+        HStack(spacing: 8) {
             TextField("Add a comment…", text: $commentText)
-                .textFieldStyle(.roundedBorder).font(.caption)
+                .font(.caption)
+                .padding(.horizontal, 12).padding(.vertical, 8)
+                .background(Color(.tertiarySystemFill), in: Capsule())
             Button {
                 let t = commentText.trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !t.isEmpty else { return }
                 onComment(t)
                 commentText = ""
-            } label: { Image(systemName: "arrow.up.circle.fill") }
+            } label: {
+                Image(systemName: "arrow.up.circle.fill")
+                    .imageScale(.large)
+                    .foregroundStyle(KithTheme.pink)
+            }
+            .buttonStyle(PressableStyle())
         }
     }
 }
