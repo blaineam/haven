@@ -27,11 +27,21 @@ xcodebuild -project Kith.xcodeproj -scheme Kith \
 
 ## What it does
 
+**Identity tab**
+
 - Generates a no-PII identity on-device (hybrid Ed25519+ML-DSA / X25519+ML-KEM-768),
   persisting only the 32-byte master seed in the Keychain.
 - Shows your `kith://` reach-me link as a QR, your node id, and verification hash.
 - "Run on-device hybrid-PQ self-test" exercises the full pipeline (KEM seal→open,
-  hybrid signature verify, link round-trip) on the device — covered by `KithUITests`.
+  hybrid signature verify, link round-trip) on the device.
+
+**Feed tab** — a live local demo of the social engine: compose posts, react, comment,
+edit, and unsend. Every action is really sealed end-to-end to the group and reopened
+(seal → open → feed) by `p2pcore::social`. (Networking between real devices is next;
+the crypto and feed logic here are the real thing.)
+
+Both flows are covered by `KithUITests` (on-device self-test + feed post round-trip).
+Launch on the Feed tab with the `KITH_TAB=feed` environment variable.
 
 ## Layout
 

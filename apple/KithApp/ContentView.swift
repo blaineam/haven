@@ -2,7 +2,7 @@ import SwiftUI
 import UIKit
 
 struct ContentView: View {
-    @StateObject private var store = AccountStore()
+    @ObservedObject var store: AccountStore
     @State private var report: SelfTestReport?
     @State private var copied = false
 

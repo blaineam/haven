@@ -41,10 +41,17 @@ now `ed25519(64) ‖ ml-dsa(rest)`; both halves must verify. Tests prove each ha
 enforced (corrupting either fails). "Hybrid PQ everywhere" is complete — KEM *and*
 signatures. 6 core tests green.
 
-## ⏭️ M2 — Groups, posts, comments, reactions
+## 🟡 M2 — Groups, posts, comments, reactions (engine DONE)
 
-- Integrate **`mls-rs`** with a hybrid-PQ ciphersuite; 1:1 = 2-member group
-- Posts/comments/reactions as MLS application messages
+- ✅ **Social engine** (`p2pcore::social`): groups, posts, messages, comments,
+  reactions, edit, unsend — events sealed E2E to all members (fresh content key +
+  per-member hybrid-KEM wrap), hybrid-signed; `build_feed` timeline reducer with
+  author-authorized edit/unsend. 4 unit tests.
+- ✅ **Live feed in the iOS app** (local demo): compose, react, comment, edit, unsend
+  over the real seal→open→feed pipeline; cool app icon; UI test posts and confirms.
+- ⏭️ Harden to **`mls-rs`** with a hybrid-PQ ciphersuite (forward secrecy / efficient
+  membership) — the current layer is multi-recipient PKE, not yet MLS
+- ⏭️ Networked delivery between real devices (currently local loopback)
 - **Edit & unsend** as signed ordered events: edit → "Edited" badge, unsend →
   "Message unsent", both with client-enforced timers (see DECISIONS D11)
 - **Scheduled "send later"** (D17, `SCHEDULED-MESSAGES.md`): queue plaintext, seal+send

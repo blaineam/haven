@@ -27,4 +27,28 @@ final class KithUITests: XCTestCase {
             "all on-device hybrid-PQ checks should pass"
         )
     }
+
+    /// Posts to the social feed and confirms it appears — proving the hybrid-PQ
+    /// social engine (seal → open → feed) runs end-to-end on-device.
+    func testSocialFeedPostAppears() {
+        let app = XCUIApplication()
+        app.launchEnvironment["KITH_TAB"] = "feed"
+        app.launch()
+
+        // Seeded demo content from the engine should render.
+        let seeded = app.staticTexts.containing(
+            NSPredicate(format: "label CONTAINS %@", "Our own little corner")
+        ).firstMatch
+        XCTAssertTrue(seeded.waitForExistence(timeout: 15), "seeded feed content should appear")
+
+        // Compose a new post and confirm it round-trips through the engine into the feed.
+        let field = app.textFields["composeField"]
+        XCTAssertTrue(field.waitForExistence(timeout: 5))
+        field.tap()
+        field.typeText("a sealed post from the UI test")
+        app.buttons["composeSend"].tap()
+
+        let posted = app.staticTexts["a sealed post from the UI test"]
+        XCTAssertTrue(posted.waitForExistence(timeout: 5), "new post should appear in the feed")
+    }
 }
