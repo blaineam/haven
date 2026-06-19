@@ -1,0 +1,163 @@
+//! `kith_ffi` — the UniFFI surface that bridges `p2pcore` to Swift (and Kotlin).
+//!
+//! Keeps the exposed API tiny and Swift-friendly: an [`Account`] object, a couple of
+//! free functions, and plain records. All the security-critical logic stays in
+//! `p2pcore`; this is only the boundary.
+
+use std::sync::Arc;
+
+use p2pcore::crypto::{decapsulate, encapsulate_to, open, seal};
+use p2pcore::identity::Identity;
+use p2pcore::link::KithLink;
+
+uniffi::setup_scaffolding!();
+
+/// Errors crossing the FFI boundary.
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum KithError {
+    #[error("{msg}")]
+    Invalid { msg: String },
+}
+
+/// A Kith account: a no-PII identity backed by a hybrid post-quantum keypair.
+/// Wraps `p2pcore::identity::Identity`.
+#[derive(uniffi::Object)]
+pub struct Account {
+    inner: Identity,
+}
+
+#[uniffi::export]
+impl Account {
+    /// Create a brand-new account (random master seed).
+    #[uniffi::constructor]
+    pub fn generate() -> Arc<Self> {
+        Arc::new(Self { inner: Identity::generate() })
+    }
+
+    /// Restore an account from its 32-byte master seed (e.g. read from the Keychain).
+    #[uniffi::constructor]
+    pub fn from_seed(seed: Vec<u8>) -> Result<Arc<Self>, KithError> {
+        let seed: [u8; 32] = seed
+            .try_into()
+            .map_err(|_| KithError::Invalid { msg: "seed must be exactly 32 bytes".into() })?;
+        Ok(Arc::new(Self { inner: Identity::from_seed(&seed) }))
+    }
+
+    /// The 32-byte master seed — the secret to persist in the Keychain / Secure
+    /// Enclave and to back up for recovery. Reconstructs the whole identity.
+    pub fn secret_seed(&self) -> Vec<u8> {
+        self.inner.secret_seed().to_vec()
+    }
+
+    /// The routable node id (Ed25519 public key) as hex.
+    pub fn node_id_hex(&self) -> String {
+        hex(&self.inner.public().node_id_bytes())
+    }
+
+    /// Tamper-check fingerprint of the full hybrid public bundle, as hex.
+    pub fn verification_hex(&self) -> String {
+        hex(&self.inner.public().verification())
+    }
+
+    /// `kith://u/<id>#<verify>` — the deep-link / QR form of the reach-me link.
+    pub fn kith_uri(&self) -> String {
+        KithLink::from_identity(&self.inner.public()).to_uri()
+    }
+
+    /// `https://<domain>/u/<id>#<verify>` — the website form of the reach-me link.
+    pub fn kith_link(&self, domain: String) -> String {
+        KithLink::from_identity(&self.inner.public()).to_web(&domain)
+    }
+
+    /// The full public identity bundle (for publishing to discovery).
+    pub fn public_bundle(&self) -> Vec<u8> {
+        self.inner.public().to_bytes()
+    }
+
+    /// Produce a hybrid (Ed25519 + ML-DSA) signature over `msg`.
+    pub fn sign(&self, msg: Vec<u8>) -> Vec<u8> {
+        self.inner.sign(&msg)
+    }
+}
+
+/// Parsed contents of a reach-me link.
+#[derive(uniffi::Record)]
+pub struct LinkInfo {
+    pub id_hex: String,
+    pub verification_hex: String,
+    pub uri: String,
+}
+
+/// Parse a `kith://` or `https://…/u/…#…` reach-me link.
+#[uniffi::export]
+pub fn parse_link(s: String) -> Result<LinkInfo, KithError> {
+    let link = KithLink::parse(&s).map_err(|e| KithError::Invalid { msg: format!("{e}") })?;
+    Ok(LinkInfo {
+        id_hex: hex(&link.id),
+        verification_hex: hex(&link.verification),
+        uri: link.to_uri(),
+    })
+}
+
+/// Result of the on-device cryptographic self-test.
+#[derive(uniffi::Record)]
+pub struct SelfTestReport {
+    pub identity_ok: bool,
+    pub hybrid_kem_ok: bool,
+    pub signature_ok: bool,
+    pub link_ok: bool,
+    pub all_ok: bool,
+    pub node_id_hex: String,
+    pub summary: String,
+}
+
+/// Run the full hybrid-PQ pipeline **on this device** and report what passed:
+/// generate an identity, seal a payload to itself (X25519+ML-KEM-768 → AES-256-GCM)
+/// and reopen it, sign+verify (Ed25519+ML-DSA), and round-trip a reach-me link.
+#[uniffi::export]
+pub fn self_test() -> SelfTestReport {
+    let id = Identity::generate();
+    let pubid = id.public();
+    let payload = b"on-device hybrid post-quantum self-test";
+
+    let identity_ok = pubid.node_id_bytes() != [0u8; 32];
+
+    let hybrid_kem_ok = match encapsulate_to(&pubid) {
+        Ok((enc, key)) => {
+            let sealed = seal(&key, payload);
+            match decapsulate(&id, &enc) {
+                Ok(k2) => open(&k2, &sealed).map(|p| p == payload).unwrap_or(false),
+                Err(_) => false,
+            }
+        }
+        Err(_) => false,
+    };
+
+    let sig = id.sign(payload);
+    let signature_ok = pubid.verify(payload, &sig).is_ok()
+        && pubid.verify(b"different message", &sig).is_err();
+
+    let link = KithLink::from_identity(&pubid);
+    let link_ok = KithLink::parse(&link.to_uri()).map(|l| l == link).unwrap_or(false);
+
+    let all_ok = identity_ok && hybrid_kem_ok && signature_ok && link_ok;
+    let summary = if all_ok {
+        "All hybrid post-quantum checks passed on this device.".to_string()
+    } else {
+        "One or more on-device checks failed.".to_string()
+    };
+
+    SelfTestReport {
+        identity_ok,
+        hybrid_kem_ok,
+        signature_ok,
+        link_ok,
+        all_ok,
+        node_id_hex: hex(&pubid.node_id_bytes()),
+        summary,
+    }
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}

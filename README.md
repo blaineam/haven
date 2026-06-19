@@ -36,10 +36,18 @@ nothing monthly; your media rides on your own iCloud and direct peer-to-peer lin
 
 ## Status
 
-Pre-alpha. The cryptographic spine (hybrid post-quantum identity + key
-establishment + the reach-me link system) is implemented and unit-tested in the
-Rust core. Transport, group messaging, the Swift app, and the web client are next.
-See [`docs/ROADMAP.md`](docs/ROADMAP.md).
+Pre-alpha, but it runs on iPhone. Done so far:
+
+- **Hybrid post-quantum core** (`p2pcore`) — identity (Ed25519+ML-DSA, X25519+ML-KEM-768),
+  AEAD, reach-me links, deterministic seed-based identity; 7 unit tests green.
+- **First transfer working** — a sealed photo moves peer-to-peer over iroh QUIC,
+  decrypted byte-identical (`core/demo`).
+- **iOS app** — SwiftUI on the real Rust core via a UniFFI XCFramework: on-device
+  identity, `kith://` QR + reach-me link, Keychain persistence, and a hybrid-PQ
+  self-test covered by a passing UI test (verified in the iPhone 17 Pro simulator).
+
+Next: networking in the app, MLS group messaging, multi-device, and the web client.
+See [`docs/ROADMAP.md`](docs/ROADMAP.md) and [`apple/README.md`](apple/README.md).
 
 ## Repository layout
 

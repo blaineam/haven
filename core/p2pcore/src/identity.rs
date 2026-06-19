@@ -14,13 +14,16 @@
 //! ([`KithId::verification`]) lets a dialer detect tampering once fetched.
 
 use ed25519_dalek::{Signer, SigningKey, Verifier, VerifyingKey};
+use hkdf::Hkdf;
 use ml_dsa::{
-    EncodedSignature, EncodedVerifyingKey, Generate, Keypair as _, MlDsa65,
-    Signature as DsaSignature, Signer as _, SigningKey as DsaSigningKey, Verifier as _,
-    VerifyingKey as DsaVerifyingKey,
+    EncodedSignature, EncodedVerifyingKey, Keypair as _, MlDsa65, Signature as DsaSignature,
+    Signer as _, SigningKey as DsaSigningKey, Verifier as _, VerifyingKey as DsaVerifyingKey, B32,
 };
 use ml_kem::{Encoded, EncodedSizeUser, KemCore, MlKem768};
 use rand::rngs::OsRng;
+use rand::{RngCore, SeedableRng};
+use rand_chacha::ChaCha20Rng;
+use sha2::Sha256;
 use x25519_dalek::{PublicKey as XPublicKey, StaticSecret as XStaticSecret};
 
 use crate::{CoreError, Result};
@@ -132,7 +135,11 @@ impl KithId {
 
 /// A full identity including the private keys. Lives in the Secure Enclave /
 /// Keychain on Apple platforms; never leaves the device.
+///
+/// All keys are derived deterministically from a single 32-byte **master seed** via
+/// HKDF, so persistence and recovery are just that seed (store it in the Keychain).
 pub struct Identity {
+    seed: [u8; 32],
     signing: SigningKey,
     sig_pq: DsaSigningKey<MlDsa65>,
     kem_x: XStaticSecret,
@@ -143,12 +150,38 @@ pub struct Identity {
 impl Identity {
     /// Generate a brand-new identity from the OS CSPRNG.
     pub fn generate() -> Self {
-        let mut rng = OsRng;
-        let signing = SigningKey::generate(&mut rng);
-        let sig_pq = DsaSigningKey::<MlDsa65>::generate();
-        let kem_x = XStaticSecret::random_from_rng(&mut rng);
-        let (kem_pq_dk, kem_pq_ek) = MlKem768::generate(&mut rng);
-        Self { signing, sig_pq, kem_x, kem_pq_dk, kem_pq_ek }
+        let mut master = [0u8; 32];
+        OsRng.fill_bytes(&mut master);
+        Self::from_seed(&master)
+    }
+
+    /// Deterministically derive a full identity from a 32-byte master seed.
+    /// The same seed always yields the same identity — this is the persistence and
+    /// recovery primitive (back up the seed, restore the identity).
+    pub fn from_seed(master: &[u8; 32]) -> Self {
+        let hk = Hkdf::<Sha256>::new(Some(b"kith-identity-v1"), master);
+        let sub = |info: &[u8]| -> [u8; 32] {
+            let mut out = [0u8; 32];
+            hk.expand(info, &mut out).expect("32 is a valid HKDF length");
+            out
+        };
+
+        let signing = SigningKey::from_bytes(&sub(b"ed25519"));
+        let kem_x = XStaticSecret::from(sub(b"x25519"));
+
+        let mut kem_rng = ChaCha20Rng::from_seed(sub(b"ml-kem-768"));
+        let (kem_pq_dk, kem_pq_ek) = MlKem768::generate(&mut kem_rng);
+
+        let dsa_seed = B32::try_from(&sub(b"ml-dsa-65")[..]).expect("32 bytes");
+        let sig_pq = DsaSigningKey::<MlDsa65>::from_seed(&dsa_seed);
+
+        Self { seed: *master, signing, sig_pq, kem_x, kem_pq_dk, kem_pq_ek }
+    }
+
+    /// The 32-byte master seed. This is the **secret** to store in the Keychain /
+    /// Secure Enclave and to back up for recovery — it reconstructs the whole identity.
+    pub fn secret_seed(&self) -> [u8; 32] {
+        self.seed
     }
 
     /// The shareable public identity.

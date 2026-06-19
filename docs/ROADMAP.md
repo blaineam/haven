@@ -61,12 +61,19 @@ signatures. 6 core tests green.
 - Signed device-list + "new device linked" transparency notices
 - See `MULTI-DEVICE.md`
 
-## ⏭️ M3 — Apple app
+## 🟡 M3 — Apple app (first iPhone build DONE)
 
-- `rustup` + iOS targets, **UniFFI** bindings, build the XCFramework
-- SwiftUI app: identity onboarding, QR + link, receive a photo, Secure Enclave keys
-- **Prereqs to install:** `rustup` (+ `aarch64-apple-ios`, `aarch64-apple-ios-sim`),
-  `uniffi-bindgen`
+Runs on iPhone (verified in the iOS 17 Pro simulator): SwiftUI app on the real Rust
+core via a UniFFI XCFramework.
+
+- ✅ `rustup` + iOS targets (installed non-disruptively), **UniFFI** crate `kith_ffi`,
+  `KithFFI.xcframework` (device + sim), `build-rust-xcframework.sh`
+- ✅ SwiftUI app: on-device identity, `kith://` QR + reach-me link, node id +
+  verification, Keychain-persisted 32-byte master seed
+- ✅ On-device hybrid-PQ self-test (KEM seal→open, hybrid signature, link round-trip),
+  covered by a passing `KithUITests` XCUITest
+- ⏭️ Remaining: receive a photo over the network on-device (needs iroh in the app),
+  Secure Enclave-backed key storage, device build/signing for a physical iPhone
 
 ## ⏭️ M4 — Bluetooth + local-WiFi transport
 

@@ -1,0 +1,14 @@
+[package]
+name = "kith_ffi"
+version = "0.0.1"
+edition = "2021"
+publish = false
+
+[lib]
+name = "kith_ffi"
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+p2pcore = { path = "../p2pcore" }
+thiserror = "1"
+uniffi = { version = "0.31.2", features = ["cli"] }

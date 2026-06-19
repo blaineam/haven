@@ -1,5 +1,5 @@
 [workspace]
-members = ["p2pcore", "demo"]
+members = ["p2pcore", "demo", "p2pcore-ffi"]
 resolver = "2"
 
 [profile.release]

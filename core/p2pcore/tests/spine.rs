@@ -41,6 +41,23 @@ fn hybrid_signature_enforces_both_halves() {
 }
 
 #[test]
+fn identity_is_deterministic_from_seed() {
+    let seed = [7u8; 32];
+    let a = Identity::from_seed(&seed);
+    let b = Identity::from_seed(&seed);
+    assert_eq!(a.public().to_bytes(), b.public().to_bytes(), "same seed → same identity");
+    assert_eq!(a.secret_seed(), seed);
+
+    // Restoring from a generated identity's seed reproduces it exactly, and the
+    // restored identity can sign in a way the original's public key verifies.
+    let original = Identity::generate();
+    let restored = Identity::from_seed(&original.secret_seed());
+    assert_eq!(original.public().to_bytes(), restored.public().to_bytes());
+    let sig = restored.sign(b"recovered device");
+    assert!(original.public().verify(b"recovered device", &sig).is_ok());
+}
+
+#[test]
 fn public_identity_bundle_roundtrips() {
     let id = Identity::generate();
     let pubid = id.public();

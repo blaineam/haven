@@ -8,6 +8,7 @@ core/*.png
 # Apple / Xcode
 apple/build/
 apple/DerivedData/
+apple/Generated/
 apple/*.xcodeproj
 apple/*.xcworkspace
 *.xcuserstate
