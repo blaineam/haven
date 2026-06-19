@@ -222,9 +222,16 @@ private struct PostCard: View {
     @State private var commentText = ""
     @State private var showEdit = false
     @State private var editText = ""
-    @State private var player: AVPlayer?
+    @State private var players: [String: AVPlayer] = [:]
+    @State private var showReactionPicker = false
 
-    private let quickReactions = ["❤️", "😂", "🎉", "👍"]
+    private var primaryVideoPlayer: AVPlayer? {
+        guard item.media.count == 1, let ref = item.media.first, isVideo(ref) else { return nil }
+        return players[ref]
+    }
+    private func isVideo(_ ref: String) -> Bool { MediaStore.shared.item(ref)?.kind == .video }
+
+    private func react(_ e: String) { EmojiStore.shared.record(e); onReact(e) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -243,7 +250,7 @@ private struct PostCard: View {
         }
         .kithCard()
         .onAppear {
-            if let track = item.music { audio.start(postId: item.id, track: track, video: player) }
+            if let track = item.music { audio.start(postId: item.id, track: track, video: primaryVideoPlayer) }
         }
         .alert("Edit post", isPresented: $showEdit) {
             TextField("New text", text: $editText)
@@ -253,24 +260,39 @@ private struct PostCard: View {
     }
 
     @ViewBuilder private var mediaView: some View {
-        if let ref = item.media.first, let m = MediaStore.shared.item(ref) {
+        if item.media.count > 1 {
+            // Swipeable carousel for multiple photos/videos, with page dots.
+            TabView {
+                ForEach(item.media, id: \.self) { ref in mediaPage(ref) }
+            }
+            .tabViewStyle(.page(indexDisplayMode: .always))
+            .indexViewStyle(.page(backgroundDisplayMode: .interactive))
+            .frame(height: 340)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+        } else if let ref = item.media.first {
             ZStack(alignment: .bottomTrailing) {
-                if m.kind == .video, let url = m.videoURL {
-                    VideoPlayer(player: playerFor(url))
-                        .frame(height: 300).clipShape(RoundedRectangle(cornerRadius: 16))
-                    muteButton
-                } else if let img = m.image {
-                    Image(uiImage: img).resizable().scaledToFill()
-                        .frame(maxWidth: .infinity).frame(height: 300)
-                        .clipShape(RoundedRectangle(cornerRadius: 16))
-                }
+                mediaPage(ref)
+                if isVideo(ref) { muteButton }
+            }
+            .frame(height: 340)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+        }
+    }
+
+    @ViewBuilder private func mediaPage(_ ref: String) -> some View {
+        if let m = MediaStore.shared.item(ref) {
+            if m.kind == .video, let url = m.videoURL {
+                VideoPlayer(player: playerFor(ref, url))
+            } else if let img = m.image {
+                Image(uiImage: img).resizable().scaledToFill()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
             }
         }
     }
 
     private var muteButton: some View {
         Button {
-            if audio.activePostId != item.id { audio.start(postId: item.id, track: item.music, video: player) }
+            if audio.activePostId != item.id { audio.start(postId: item.id, track: item.music, video: primaryVideoPlayer) }
             audio.toggleVideoAudio()
         } label: {
             Image(systemName: audio.activePostId == item.id && audio.videoUnmuted ? "speaker.wave.2.fill" : "speaker.slash.fill")
@@ -280,12 +302,11 @@ private struct PostCard: View {
         .padding(10)
     }
 
-    private func playerFor(_ url: URL) -> AVPlayer {
-        if let p = player { return p }
+    private func playerFor(_ ref: String, _ url: URL) -> AVPlayer {
+        if let p = players[ref] { return p }
         let p = AVPlayer(url: url)
         p.volume = 0
-        p.isMuted = false
-        DispatchQueue.main.async { player = p }
+        DispatchQueue.main.async { players[ref] = p }
         return p
     }
 
@@ -328,11 +349,18 @@ private struct PostCard: View {
                     .transition(.scale.combined(with: .opacity))
             }
             Spacer()
-            ForEach(quickReactions, id: \.self) { e in
-                Button(e) { onReact(e) }.font(.body).buttonStyle(PressableStyle())
+            ForEach(EmojiStore.shared.frequent(4), id: \.self) { e in
+                Button(e) { react(e) }.font(.body).buttonStyle(PressableStyle())
             }
+            Button { showReactionPicker = true } label: {
+                Image(systemName: "plus.circle").font(.body).foregroundStyle(.secondary)
+            }
+            .buttonStyle(PressableStyle())
         }
         .animation(KithTheme.bouncy, value: item.reactions.count)
+        .sheet(isPresented: $showReactionPicker) {
+            ReactionPicker { e in onReact(e) }
+        }
     }
 
     private var commentsList: some View {
