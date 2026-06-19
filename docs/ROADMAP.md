@@ -45,6 +45,9 @@ Add **ML-DSA** (FIPS 204) alongside Ed25519 at the `sign`/`verify` seam in
 - Posts/comments/reactions as MLS application messages
 - **Edit & unsend** as signed ordered events: edit → "Edited" badge, unsend →
   "Message unsent", both with client-enforced timers (see DECISIONS D11)
+- **Scheduled "send later"** (D17, `SCHEDULED-MESSAGES.md`): queue plaintext, seal+send
+  at T from an awake device (always-on device = primary firer); send-time + optional
+  display-time modes; editable/cancelable until fired *(exact-time relies on M2b)*
 - Contact approval + blocking (client-side enforcement)
 
 ## ⏭️ M2b — Multi-device (one account, many devices)

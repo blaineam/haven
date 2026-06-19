@@ -284,3 +284,22 @@ is the crown jewel (compromise = full-account compromise — mitigated by escrow
 Secure Enclave + not needing it for daily messaging); long-offline devices must replay
 the **ordered** MLS commit backlog to catch up; a web client is a weak always-on node
 (native desktop is the real forwarder).
+
+## D17 — Scheduled "send later" fires from an awake device
+
+**Decision:** Scheduled messages are queued as **plaintext-at-rest, synced across the
+user's own devices**, and **sealed-and-sent at send time** by whichever authorized
+device is awake — the **always-on device (D16) is the primary firer**. Not pre-sealed
+(MLS epoch could go stale before T). Editable/cancelable until fired (D11). Two modes:
+**send-time** (default, private — nothing transmitted until T) and **display-time**
+(optional — pre-delivered, revealed at T; resilient but weaker secrecy, for non-secret
+timed posts). Full design in `SCHEDULED-MESSAGES.md`.
+
+**Why:** No server exists to hold a queue and fire it, so the send must originate from
+one of the user's own devices; the always-on device makes exact-time sending possible.
+Queueing plaintext (not ciphertext) avoids MLS epoch staleness.
+
+**Trade-offs / honest limits:** without an always-on device, iOS background wake-ups
+(`BGTaskScheduler`) are best-effort — a scheduled send may go out late (and is marked
+"scheduled for X, sent Y") rather than exactly on time. Double-send is prevented by a
+primary-firer designation plus recipient-side message-id dedup.
