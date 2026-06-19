@@ -47,6 +47,15 @@ Add **ML-DSA** (FIPS 204) alongside Ed25519 at the `sign`/`verify` seam in
   "Message unsent", both with client-enforced timers (see DECISIONS D11)
 - Contact approval + blocking (client-side enforcement)
 
+## ⏭️ M2b — Multi-device (one account, many devices)
+
+- Account identity key + per-device keys + signed **device credentials** (D16)
+- Device linking: QR/code + short-verification-phrase + add device as MLS leaf
+- Receive on all devices (each device = a leaf); revoke a device via Remove commit
+- **Always-on device as personal store-and-forward** (ordered MLS backlog cache)
+- Signed device-list + "new device linked" transparency notices
+- See `MULTI-DEVICE.md`
+
 ## ⏭️ M3 — Apple app
 
 - `rustup` + iOS targets, **UniFFI** bindings, build the XCFramework

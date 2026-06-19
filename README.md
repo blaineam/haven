@@ -83,6 +83,7 @@ noncommercial restriction is the difference). Contributions require a CLA/DCO.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how the pieces fit together
 - [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) — what we defend against, and abuse resistance
 - [`docs/LINK-SYSTEM.md`](docs/LINK-SYSTEM.md) — the reach-me link / QR design
+- [`docs/MULTI-DEVICE.md`](docs/MULTI-DEVICE.md) — one account, many authorized devices + always-on forwarder
 - [`docs/RELAY-AND-DEPLOY.md`](docs/RELAY-AND-DEPLOY.md) — relay roles, BYO storage, IP privacy, the deploy tool
 - [`docs/OPERATING-COSTS.md`](docs/OPERATING-COSTS.md) — what it costs to run (≈free–low-tens/mo)
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — milestones and prerequisites

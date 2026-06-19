@@ -255,3 +255,32 @@ self-host reliability layer, never required.
 **Why:** The user explicitly wants no monthly cost, not even $5/mo. Self-funded
 storage + free infrastructure achieves that and simplifies the product. See
 `OPERATING-COSTS.md`.
+
+## D16 — Multi-device: one account, per-device keys (not a shared key)
+
+**Decision:** A user is **one account identity** with multiple **authorized
+devices**, each holding its *own* keypair. No private key is copied between devices.
+The account identity key signs a **device credential** per device; each device is its
+own **MLS leaf**, so messages are received on all of them. Full design in
+`MULTI-DEVICE.md`.
+
+- **Linking:** new device shows a QR/code → an authorized device confirms a short
+  verification phrase → issues a signed credential → adds the device as a leaf to all
+  groups. No PII.
+- **Always-on device** (esp. a Mac) acts as the user's **personal store-and-forward
+  node**, caching encrypted traffic and forwarding it to other devices when they come
+  online (advances the $0 goal — hardware the user already owns).
+- **Revocation:** account key signs an updated device list excluding a lost device; an
+  MLS Remove commit re-keys the groups. The user keeps their identity.
+- **Recovery:** account key is escrowed (D2) so losing all devices is recoverable.
+
+**Why (vs. copying one key everywhere):** a shared key can't be revoked — a stolen
+device would force a brand-new identity and re-establishing every contact. Per-device
+keys give instant revocation, least privilege, and fit MLS natively (each device = a
+leaf, D3). This is the Signal/iMessage/Matrix approach.
+
+**Trade-offs / honest limits:** more moving parts than copying a key; the account key
+is the crown jewel (compromise = full-account compromise — mitigated by escrow +
+Secure Enclave + not needing it for daily messaging); long-offline devices must replay
+the **ordered** MLS commit backlog to catch up; a web client is a weak always-on node
+(native desktop is the real forwarder).
