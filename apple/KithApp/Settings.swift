@@ -63,6 +63,13 @@ struct SettingsView: View {
                 } footer: {
                     Text("Share smaller, optimized photos and videos by default. Turn off to send pristine originals.")
                 }
+                Section {
+                    NavigationLink { StorageSettingsView() } label: {
+                        Label("Storage", systemImage: "externaldrive.fill")
+                    }
+                } footer: {
+                    Text("Choose where your encrypted media is stored — your iCloud, your own S3 bucket, or a connected cloud drive.")
+                }
             }
             .scrollContentBackground(.hidden)
         }
