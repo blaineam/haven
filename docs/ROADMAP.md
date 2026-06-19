@@ -117,11 +117,22 @@ core via a UniFFI XCFramework.
 - `wasm-pack` build of `p2pcore`; static page; WebCrypto/IndexedDB key storage
 - WebRTC transport + relay; **prereq:** `wasm-pack`
 
-## ⏭️ M7 — Music, calls, safety polish
+## ⏭️ M7 — Media, music, calls, safety (security-audited — D18, `MEDIA-AND-MUSIC.md`)
 
-- Apple Music: MusicKit (native) + MusicKit JS (web), share-by-reference
+- **In-app camera** (photos+video): seal E2E before send, EXIF/GPS stripped, sandbox-only
+- **Apple Music on posts**: attach a song (reference only), artist+title pill + playing
+  animation; video muted while music plays; unmute → clean audio crossfade
+- Order: TrackRef/media fields in `p2pcore`+FFI → feed pill+animation (sim-verifiable)
+  → camera sheet → MusicKit picker/playback/crossfade (device + MusicKit entitlement)
 - Calls: WebRTC mesh (≤5)
 - On-device `SensitiveContentAnalysis` guards; per-group toggles
+
+## ⏭️ M10 — CI & launch tooling
+
+- ✅ Marketing page live: https://wemiller.com/apps/kith/ (registered in projects.json)
+- ⏭️ **Monkr ASC screenshot pipeline** (`.local-screenshots.conf` + `rocket shots Kith`)
+  — device-framed App Store screenshots
+- ⏭️ **Xcode Cloud CI** (eventually; local rocket CI is fine for the early phase)
 
 ## ⏭️ M8 — More clients (all reuse `p2pcore`)
 

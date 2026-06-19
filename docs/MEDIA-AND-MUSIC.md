@@ -1,0 +1,77 @@
+# In-app camera, Apple Music on posts, and audio crossfade
+
+Design **and security audit** for three linked features. Per the project's standing
+rule, every step here is checked so the maker never holds keys and nothing leaks off
+the device unsealed.
+
+## 1. In-app camera (photos + video)
+
+A simple, intuitive capture sheet (AVFoundation `AVCaptureSession`): tap for photo,
+hold/record for video, flip camera, flash. Captured media lands in the app sandbox,
+is shown in the composer, then is **sealed E2E before it ever leaves the device**.
+
+**Security audit**
+- **Permissions:** `NSCameraUsageDescription` + `NSMicrophoneUsageDescription` with
+  honest, plain-language strings. Capture only after the user taps — never in the
+  background.
+- **On-device only:** captured files live in the app's sandbox `tmp`/caches, are
+  added to a post as a content-addressed blob, and are **encrypted with the hybrid-PQ
+  content key (AES-256-GCM) before any transmission**. No frame, thumbnail, or file
+  ever touches a server in the clear. (Same `p2pcore::social` seal path as text.)
+- **Metadata hygiene:** strip GPS/EXIF location and identifying maker tags by default
+  on capture/import; the user can opt to keep them. No silent location leak.
+- **No analytics, no third parties:** the camera pipeline calls no SDK, logs nothing,
+  and uploads nothing. Temp files are deleted after the post is sealed.
+- **Maker holds nothing:** there is no server in this path, so there is nothing for
+  the maker to be compelled to produce.
+
+## 2. Apple Music on a post
+
+The author can attach a song that plays alongside a photo/video. Near the post, a
+small pill shows **artist + song title** with an **audio-playing animation** while it
+plays. Each viewer hears it through **their own** Apple Music subscription.
+
+**Security & licensing audit**
+- **References only — never audio.** We attach a MusicKit catalog reference
+  (`{catalogId, title, artist, artworkURL, durationMs}`), never the audio data. This
+  is the *only* legal model (DRM) and it means **no redistribution, no piracy, no
+  rights exposure**. A viewer without a subscription gets a 30s preview / tap-to-open.
+- **The reference rides the E2E payload.** The track reference is a field on the
+  social `Event`, sealed exactly like the rest of the post — a relay/storage node sees
+  only ciphertext. No new plaintext channel, no new metadata leak.
+- **No PII, no operator role.** MusicKit authorization is per-device and Apple-managed;
+  Kith never sees the user's Apple ID, library, or listening data, and adds **no
+  central component** — the "maker holds no keys" property is fully preserved.
+- **Least privilege:** request MusicKit authorization only when the user chooses to
+  attach/play a song; degrade gracefully (show the pill, disable playback) if denied.
+- **Entitlement note:** needs the MusicKit capability on the App ID + the
+  `com.apple.developer.musickit` entitlement — a device-verified, ASC-side step.
+
+## 3. Audio crossfade (music ↔ video)
+
+When a post has attached music, its **video plays muted** by default while the music
+plays. If the viewer **unmutes the video**, the background music **fades out** as the
+video audio **fades in** — a clean crossfade — and fades back the other way on re-mute
+or scroll-away.
+
+- One `AudioCoordinator` owns an `ApplicationMusicPlayer` (music) and the visible
+  `AVPlayer` (video), ramping volumes over ~300–500ms. Only one post's audio is active
+  at a time (scrolling hands off with a fade).
+- **Security surface: none.** This is local playback only — no network, no data, no
+  keys. The only guarantee we keep is **honoring the user's control** (muted by
+  default; unmute is explicit; nothing autoplays audibly without a clear affordance).
+
+## Data-model change (security-reviewed)
+
+`p2pcore::social::EventKind::Post` gains optional `media: [MediaRef]` (already present
+as content refs) and `music: Option<TrackRef>`. `TrackRef` is non-secret reference
+data, serialized inside the **already-sealed** event — no schema change weakens the
+encryption boundary; it's just more sealed bytes.
+
+## Status
+
+Design + audit complete. Implementation is **device-verified** (camera + MusicKit
+don't run in the Simulator), shipped to TestFlight for on-device validation. Order:
+(1) `TrackRef`/media fields in `p2pcore` + FFI, (2) feed pill + playing animation
+(Simulator-verifiable UI), (3) camera capture sheet, (4) MusicKit picker + playback +
+crossfade (device).

@@ -303,3 +303,27 @@ Queueing plaintext (not ciphertext) avoids MLS epoch staleness.
 (`BGTaskScheduler`) are best-effort — a scheduled send may go out late (and is marked
 "scheduled for X, sent Y") rather than exactly on time. Double-send is prevented by a
 primary-firer designation plus recipient-side message-id dedup.
+
+## D18 — Camera, Apple Music on posts, audio crossfade (security-audited)
+
+**Decision:** Add an in-app camera (photos+video), the ability to attach an Apple
+Music song that plays alongside a post (artist+title pill + playing animation), and a
+clean audio crossfade (attached music plays; video muted by default; unmute fades
+music out / video in). Full design + per-feature security audit in `MEDIA-AND-MUSIC.md`.
+
+**Security posture (the point):**
+- **Camera media is sealed E2E before it leaves the device**; sandbox-only, EXIF/GPS
+  stripped by default, no analytics, temp files deleted after seal. No server path →
+  nothing for the maker to be compelled to produce.
+- **Apple Music = references only, never audio** (legal, no piracy); the `TrackRef`
+  rides inside the already-sealed event; MusicKit auth is per-device; Kith sees no
+  Apple ID / library / listening data and adds **no central component** — the
+  maker-holds-no-keys property is preserved.
+- **Crossfade has no security surface** (local playback); it only honors user control
+  (muted by default, explicit unmute).
+
+**Why:** These make Kith feel like iMessage+Photos+Music while keeping every byte on
+the same E2E path and the maker out of the trust chain.
+
+**Trade-off:** camera + MusicKit can't run in the Simulator, so implementation is
+device-verified via TestFlight; MusicKit needs the capability/entitlement on the App ID.
