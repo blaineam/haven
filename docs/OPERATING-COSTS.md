@@ -15,7 +15,7 @@ This supersedes the earlier quota'd-bucket model (see DECISIONS D15).
 | Web client + AASA + marketing page | **GitHub Pages** (`blaineam.github.io`) | **$0** |
 | "You got media" notifications | APNs / Web Push | **$0** |
 
-**Result: the app is a one-time $4.99 with no subscription and no monthly operator
+**Result: the app is a one-time $9.99 with no subscription and no monthly operator
 cost, ever.**
 
 ## Why storage is free to the operator

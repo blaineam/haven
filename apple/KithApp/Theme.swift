@@ -88,6 +88,35 @@ struct BrandButtonStyle: ButtonStyle {
     }
 }
 
+/// The Kith mark: a little constellation of connected people (matches the app icon).
+struct ConstellationMark: View {
+    var color: Color = .white
+    private let nodes: [CGPoint] = [
+        CGPoint(x: 50, y: 53), CGPoint(x: 50, y: 24), CGPoint(x: 23, y: 46),
+        CGPoint(x: 77, y: 46), CGPoint(x: 34, y: 75), CGPoint(x: 66, y: 75),
+    ]
+    private let edges = [(0, 1), (0, 2), (0, 3), (0, 4), (0, 5), (1, 2), (1, 3), (2, 4), (3, 5)]
+
+    var body: some View {
+        GeometryReader { geo in
+            let s = min(geo.size.width, geo.size.height) / 100
+            ZStack {
+                Path { p in
+                    for (a, b) in edges {
+                        p.move(to: pt(nodes[a], s)); p.addLine(to: pt(nodes[b], s))
+                    }
+                }
+                .stroke(color.opacity(0.65), lineWidth: 1.6 * s)
+                ForEach(nodes.indices, id: \.self) { i in
+                    let r = (i == 0 ? 7.0 : 5.0) * s
+                    Circle().fill(color).frame(width: r * 2, height: r * 2).position(pt(nodes[i], s))
+                }
+            }
+        }
+    }
+    private func pt(_ p: CGPoint, _ s: CGFloat) -> CGPoint { CGPoint(x: p.x * s, y: p.y * s) }
+}
+
 /// Gradient title text helper.
 struct BrandText: View {
     let text: String

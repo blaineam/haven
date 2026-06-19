@@ -22,7 +22,7 @@ nothing monthly; your media rides on your own iCloud and direct peer-to-peer lin
   plaintext or any personal data — and nothing the maker has to pay for monthly.
   Media rides on *your own* iCloud/storage; peer connections use free, swappable,
   community/public relays only as a last-resort encrypted pipe. The app is a one-time
-  $4.99 with no subscription.
+  $9.99 with no subscription.
 - **Quantum-safe by default.** Every content key is derived from a *hybrid* of
   classical (X25519) and post-quantum (ML-KEM-768) key exchange, so stored
   ciphertext is protected against "harvest-now, decrypt-later" attacks.

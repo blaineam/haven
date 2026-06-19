@@ -158,7 +158,7 @@ strongest guarantees possible without a server policing everyone's device.
 
 **Decision:** The codebase is **source-available under PolyForm Noncommercial 1.0.0**
 (`LICENSE`). Copyright is retained by Blaine Miller, who distributes the paid
-($4.99) App Store binary — permitted because the copyright holder isn't bound by the
+($9.99) App Store binary — permitted because the copyright holder isn't bound by the
 public license. Outside contributions require a lightweight **CLA/DCO** granting
 relicensing rights, so the app can keep being sold.
 
@@ -238,7 +238,7 @@ and makes the strongest IP claim that is actually true rather than a comforting 
   hole-punching via **public STUN**; discovery via the **mainline DHT**.
 - **Hosting** = GitHub Pages (`blaineam.github.io`) for the web client, AASA, and
   marketing page. **Notifications** = APNs / Web Push.
-- App is a **one-time $4.99, no subscription**.
+- App is a **one-time $9.99, no subscription**.
 
 **This deletes** the 512MB quota, blind-signed tokens, App Attest gating, the storage
 subscription, and the funded default bucket — they only existed to meter a bucket the
