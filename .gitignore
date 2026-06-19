@@ -2,6 +2,9 @@
 core/target/
 **/*.rs.bk
 
+# Demo run artifacts
+core/*.png
+
 # Apple / Xcode
 apple/build/
 apple/DerivedData/

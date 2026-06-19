@@ -14,15 +14,25 @@ link system, all verifiable on the host with no devices or network.
 - Transport `Path` ladder + selector seam (`transport.rs`)
 - 5 integration tests green (`tests/spine.rs`)
 
-## ⏭️ M1b — Networking spine
+## ✅ M1b — Networking spine (first transfer working)
 
-Two devices actually exchange an encrypted blob, dial-by-key.
+A real photo moves peer-to-peer as hybrid-PQ ciphertext over QUIC, verified
+byte-identical. Runnable: `cargo run -p kith-demo` (see `core/demo/`).
 
-- Integrate **iroh**: dial-by-node-id, mDNS/LAN discovery, relay fallback
-- Integrate **iroh-blobs**: content-addressed (BLAKE3) chunked, resumable transfer
-- Wrap iroh behind the `Transport` trait; finalize on-wire framing for `Encapsulation`
-- **Prereq:** confirm a runnable relay (default or self-hosted) for the relay rung
-- *Proof:* host-loopback + (later) two-device send of a sealed photo
+- **iroh 1.0** integrated: two endpoints, dial-by-address, real QUIC streams,
+  relays disabled (runs fully offline/local)
+- `p2pcore` crypto carried over the wire end-to-end (X25519+ML-KEM-768 → AES-256-GCM);
+  the QUIC stream only ever holds ciphertext, verified by BLAKE3 match on both ends
+- On-wire framing for `Encapsulation` (eph ‖ pq_ct ‖ sealed)
+- Bonus: iroh 1.0 ships `X25519MLKEM768` PQ-transport examples → confirms D4's
+  PQ transport is available to switch on later
+
+### Remaining for M1b polish
+- Integrate **iroh-blobs** for content-addressed (BLAKE3) chunked, **resumable**,
+  multi-source transfer (replaces the one-shot read for large/100 GB files)
+- Wrap iroh behind the `Transport` trait + path-selector
+- mDNS/LAN discovery + relay fallback (currently dials an explicit address)
+- True two-device run (currently two endpoints on one host over loopback)
 
 ## ⏭️ M1c — Hybrid PQ signatures
 
