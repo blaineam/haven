@@ -170,6 +170,7 @@ final class FeedStore: ObservableObject {
         }
         nearbyBroadcast(0, hello)
         for env in envs { nearbyBroadcast(1, env) }
+        requestMissingMedia()
     }
 
     /// A nearby peer just connected over Bluetooth/Wi-Fi — say hello + back-fill.
@@ -224,8 +225,58 @@ final class FeedStore: ObservableObject {
         switch type {
         case 0: handleHello(payload)
         case 1: handleEvent(payload)
+        case 3: handleMediaRequest(payload)
+        case 4: handleMediaData(payload)
         default: break
         }
+    }
+
+    // MARK: - Media transfer  [3] request(ref) → [4] sealed media back
+
+    /// Ask contacts for any media our feed references but we don't hold the bytes for.
+    private func requestMissingMedia() {
+        guard let social, node != nil || nearby != nil else { return }
+        let myHex = social.myNodeHex()
+        var missing = Set<String>()
+        for item in items {
+            for ref in item.media where !MediaStore.shared.has(ref) { missing.insert(ref) }
+            for c in item.comments { for ref in c.media where !MediaStore.shared.has(ref) { missing.insert(ref) } }
+        }
+        for ref in missing {
+            var payload = Data(myHex.utf8)          // 64-byte requester id
+            payload.append(Data(ref.utf8))
+            for contact in ContactsStore.shared.contacts { sendIroh(3, payload, to: contact.idHex) }
+            nearbyBroadcast(3, payload)
+        }
+    }
+
+    private func handleMediaRequest(_ payload: Data) {
+        guard let social, payload.count > 64 else { return }
+        let requesterHex = String(data: payload.prefix(64), encoding: .utf8) ?? ""
+        let ref = String(data: payload.dropFirst(64), encoding: .utf8) ?? ""
+        guard requesterHex.count == 64, !ref.isEmpty, let bytes = MediaStore.shared.rawBytes(ref) else { return }
+        // Seal the bytes to the requester (only works if they're a contact of ours).
+        guard let sealed = try? social.sealMedia(recipientNodeHex: requesterHex, data: bytes) else { return }
+        var out = Data()
+        let rb = Data(ref.utf8)
+        let len = UInt16(rb.count)
+        out.append(UInt8(len & 0xff)); out.append(UInt8((len >> 8) & 0xff))
+        out.append(rb)
+        out.append(sealed)
+        sendIroh(4, out, to: requesterHex)
+        nearbyBroadcast(4, out)
+    }
+
+    private func handleMediaData(_ payload: Data) {
+        guard let social, payload.count >= 2 else { return }
+        let lb = [UInt8](payload.prefix(2))
+        let len = Int(UInt16(lb[0]) | UInt16(lb[1]) << 8)
+        guard payload.count >= 2 + len else { return }
+        let ref = String(data: payload.subdata(in: 2..<(2 + len)), encoding: .utf8) ?? ""
+        let sealed = payload.subdata(in: (2 + len)..<payload.count)
+        guard !ref.isEmpty, !MediaStore.shared.has(ref), let media = social.openMedia(sealed: sealed) else { return }
+        MediaStore.shared.store(ref, media)
+        refresh()   // re-render so the media appears
     }
 
     private func nodeHex(_ d: Data) -> String { d.map { String(format: "%02x", $0) }.joined() }
@@ -284,6 +335,7 @@ final class FeedStore: ObservableObject {
         if (try? social.receive(envelope: env)) == true {
             persist()   // a new post arrived — save it
             refresh()
+            requestMissingMedia()   // pull any photos/videos it references
         }
     }
 }

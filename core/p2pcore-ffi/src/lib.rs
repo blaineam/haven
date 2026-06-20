@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::collections::HashSet;
 
 use kith_net::Node;
-use p2pcore::crypto::{decapsulate, encapsulate_to, open, seal};
+use p2pcore::crypto::{decapsulate, encapsulate_to, open, seal, Encapsulation};
 use p2pcore::identity::{Identity, KithId};
 use p2pcore::link::KithLink;
 use p2pcore::social::{
@@ -665,6 +665,44 @@ impl KithSocial {
         map_feed(st.events.clone(), &me, now_ms, viewer_retention_secs)
     }
 
+    /// Seal a media blob to one contact (hybrid KEM → AES-256-GCM). The recipient
+    /// opens it with `open_media`. Layout: [32 eph_x_pub][u32 pq_len][pq_ct][ciphertext].
+    pub fn seal_media(&self, recipient_node_hex: String, data: Vec<u8>) -> Result<Vec<u8>, KithError> {
+        let st = self.state.lock().unwrap();
+        let recipient = st
+            .contacts
+            .iter()
+            .find(|c| hex(&c.node_id_bytes()) == recipient_node_hex)
+            .ok_or_else(|| KithError::Invalid { msg: "unknown recipient".into() })?;
+        let (enc, key) =
+            encapsulate_to(recipient).map_err(|e| KithError::Invalid { msg: format!("{e}") })?;
+        let ct = seal(&key, &data);
+        let mut out = Vec::with_capacity(36 + enc.pq_ct.len() + ct.len());
+        out.extend_from_slice(&enc.eph_x_pub);
+        out.extend_from_slice(&(enc.pq_ct.len() as u32).to_le_bytes());
+        out.extend_from_slice(&enc.pq_ct);
+        out.extend_from_slice(&ct);
+        Ok(out)
+    }
+
+    /// Open a media blob sealed to us by a contact. Returns the plaintext bytes.
+    pub fn open_media(&self, sealed: Vec<u8>) -> Option<Vec<u8>> {
+        if sealed.len() < 36 {
+            return None;
+        }
+        let eph_x_pub: [u8; 32] = sealed[0..32].try_into().ok()?;
+        let pq_len = u32::from_le_bytes(sealed[32..36].try_into().ok()?) as usize;
+        if sealed.len() < 36 + pq_len {
+            return None;
+        }
+        let pq_ct = sealed[36..36 + pq_len].to_vec();
+        let ct = &sealed[36 + pq_len..];
+        let enc = Encapsulation { eph_x_pub, pq_ct };
+        let st = self.state.lock().unwrap();
+        let key = decapsulate(&st.me, &enc).ok()?;
+        open(&key, ct).ok()
+    }
+
     /// Serialize the store (events + contacts) for on-disk persistence.
     pub fn export_state(&self) -> Vec<u8> {
         let st = self.state.lock().unwrap();
@@ -751,6 +789,12 @@ mod net_tests {
         let last = forged.len() - 1;
         forged[last] ^= 0xff;
         assert!(bob.verify_profile(alice.my_bundle(), forged).is_none(), "tampered name rejected");
+
+        // Media blob: Alice seals a photo to Bob; Bob opens it; a stranger can't.
+        let photo = vec![7u8; 5000];
+        let sealed = alice.seal_media(bob.my_node_hex(), photo.clone()).unwrap();
+        assert_eq!(bob.open_media(sealed.clone()), Some(photo.clone()));
+        assert!(eve.open_media(sealed).is_none(), "non-recipient can't open media");
 
         // Persistence: export Bob's store, reload into a fresh instance → posts survive.
         let saved = bob.export_state();
