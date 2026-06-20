@@ -181,6 +181,58 @@ pub fn seal_event(sender: &Identity, group: &Group, event: &Event) -> Result<Sea
     Ok(env)
 }
 
+/// Seal arbitrary bytes (e.g. a media blob) to every member of a group — any member
+/// can open it. Used by the shared circle store so a volunteered bucket holds blobs
+/// that are opaque to its host yet readable by the whole circle.
+pub fn seal_bytes(sender: &Identity, group: &Group, bytes: &[u8]) -> Result<SealedEnvelope> {
+    let mut content_key = [0u8; 32];
+    OsRng.fill_bytes(&mut content_key);
+    let ciphertext = seal(&content_key, bytes);
+
+    let mut recipients = Vec::with_capacity(group.members.len());
+    for member in &group.members {
+        let (enc, kek) = encapsulate_to(member)?;
+        recipients.push(RecipientKey {
+            member: member.node_id_bytes().to_vec(),
+            enc: EncWire { eph_x_pub: enc.eph_x_pub.to_vec(), pq_ct: enc.pq_ct },
+            wrapped: seal(&kek, &content_key),
+        });
+    }
+    let mut env = SealedEnvelope {
+        sender: sender.public().node_id_bytes().to_vec(),
+        ciphertext,
+        recipients,
+        signature: Vec::new(),
+    };
+    env.signature = sender.sign(&env.transcript());
+    Ok(env)
+}
+
+/// Open group-sealed bytes addressed to me, verifying the sender. Recipient side.
+pub fn open_bytes(me: &Identity, sender_pub: &KithId, env: &SealedEnvelope) -> Result<Vec<u8>> {
+    sender_pub.verify(&env.transcript(), &env.signature)?;
+    let my_id = me.public().node_id_bytes().to_vec();
+    let mine = env
+        .recipients
+        .iter()
+        .find(|r| r.member == my_id)
+        .ok_or(CoreError::Crypto("not a recipient of this envelope"))?;
+    let eph: [u8; 32] = mine
+        .enc
+        .eph_x_pub
+        .as_slice()
+        .try_into()
+        .map_err(|_| CoreError::Crypto("bad ephemeral key"))?;
+    let enc = Encapsulation { eph_x_pub: eph, pq_ct: mine.enc.pq_ct.clone() };
+    let kek = decapsulate(me, &enc)?;
+    let content_key_vec = open(&kek, &mine.wrapped)?;
+    let content_key: [u8; 32] = content_key_vec
+        .as_slice()
+        .try_into()
+        .map_err(|_| CoreError::Crypto("bad content key"))?;
+    open(&content_key, &env.ciphertext)
+}
+
 /// Open a sealed envelope addressed to me, verifying the sender's signature. Recipient side.
 pub fn open_event(me: &Identity, sender_pub: &KithId, env: &SealedEnvelope) -> Result<Event> {
     // 1. Authenticate the sender over the whole transcript before decrypting.

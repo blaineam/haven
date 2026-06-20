@@ -3,8 +3,24 @@
 
 use p2pcore::identity::Identity;
 use p2pcore::social::{
-    build_feed, open_event, seal_event, Event, EventKind, Group,
+    build_feed, open_bytes, open_event, seal_bytes, seal_event, Event, EventKind, Group,
 };
+
+#[test]
+fn group_sealed_bytes_round_trip() {
+    let a = Identity::generate();
+    let b = Identity::generate();
+    let group = Group::new("fam", vec![a.public(), b.public()]);
+    let blob = b"opaque media bytes for the shared store".to_vec();
+    let env = seal_bytes(&a, &group, &blob).unwrap();
+    // Another circle member opens it (the shared-store host could not).
+    assert_eq!(open_bytes(&b, &a.public(), &env).unwrap(), blob);
+    // The sealer opens it too.
+    assert_eq!(open_bytes(&a, &a.public(), &env).unwrap(), blob);
+    // A non-member cannot.
+    let outsider = Identity::generate();
+    assert!(open_bytes(&outsider, &a.public(), &env).is_err());
+}
 
 fn node_hex(id: &Identity) -> String {
     id.public()

@@ -33,6 +33,10 @@ final class StorageStore: ObservableObject {
     @Published var s3Bucket: String { didSet { d.set(s3Bucket, forKey: "kith.s3.bucket") } }
     @Published var s3AccessKey: String { didSet { Keychain.set(s3AccessKey, for: "s3AccessKey") } }
     @Published var s3Secret: String { didSet { Keychain.set(s3Secret, for: "s3Secret") } }
+    /// "Volunteer as tribute": back up the circle's media (sealed to the circle, so it
+    /// stays opaque to your storage provider) and re-serve it to members who are missing
+    /// it — making your bucket a durable source for the whole circle.
+    @Published var shareCircleMedia: Bool { didSet { d.set(shareCircleMedia, forKey: "kith.s3.share") } }
 
     private let d = UserDefaults.standard
     private init() {
@@ -42,6 +46,7 @@ final class StorageStore: ObservableObject {
         s3Bucket = d.string(forKey: "kith.s3.bucket") ?? ""
         s3AccessKey = Keychain.get("s3AccessKey") ?? ""
         s3Secret = Keychain.get("s3Secret") ?? ""
+        shareCircleMedia = d.bool(forKey: "kith.s3.share")
     }
 
     var s3Configured: Bool { !s3Endpoint.isEmpty && !s3Bucket.isEmpty && !s3AccessKey.isEmpty && !s3Secret.isEmpty }
@@ -75,7 +80,7 @@ struct StorageSettingsView: View {
         .navigationBarTitleDisplayMode(.inline)
     }
 
-    private var s3Section: some View {
+    @ViewBuilder private var s3Section: some View {
         Section {
             TextField("Endpoint (e.g. s3.amazonaws.com)", text: $store.s3Endpoint).autocorrectionDisabled().textInputAutocapitalization(.never)
             TextField("Region", text: $store.s3Region).autocorrectionDisabled().textInputAutocapitalization(.never)
@@ -87,6 +92,16 @@ struct StorageSettingsView: View {
             }
         } header: { Text("Your S3-compatible bucket") }
         footer: { Text("Works with AWS S3, Cloudflare R2, Backblaze B2, MinIO, etc. Keys are stored only in this device's Keychain — never on any server.") }
+
+        if store.s3Configured {
+            Section {
+                Toggle(isOn: $store.shareCircleMedia) {
+                    Label("Be the circle's backup", systemImage: "heart.circle.fill")
+                }
+                .tint(KithTheme.pink)
+            } header: { Text("Volunteer as tribute") }
+            footer: { Text("Kith keeps a sealed copy of your circle's media in your bucket and re-serves it to anyone who's missing it — so memories survive even when the original sender is offline. Everything is end-to-end encrypted to the circle: your storage provider only ever sees opaque blobs it cannot read.") }
+        }
     }
 
 }

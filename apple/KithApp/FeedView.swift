@@ -255,6 +255,8 @@ final class FeedStore: ObservableObject {
     func post(_ body: String, media: [String] = [], music: TrackRefFfi? = nil, retentionSecs: UInt64? = nil, story: Bool = false) {
         guard let social, let env = try? social.post(circleId: activeCircleId, body: body, media: media, music: music, retentionSecs: retentionSecs, story: story, createdAt: now()) else { return }
         broadcastEvent(activeCircleId, env); postTick += 1; refresh()
+        let circle = activeCircleId
+        for ref in media { Task { await SharedStore.backup(ref: ref, circleId: circle, social: social) } }
     }
 
     /// Post a full-screen story to the active circle — auto-expires after 24h (retention).
@@ -485,11 +487,20 @@ final class FeedStore: ObservableObject {
             for ref in item.media where !MediaStore.shared.has(ref) { missing.insert(ref) }
             for c in item.comments { for ref in c.media where !MediaStore.shared.has(ref) { missing.insert(ref) } }
         }
+        let circleIds = circles.map { $0.id }
         for ref in missing {
             var payload = Data(myHex.utf8)          // 64-byte requester id
             payload.append(Data(ref.utf8))
             for contact in ContactsStore.shared.contacts { sendIroh(3, payload, to: contact.idHex) }
             nearbyBroadcast(3, payload)
+            // Also try restoring it from a shared store (my own bucket), if I run one.
+            if SharedStore.isVolunteering {
+                Task { @MainActor in
+                    if let data = await SharedStore.restore(ref: ref, circleIds: circleIds, social: social) {
+                        MediaStore.shared.store(ref, data); refresh()
+                    }
+                }
+            }
         }
     }
 
@@ -497,10 +508,22 @@ final class FeedStore: ObservableObject {
         guard payload.count > 64 else { return }
         let requesterHex = String(data: payload.prefix(64), encoding: .utf8) ?? ""
         let ref = String(data: payload.dropFirst(64), encoding: .utf8) ?? ""
-        guard requesterHex.count == 64, !ref.isEmpty,
-              let url = MediaStore.shared.storagePath(for: ref),
-              FileManager.default.fileExists(atPath: url.path) else { return }
-        sendMediaChunks(ref: ref, fileURL: url, to: requesterHex)
+        guard requesterHex.count == 64, !ref.isEmpty else { return }
+        if let url = MediaStore.shared.storagePath(for: ref), FileManager.default.fileExists(atPath: url.path) {
+            sendMediaChunks(ref: ref, fileURL: url, to: requesterHex)
+            return
+        }
+        // I don't hold it locally — if I'm the circle's backup, restore it and serve.
+        guard SharedStore.isVolunteering, let social else { return }
+        let circleIds = circles.map { $0.id }
+        Task { @MainActor in
+            if let data = await SharedStore.restore(ref: ref, circleIds: circleIds, social: social) {
+                MediaStore.shared.store(ref, data)
+                if let url = MediaStore.shared.storagePath(for: ref) {
+                    sendMediaChunks(ref: ref, fileURL: url, to: requesterHex)
+                }
+            }
+        }
     }
 
     /// Stream a media file to the requester as individually-sealed chunks — low memory,
@@ -563,6 +586,11 @@ final class FeedStore: ObservableObject {
             MediaStore.shared.adopt(ref, from: entry.tempURL)
             incoming[ref] = nil
             refresh()   // re-render so the media appears
+            // If I'm the circle's backup, cache this received media to my bucket too.
+            if SharedStore.isVolunteering {
+                let circle = activeCircleId
+                Task { await SharedStore.backup(ref: ref, circleId: circle, social: social) }
+            }
         }
     }
 

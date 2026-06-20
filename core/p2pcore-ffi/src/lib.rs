@@ -13,7 +13,8 @@ use p2pcore::crypto::{decapsulate, encapsulate_to, open, seal, Encapsulation};
 use p2pcore::identity::{Identity, KithId};
 use p2pcore::link::KithLink;
 use p2pcore::social::{
-    build_feed, open_event, seal_event, Event, EventKind, Group, SealedEnvelope, TrackRef,
+    build_feed, open_bytes, open_event, seal_bytes, seal_event, Event, EventKind, Group,
+    SealedEnvelope, TrackRef,
 };
 
 uniffi::setup_scaffolding!();
@@ -816,6 +817,38 @@ impl KithSocial {
         let st = self.state.lock().unwrap();
         let key = decapsulate(&st.me, &enc).ok()?;
         open(&key, ct).ok()
+    }
+
+    /// Seal a media blob to the WHOLE circle (any member can open it). The shared
+    /// store host stores the result opaquely — it can't read it. Returns the sealed
+    /// envelope bytes to upload.
+    pub fn seal_circle_media(&self, circle_id: String, data: Vec<u8>) -> Result<Vec<u8>, KithError> {
+        let st = self.state.lock().unwrap();
+        let Some(circle) = st.circles.iter().find(|c| c.id == circle_id) else {
+            return Err(KithError::Invalid { msg: "unknown circle".into() });
+        };
+        let mut members = vec![st.me.public()];
+        members.extend(circle.members.iter().cloned());
+        let group = Group::new(circle_id, members);
+        seal_bytes(&st.me, &group, &data)
+            .map(|env| env.to_bytes())
+            .map_err(|e| KithError::Invalid { msg: format!("{e}") })
+    }
+
+    /// Open a circle-sealed media blob fetched from the shared store. Verifies the
+    /// sender (read from the envelope) against the circle roster.
+    pub fn open_circle_media(&self, circle_id: String, sealed: Vec<u8>) -> Option<Vec<u8>> {
+        let st = self.state.lock().unwrap();
+        let env = SealedEnvelope::from_bytes(&sealed).ok()?;
+        let sender_hex = env.sender_hex();
+        let me_hex = hex(&st.me.public().node_id_bytes());
+        let circle = st.circles.iter().find(|c| c.id == circle_id)?;
+        let sender_pub = if sender_hex == me_hex {
+            st.me.public()
+        } else {
+            circle.members.iter().find(|m| hex(&m.node_id_bytes()) == sender_hex)?.clone()
+        };
+        open_bytes(&st.me, &sender_pub, &env).ok()
     }
 
     /// Serialize all circles (members + events) for on-disk persistence.
