@@ -19,6 +19,10 @@ final class FeedStore: ObservableObject {
     @Published private(set) var postTick = 0
     @Published private(set) var reactionTick = 0
     @Published private(set) var online = false
+    /// True once we've actually exchanged a frame with a contact over that path —
+    /// so the UI can show whether the internet and/or nearby links are really working.
+    @Published private(set) var internetActive = false
+    @Published private(set) var nearbyActive = false
     static let shared = FeedStore()
 
     private var social: KithSocial?
@@ -43,7 +47,7 @@ final class FeedStore: ObservableObject {
         if let social {
             let nt = NearbyTransport(
                 displayName: social.myNodeHex(),
-                onInbound: { [weak self] data in Task { @MainActor in self?.handleInbound(data) } },
+                onInbound: { [weak self] data in Task { @MainActor in self?.handleInbound(data, viaNearby: true) } },
                 onPeerConnected: { [weak self] in Task { @MainActor in self?.nearbyPeerConnected() } }
             )
             nt.start()
@@ -52,15 +56,20 @@ final class FeedStore: ObservableObject {
         }
         // Internet path (iroh + n0 discovery/relays).
         let bridge = InboundBridge { [weak self] data in
-            Task { @MainActor in self?.handleInbound(data) }
+            Task { @MainActor in self?.handleInbound(data, viaNearby: false) }
         }
         listener = bridge
         Task { @MainActor in
             guard let n = try? await KithNode.start(accountSeed: seed, listener: bridge) else { return }
             self.node = n
             self.online = true
-            self.syncWithContacts()
             self.startSyncTimer()
+            // Sync soon (discovery needs a moment to resolve), then keep retrying.
+            for delay in [1.0, 4.0, 10.0] {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                    self?.syncWithContacts()
+                }
+            }
         }
     }
 
@@ -121,6 +130,7 @@ final class FeedStore: ObservableObject {
     /// A nearby peer just connected over Bluetooth/Wi-Fi — say hello + back-fill.
     private func nearbyPeerConnected() {
         guard let social else { return }
+        nearbyActive = true
         nearbyBroadcast(0, social.myBundle())
         for env in social.syncEnvelopes() { nearbyBroadcast(1, env) }
         refresh()
@@ -143,8 +153,9 @@ final class FeedStore: ObservableObject {
         nearby?.broadcast(frame(type, payload))
     }
 
-    private func handleInbound(_ data: Data) {
+    private func handleInbound(_ data: Data, viaNearby: Bool) {
         guard let type = data.first else { return }
+        if viaNearby { nearbyActive = true } else { internetActive = true }
         let payload = Data(data.dropFirst())
         switch type {
         case 0: handleHello(payload)
@@ -278,13 +289,20 @@ struct FeedView: View {
     private var banner: some View {
         HStack(spacing: 8) {
             Circle().fill(store.online ? Color.green : Color.secondary).frame(width: 8, height: 8)
-            Text(store.online
-                 ? "Connected — your circle syncs peer-to-peer"
-                 : "Offline — posts sync when you reconnect")
+            Text(connectionText)
                 .font(.caption).foregroundStyle(.secondary)
             Spacer()
         }
         .padding(.top, 4)
+    }
+
+    private var connectionText: String {
+        guard store.online else { return "Offline — posts sync when you reconnect" }
+        var paths: [String] = []
+        if store.internetActive { paths.append("internet") }
+        if store.nearbyActive { paths.append("nearby") }
+        if paths.isEmpty { return "Online — looking for your circle…" }
+        return "Connected · " + paths.joined(separator: " + ")
     }
 
     private var composerBar: some View {
