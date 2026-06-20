@@ -100,7 +100,7 @@ struct StorageSettingsView: View {
                 }
                 .tint(KithTheme.pink)
             } header: { Text("Volunteer as tribute") }
-            footer: { Text("Kith keeps a sealed copy of your circle's media in your bucket and re-serves it to anyone who's missing it — so memories survive even when the original sender is offline. Everything is end-to-end encrypted to the circle: your storage provider only ever sees opaque blobs it cannot read.") }
+            footer: { Text("Your bucket becomes the circle's shared mailbox: every post is stored sealed and re-served to anyone who's missing it — so messages and memories arrive even when the sender is offline and you're never online at the same time. Everything is end-to-end encrypted to the circle; your storage provider only ever sees opaque blobs it cannot read.") }
         }
     }
 

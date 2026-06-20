@@ -53,6 +53,7 @@ final class FeedStore: ObservableObject {
     private var social: KithSocial?
     private var node: KithNode?
     private var nearby: NearbyTransport?
+    private var mailboxTimer: Timer?
     private var listener: InboundBridge?
     private var syncTimer: Timer?
 
@@ -85,6 +86,15 @@ final class FeedStore: ObservableObject {
         refresh()
         guard ProcessInfo.processInfo.environment["KITH_NO_NET"] != "1" else { return }
         bringOnline(seed: seed)
+        startMailboxPolling()
+    }
+
+    private func startMailboxPolling() {
+        mailboxTimer?.invalidate()
+        pollMailboxNow()
+        mailboxTimer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            Task { @MainActor in self?.pollMailboxNow() }
+        }
     }
 
     // MARK: - Circles
@@ -285,7 +295,7 @@ final class FeedStore: ObservableObject {
         guard let t = lastHeard[idHex] else { return false }
         return Date().timeIntervalSince(t) < 120
     }
-    func forceSync() { syncWithContacts() }
+    func forceSync() { syncWithContacts(); pollMailboxNow() }
 
     private func startSyncTimer() {
         syncTimer?.invalidate()
@@ -400,7 +410,26 @@ final class FeedStore: ObservableObject {
         for nodeHex in members { sendIroh(1, payload, to: nodeHex) }
         nearbyBroadcast(1, payload)
         originateRelay(dests: members, inner: frame(1, payload))   // reach members behind a relay
+        Task { await SharedStore.uploadEvent(circleId: circleId, env: env) }   // store-and-forward mailbox
         persist()   // we just authored something — save it
+    }
+
+    /// Poll the shared mailbox and ingest any envelopes uploaded while we (or the sender)
+    /// were offline. This is what delivers posts without both ends being online at once.
+    func pollMailboxNow() {
+        guard SharedStore.isVolunteering, let social else { return }
+        let ids = circles.map { $0.id }
+        Task { @MainActor in
+            let msgs = await SharedStore.pollMailbox(circleIds: ids)
+            var changed = false
+            for (cid, env) in msgs {
+                if (try? social.receive(circleId: cid, envelope: env)) == true {
+                    changed = true
+                    notifyNewest(in: cid)
+                }
+            }
+            if changed { persist(); refresh(); requestMissingMedia() }
+        }
     }
 
     // Length-prefixed field helpers ([u16 LE len][bytes]).

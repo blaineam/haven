@@ -2,14 +2,14 @@ import Foundation
 import CryptoKit
 
 /// A tiny, dependency-free S3 client (AWS SigV4, path-style) for the circle's shared
-/// media store. It only ever moves **sealed** bytes: everything uploaded is already
-/// end-to-end encrypted to the circle, so the bucket host (even if it's another member
-/// "volunteering as tribute") stores opaque blobs it cannot read. Keys/secrets live
-/// only in the device Keychain (see StorageStore) — never on any Kith server.
+/// store + mailbox. It only ever moves **sealed** bytes: everything uploaded is already
+/// end-to-end encrypted to the circle, so the bucket host (even another member
+/// "volunteering as tribute") stores opaque blobs it cannot read. Keys live only in the
+/// device Keychain (see StorageStore) — never on any Kith server.
 ///
 /// Works with AWS S3, Cloudflare R2, Backblaze B2, MinIO, etc.
 struct S3Client {
-    let endpoint: String      // e.g. "s3.amazonaws.com" or "<acct>.r2.cloudflarestorage.com"
+    let endpoint: String
     let region: String
     let bucket: String
     let accessKey: String
@@ -25,32 +25,35 @@ struct S3Client {
         secret = s.s3Secret
     }
 
-    /// Build a path-style object URL: https://<endpoint>/<bucket>/<key>
-    private func url(for key: String) -> URL? {
-        URL(string: "https://\(endpoint)/\(bucket)/\(encodePath(key))")
-    }
-
     // MARK: - Public API
 
     func putObject(key: String, data: Data) async throws {
-        var req = try signedRequest(method: "PUT", key: key, payload: data)
+        var req = try signedRequest(method: "PUT", path: "/\(bucket)/\(encodePath(key))", query: [], payload: data)
         req.httpBody = data
         let (_, resp) = try await URLSession.shared.data(for: req)
         try check(resp, "PUT \(key)")
     }
 
     func getObject(key: String) async throws -> Data {
-        let req = try signedRequest(method: "GET", key: key, payload: Data())
+        let req = try signedRequest(method: "GET", path: "/\(bucket)/\(encodePath(key))", query: [], payload: Data())
         let (data, resp) = try await URLSession.shared.data(for: req)
         try check(resp, "GET \(key)")
         return data
     }
 
     func headObject(key: String) async -> Bool {
-        guard let req = try? signedRequest(method: "HEAD", key: key, payload: Data()) else { return false }
-        guard let (_, resp) = try? await URLSession.shared.data(for: req),
-              let http = resp as? HTTPURLResponse else { return false }
+        guard let req = try? signedRequest(method: "HEAD", path: "/\(bucket)/\(encodePath(key))", query: [], payload: Data()) else { return false }
+        guard let (_, resp) = try? await URLSession.shared.data(for: req), let http = resp as? HTTPURLResponse else { return false }
         return (200..<300).contains(http.statusCode)
+    }
+
+    /// List object keys under a prefix (ListObjectsV2). Used to poll the mailbox.
+    func listKeys(prefix: String) async throws -> [String] {
+        let query = [("list-type", "2"), ("prefix", prefix), ("max-keys", "1000")]
+        let req = try signedRequest(method: "GET", path: "/\(bucket)", query: query, payload: Data())
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        try check(resp, "LIST \(prefix)")
+        return Self.parseKeys(data)
     }
 
     private func check(_ resp: URLResponse, _ what: String) throws {
@@ -58,28 +61,46 @@ struct S3Client {
         guard (200..<300).contains(http.statusCode) else { throw S3Error.bad("\(what) → HTTP \(http.statusCode)") }
     }
 
+    /// Minimal XML scrape of <Key>…</Key> from a ListObjectsV2 response.
+    private static func parseKeys(_ data: Data) -> [String] {
+        guard let xml = String(data: data, encoding: .utf8) else { return [] }
+        var keys: [String] = []
+        var rest = Substring(xml)
+        while let open = rest.range(of: "<Key>"), let close = rest.range(of: "</Key>") {
+            let k = rest[open.upperBound..<close.lowerBound]
+            keys.append(String(k).replacingOccurrences(of: "&amp;", with: "&"))
+            rest = rest[close.upperBound...]
+        }
+        return keys
+    }
+
     // MARK: - SigV4
 
-    private func signedRequest(method: String, key: String, payload: Data) throws -> URLRequest {
-        guard let u = url(for: key) else { throw S3Error.bad("bad url") }
-        let now = Date()
-        let amzDate = Self.iso8601.string(from: now)        // 20250101T000000Z
-        let dateStamp = String(amzDate.prefix(8))            // 20250101
+    private func signedRequest(method: String, path: String, query: [(String, String)], payload: Data) throws -> URLRequest {
         let host = endpoint
+        let now = Date()
+        let amzDate = Self.iso8601.string(from: now)
+        let dateStamp = String(amzDate.prefix(8))
         let payloadHash = sha256Hex(payload)
 
-        let canonicalURI = "/\(bucket)/\(encodePath(key))"
+        let canonicalQuery = query
+            .map { (encodeStrict($0.0), encodeStrict($0.1)) }
+            .sorted { $0.0 < $1.0 }
+            .map { "\($0.0)=\($0.1)" }
+            .joined(separator: "&")
+
         let canonicalHeaders = "host:\(host)\nx-amz-content-sha256:\(payloadHash)\nx-amz-date:\(amzDate)\n"
         let signedHeaders = "host;x-amz-content-sha256;x-amz-date"
-        let canonicalRequest = [method, canonicalURI, "", canonicalHeaders, signedHeaders, payloadHash].joined(separator: "\n")
+        let canonicalRequest = [method, path, canonicalQuery, canonicalHeaders, signedHeaders, payloadHash].joined(separator: "\n")
 
         let scope = "\(dateStamp)/\(region)/s3/aws4_request"
         let stringToSign = ["AWS4-HMAC-SHA256", amzDate, scope, sha256Hex(Data(canonicalRequest.utf8))].joined(separator: "\n")
-
-        let signingKey = hmacChain(dateStamp: dateStamp)
-        let signature = hmac(signingKey, Data(stringToSign.utf8)).map { String(format: "%02x", $0) }.joined()
-
+        let signature = hmac(hmacChain(dateStamp: dateStamp), Data(stringToSign.utf8)).map { String(format: "%02x", $0) }.joined()
         let authorization = "AWS4-HMAC-SHA256 Credential=\(accessKey)/\(scope), SignedHeaders=\(signedHeaders), Signature=\(signature)"
+
+        var urlString = "https://\(host)\(path)"
+        if !canonicalQuery.isEmpty { urlString += "?\(canonicalQuery)" }
+        guard let u = URL(string: urlString) else { throw S3Error.bad("bad url") }
 
         var req = URLRequest(url: u)
         req.httpMethod = method
@@ -97,18 +118,18 @@ struct S3Client {
         let kSigning = hmac(SymmetricKey(data: kService), Data("aws4_request".utf8))
         return SymmetricKey(data: kSigning)
     }
+    private func hmac(_ key: SymmetricKey, _ data: Data) -> Data { Data(HMAC<SHA256>.authenticationCode(for: data, using: key)) }
+    private func sha256Hex(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
 
-    private func hmac(_ key: SymmetricKey, _ data: Data) -> Data {
-        Data(HMAC<SHA256>.authenticationCode(for: data, using: key))
-    }
-    private func sha256Hex(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    }
-    /// Percent-encode each path segment but keep "/" as a separator (S3 keys are path-like).
+    /// Path encoding keeps "/" as a separator (object keys are path-like).
     private func encodePath(_ key: String) -> String {
-        key.split(separator: "/", omittingEmptySubsequences: false).map { seg in
-            seg.addingPercentEncoding(withAllowedCharacters: Self.unreserved) ?? String(seg)
-        }.joined(separator: "/")
+        key.split(separator: "/", omittingEmptySubsequences: false)
+            .map { $0.addingPercentEncoding(withAllowedCharacters: Self.unreserved) ?? String($0) }
+            .joined(separator: "/")
+    }
+    /// Strict encoding for canonical query (encodes "/" too), per SigV4.
+    private func encodeStrict(_ s: String) -> String {
+        s.addingPercentEncoding(withAllowedCharacters: Self.unreserved) ?? s
     }
 
     private static let unreserved: CharacterSet = {

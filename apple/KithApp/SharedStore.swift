@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// The "volunteer as tribute" shared circle store. A member who turns this on keeps a
 /// sealed copy of the circle's media in their own S3 bucket and re-serves it to anyone
@@ -32,5 +33,43 @@ enum SharedStore {
             if let data = social.openCircleMedia(circleId: cid, sealed: sealed) { return data }
         }
         return nil
+    }
+
+    // MARK: - Shared mailbox (store-and-forward for ALL events)
+    //
+    // A sealed event envelope is already encrypted to the whole circle, so we store the
+    // envelope itself in the bucket under mailbox/<circle>/<hash>. The sender uploads
+    // when they're online; any member polls + downloads when *they're* online — the two
+    // never need to overlap. The bucket only ever holds opaque, circle-sealed blobs.
+
+    private static var seenMailbox = Set<String>()
+
+    private static func mailboxKey(_ circleId: String, _ env: Data) -> String {
+        let h = SHA256.hash(data: env).map { String(format: "%02x", $0) }.joined()
+        return "kith/mailbox/\(circleId)/\(h)"
+    }
+
+    /// Drop a sealed event envelope into the circle's mailbox (idempotent).
+    static func uploadEvent(circleId: String, env: Data) async {
+        guard isVolunteering, let s3 = S3Client(StorageStore.shared) else { return }
+        let key = mailboxKey(circleId, env)
+        if seenMailbox.contains(key) { return }
+        seenMailbox.insert(key)
+        if await s3.headObject(key: key) { return }
+        try? await s3.putObject(key: key, data: env)
+    }
+
+    /// Poll the mailbox for envelopes we haven't seen. Returns (circleId, envelope) pairs.
+    static func pollMailbox(circleIds: [String]) async -> [(String, Data)] {
+        guard let s3 = S3Client(StorageStore.shared) else { return [] }
+        var out: [(String, Data)] = []
+        for cid in circleIds {
+            guard let keys = try? await s3.listKeys(prefix: "kith/mailbox/\(cid)/") else { continue }
+            for key in keys where !seenMailbox.contains(key) {
+                seenMailbox.insert(key)
+                if let data = try? await s3.getObject(key: key) { out.append((cid, data)) }
+            }
+        }
+        return out
     }
 }
