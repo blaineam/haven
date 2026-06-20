@@ -2,6 +2,38 @@ import SwiftUI
 import AVFoundation
 import UIKit
 
+/// The system video trimmer (UIVideoEditorController) wrapped for SwiftUI.
+struct VideoTrimmer: UIViewControllerRepresentable {
+    let path: String
+    var onTrimmed: (URL) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIViewController(context: Context) -> UIViewController {
+        guard UIVideoEditorController.canEditVideo(atPath: path) else {
+            DispatchQueue.main.async { dismiss() }
+            return UIViewController()
+        }
+        let vc = UIVideoEditorController()
+        vc.videoPath = path
+        vc.delegate = context.coordinator
+        return vc
+    }
+
+    func updateUIViewController(_ vc: UIViewController, context: Context) {}
+
+    final class Coordinator: NSObject, UINavigationControllerDelegate, UIVideoEditorControllerDelegate {
+        let parent: VideoTrimmer
+        init(_ parent: VideoTrimmer) { self.parent = parent }
+        func videoEditorController(_ editor: UIVideoEditorController, didSaveEditedVideoToPath path: String) {
+            parent.onTrimmed(URL(fileURLWithPath: path)); parent.dismiss()
+        }
+        func videoEditorControllerDidCancel(_ editor: UIVideoEditorController) { parent.dismiss() }
+        func videoEditorController(_ editor: UIVideoEditorController, didFailWithError error: Error) { parent.dismiss() }
+    }
+}
+
 enum MediaKind: String {
     case image, video, audio
     var ext: String {
@@ -78,6 +110,42 @@ final class MediaStore: ObservableObject {
             try? FileManager.default.copyItem(at: src, to: dst)
         }
         cache[ref] = MediaItem(id: ref, kind: .video, image: Self.poster(for: dst), videoURL: dst)
+        return ref
+    }
+
+    /// Produce a muted copy of a video (audio track stripped); returns a new ref.
+    func muteVideo(_ ref: String) async -> String? {
+        guard let src = storagePath(for: ref) else { return nil }
+        let asset = AVURLAsset(url: src)
+        let comp = AVMutableComposition()
+        guard let vTrack = try? await asset.loadTracks(withMediaType: .video).first,
+              let compV = comp.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
+        else { return nil }
+        let dur = (try? await asset.load(.duration)) ?? .zero
+        try? compV.insertTimeRange(CMTimeRange(start: .zero, duration: dur), of: vTrack, at: .zero)
+        if let xf = try? await vTrack.load(.preferredTransform) { compV.preferredTransform = xf }
+        let newRef = "vid_\(UUID().uuidString)"
+        guard let dst = fileURL(newRef),
+              let export = AVAssetExportSession(asset: comp, presetName: AVAssetExportPresetHighestQuality)
+        else { return nil }
+        export.outputURL = dst
+        export.outputFileType = .mp4
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            export.exportAsynchronously { c.resume() }
+        }
+        guard export.status == .completed else { return nil }
+        cache[newRef] = MediaItem(id: newRef, kind: .video, image: Self.poster(for: dst), videoURL: dst)
+        return newRef
+    }
+
+    /// Adopt an externally-trimmed video file as a new ref.
+    func importTrimmed(_ url: URL) -> String {
+        let ref = "vid_\(UUID().uuidString)"
+        if let dst = fileURL(ref) {
+            try? FileManager.default.removeItem(at: dst)
+            try? FileManager.default.copyItem(at: url, to: dst)
+            cache[ref] = MediaItem(id: ref, kind: .video, image: Self.poster(for: dst), videoURL: dst)
+        }
         return ref
     }
 
@@ -180,6 +248,12 @@ final class MediaStore: ObservableObject {
         }
         cache[ref] = item
         return item
+    }
+
+    /// Can this video be trimmed by the system editor?
+    func canTrim(_ ref: String) -> Bool {
+        guard let url = storagePath(for: ref) else { return false }
+        return UIVideoEditorController.canEditVideo(atPath: url.path)
     }
 
     /// Extract a poster frame so videos show something before playback.

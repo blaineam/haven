@@ -648,7 +648,10 @@ struct FeedView: View {
     @State private var showStoryPicker = false
     @State private var showStories = false
     @State private var storyIndex = 0
+    @State private var trimmingRef: TrimTarget?
     @FocusState private var composeFocused: Bool
+
+    struct TrimTarget: Identifiable { let id = UUID(); let ref: String }
 
     init(seed: Data, friendName: String) {
         self.seed = seed
@@ -755,6 +758,14 @@ struct FeedView: View {
             }
             .fullScreenCover(isPresented: $showStories) {
                 StoryViewer(stories: store.stories, index: storyIndex, friendName: friendName)
+            }
+            .fullScreenCover(item: $trimmingRef) { target in
+                if let url = MediaStore.shared.storagePath(for: target.ref) {
+                    VideoTrimmer(path: url.path) { trimmed in
+                        replaceAttached(target.ref, with: MediaStore.shared.importTrimmed(trimmed))
+                    }
+                    .ignoresSafeArea()
+                }
             }
         }
     }
@@ -885,6 +896,9 @@ struct FeedView: View {
                         ZStack(alignment: .topTrailing) {
                             Image(uiImage: img).resizable().scaledToFill()
                                 .frame(width: 56, height: 56).clipShape(RoundedRectangle(cornerRadius: 10))
+                                .overlay(alignment: .bottomLeading) {
+                                    if m.kind == .video { videoEditMenu(ref) }
+                                }
                             removeChip { attachedMedia.removeAll { $0 == ref } }
                         }
                     }
@@ -928,6 +942,28 @@ struct FeedView: View {
                 .background(Circle().fill(.black.opacity(0.5)))
         }
         .padding(3)
+    }
+
+    private func videoEditMenu(_ ref: String) -> some View {
+        Menu {
+            if MediaStore.shared.canTrim(ref) {
+                Button { trimmingRef = TrimTarget(ref: ref) } label: { Label("Trim", systemImage: "scissors") }
+            }
+            Button { muteAttached(ref) } label: { Label("Mute audio", systemImage: "speaker.slash") }
+        } label: {
+            Image(systemName: "slider.horizontal.3").font(.caption2).foregroundStyle(.white)
+                .padding(4).background(.black.opacity(0.55), in: Circle())
+        }
+        .padding(3)
+    }
+
+    private func muteAttached(_ ref: String) {
+        Task { @MainActor in
+            if let newRef = await MediaStore.shared.muteVideo(ref) { replaceAttached(ref, with: newRef) }
+        }
+    }
+    private func replaceAttached(_ old: String, with new: String) {
+        if let i = attachedMedia.firstIndex(of: old) { attachedMedia[i] = new }
     }
 
     private func send() {

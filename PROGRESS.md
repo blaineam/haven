@@ -38,19 +38,22 @@ Relay frame (type 9): an internet-connected nearby phone forwards a sealed frame
 A DM = a private 2-person circle (reuses the whole E2E + delivery + mesh stack).
 Messages list, contact picker, chat-bubble thread; DMs hidden from the feed switcher.
 
+## ✅ Stories (#10) — DONE
+`story` flag on posts (24h retention auto-expiry); stories tray (rings) at the top of the feed; full-screen viewer with progress bars + tap nav.
+
 ## 🔨 Now building
 
-### #10 — Stories (ephemeral full-screen)
-- [ ] Engine: a `story` flag on posts (reuses retention for auto-expiry)
-- [ ] Stories tray at the top of the feed (rings) + full-screen viewer with progress bars
+### #3 — Video mute + in-app trim (before posting)
+- [ ] Trim an attached video in-app (system trimmer)
+- [ ] Toggle a video's audio off before sending (strip the audio track)
 
 ---
 
 ## 🗺️ Queue (in order)
-1. ~~#4 Multi-circle~~ ✅ · ~~#13 Mesh relay~~ ✅ · ~~#9 Direct messages~~ ✅
-2. **#10 Stories** ← here
-3. **macOS** build · 4. **Static web client** (matching the iOS look)
-- Backlog still to do: #6 notifications · #3 video trim/mute · #11 calls · #12 shared-S3
+1. ~~#4 Multi-circle~~ ✅ · ~~#13 Mesh~~ ✅ · ~~#9 DMs~~ ✅ · ~~#10 Stories~~ ✅
+2. **#3 Video mute/trim** ← here · #6 notifications
+3. **macOS** build · **Static web client**
+- Hardest, last: #11 calls · #12 shared-S3 store
 - Backlog: #6 notifications (background fetch, no server) · #3 video trim + mute · #11 calls · #12 shared-circle S3 store
 
 ---
