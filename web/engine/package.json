@@ -1,0 +1,16 @@
+{
+  "name": "kith-wasm",
+  "type": "module",
+  "description": "Kith engine for the browser: real p2pcore identity + sealing + feed via wasm-bindgen.",
+  "version": "0.0.1",
+  "files": [
+    "kith_wasm_bg.wasm",
+    "kith_wasm.js",
+    "kith_wasm.d.ts"
+  ],
+  "main": "kith_wasm.js",
+  "types": "kith_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

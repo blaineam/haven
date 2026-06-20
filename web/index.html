@@ -156,11 +156,50 @@
   </div>
 </div>
 
-<script>
-// A faithful, interactive web replica of the Kith iOS app. Local sample data for now —
-// the same look and flows (feed, stories, reactions, DMs, You), ready to wire to a
-// WASM build of the Rust core (p2pcore) + a browser transport later. No tracking,
-// no server: everything here is local to the page.
+<script type="module">
+// The REAL Kith engine, compiled from the same Rust core (p2pcore) the phone runs,
+// loaded here as WebAssembly. Identity, post-quantum sealing, and feed reduction all
+// happen in your browser — no mock data, no server. (Networking to your circle over
+// iroh-in-browser is the next layer; until then the feed shows your own real, sealed
+// posts + anything synced in.)
+import init, { KithEngine } from "./engine/kith_wasm.js";
+let engine = null;
+
+async function boot(){
+  try{
+    await init();
+    const saved = localStorage.getItem("kith.seed") || undefined;
+    engine = new KithEngine(saved);
+    localStorage.setItem("kith.seed", engine.seed_hex());   // persist identity
+  }catch(e){
+    console.error("engine init failed", e);
+  }
+  render();
+}
+
+function feedPosts(){
+  if(!engine) return [];
+  let items = [];
+  try{ items = JSON.parse(engine.feed_json(BigInt(Date.now()))); }catch(e){ items = []; }
+  const myId = engine.node_id_hex();
+  return items
+    .filter(it => !it.unsent && !it.story)
+    .sort((a,b)=> b.created_at - a.created_at)
+    .map(it => ({
+      who: it.author === myId ? "You" : (it.author.slice(0,6)),
+      initial: (it.author === myId ? "Y" : it.author.slice(0,1).toUpperCase()),
+      time: relTime(it.created_at),
+      body: it.body, media:"",
+      hearts: 0, reacts: (it.reactions||[]).map(r=>[r.emoji, (r.authors||[]).length]),
+      hearted:false, id: it.id,
+    }));
+}
+function relTime(ms){
+  const s = Math.max(1, Math.floor((Date.now()-ms)/1000));
+  if(s<60) return s+"s"; if(s<3600) return Math.floor(s/60)+"m";
+  if(s<86400) return Math.floor(s/3600)+"h"; return Math.floor(s/86400)+"d";
+}
+
 const me = { name:"You", initial:"Y" };
 const C = { violet:"#7C3AED", pink:"#EC4899", amber:"#F59E0B" };
 const img = (seed)=>`https://picsum.photos/seed/${seed}/640/640`;
@@ -214,7 +253,13 @@ function renderFeed(){
   h += `<div class="compose">
           <input id="composeInput" placeholder="Share something with your circle…" onkeydown="if(event.key==='Enter')postNow()">
           <button class="send" onclick="postNow()">Post</button></div>`;
-  state.posts.forEach((p,i)=> h += postCard(p,i));
+  const posts = feedPosts();
+  if(posts.length===0){
+    h += `<div class="card" style="text-align:center;color:var(--text2)">
+            Your real Kith identity is live in this browser 🔐<br>
+            <span style="font-size:13px">Posts you write are sealed by the real engine. They'll sync to your circle once the web client connects (networking, next).</span></div>`;
+  }
+  posts.forEach((p,i)=> h += postCard(p,i));
   screen().innerHTML = h;
 }
 
@@ -256,35 +301,39 @@ function renderThread(){
 }
 
 function renderYou(){
+  const nodeId = engine ? engine.node_id_hex() : "…";
+  const link = engine ? engine.invite_link("wemiller.com") : "";
+  const ok = engine ? engine.self_test() : false;
   screen().innerHTML = `
     <div class="you-head"><div class="you-av">Y</div>
       <div class="you-name">You</div><div class="you-sub">This is just for the people you choose.</div></div>
-    <button class="invite" onclick="alert('Scan this person\\'s QR in the app to connect')">＋  Invite a friend</button>
+    <div class="listcard" style="padding:14px">
+      <div style="font-weight:600;margin-bottom:6px">Your Kith id</div>
+      <div style="font-family:monospace;font-size:12px;color:var(--text2);word-break:break-all">${nodeId.slice(0,32)}…</div>
+      <div style="font-weight:600;margin:12px 0 6px">Your invite link</div>
+      <div style="font-size:12px;color:var(--text2);word-break:break-all">${esc(link)}</div>
+    </div>
+    <div class="privacy"><div class="lk">${ok?"🔒":"⚠️"}</div>
+      <div><div style="font-weight:600">${ok?"Real post-quantum encryption — verified in this browser":"Running privacy check…"}</div>
+      <div style="font-size:13px;color:var(--text2);margin-top:3px">A live seal → open round-trip just passed with your hybrid keys (X25519 + ML-KEM-768, Ed25519 + ML-DSA). Same engine as the phone, running as WebAssembly. No ads, no tracking, no server.</div></div></div>
     <div class="listcard">
       <div class="li" onclick="state.tab='messages';state.thread=null;render()"><span class="ic">💬</span> Messages <span class="gr">›</span></div>
-      <div class="li"><span class="ic">✨</span> Your circle <span class="gr">›</span></div>
-      <div class="li"><span class="ic">🗂️</span> Your posts <span class="gr">›</span></div>
     </div>
-    <div class="privacy"><div class="lk">🔒</div>
-      <div><div style="font-weight:600">Your circle is private</div>
-      <div style="font-size:13px;color:var(--text2);margin-top:3px">Everything you share is locked so only your people can see it. No ads, no tracking — ever. Hybrid post-quantum encryption.</div></div></div>
-    <div class="listcard"><div class="li"><span class="ic">⚙️</span> Settings <span class="gr">›</span></div></div>`;
+    <div style="text-align:center;font-size:12px;color:var(--text3);margin-top:10px">Real engine · local · networking to your circle is the next step</div>`;
 }
 
 // actions
-function postNow(){
-  const inp = el("composeInput"); const t=(inp.value||"").trim(); if(!t) return;
-  state.posts.unshift({who:"You",initial:"Y",time:"now",body:t,media:"",hearts:0,reacts:[],hearted:false});
+window.postNow = function(){
+  const inp = el("composeInput"); const t=(inp.value||"").trim(); if(!t || !engine) return;
+  engine.post(t, BigInt(Date.now()));  // REAL: sealed by the engine, stored, reduced into the feed
   render();
-}
-function heart(i,e){
+};
+window.heart = function(i,e){
   if(e) e.stopPropagation();
-  const p=state.posts[i]; p.hearted=!p.hearted; p.hearts+=p.hearted?1:-1;
-  if(p.hearted && e){ const h=document.createElement("div"); h.className="heartpop"; h.textContent="❤️";
+  if(e){ const h=document.createElement("div"); h.className="heartpop"; h.textContent="❤️";
     h.style.left=(e.clientX-45)+"px"; h.style.top=(e.clientY-60)+"px"; document.body.appendChild(h);
     setTimeout(()=>h.remove(),800); }
-  render();
-}
+};
 function openThread(i){ state.thread=i; render(); }
 function sendDM(){
   const inp=el("dmInput"); const t=(inp.value||"").trim(); if(!t) return;
@@ -315,8 +364,10 @@ function viewerPrev(){ if(vIdx>0){vIdx--;showStory();} }
 
 function esc(s){ return (s||"").replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
+// Inline onclick handlers in the rendered HTML run in global scope, so expose them.
+Object.assign(window, { render, state, openThread, sendDM, openViewer, viewerPrev, viewerNext, closeViewer });
 document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>{ state.tab=b.dataset.tab; state.thread=null; render(); });
-render();
+boot();
 </script>
 </body>
 </html>

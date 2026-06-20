@@ -1,5 +1,5 @@
 [workspace]
-members = ["p2pcore", "demo", "p2pcore-ffi", "kith-net"]
+members = ["p2pcore", "demo", "p2pcore-ffi", "kith-net", "kith-wasm"]
 resolver = "2"
 
 [profile.release]
