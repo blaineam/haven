@@ -1,23 +1,43 @@
 import SwiftUI
 
 /// The little "now playing" pill shown near a post with attached music: artist + song
-/// title and a live audio-playing animation.
+/// title and a live audio-playing animation. Tap it to open the song in Apple Music
+/// (where adding it to your library is one tap).
 struct NowPlayingPill: View {
     let track: TrackRefFfi
     var animating: Bool
+    @Environment(\.openURL) private var openURL
+
+    /// Apple Music deep link for the shared catalog song (nil for library-only items
+    /// that have no store id).
+    private var appleMusicURL: URL? {
+        guard !track.catalogId.isEmpty, track.catalogId != "0" else { return nil }
+        return URL(string: "https://music.apple.com/song/\(track.catalogId)")
+    }
 
     var body: some View {
-        HStack(spacing: 8) {
-            EqualizerBars(animating: animating)
-            Text("\(track.title) · \(track.artist)")
-                .font(.caption.weight(.medium))
-                .lineLimit(1)
-            Spacer(minLength: 0)
+        Button {
+            if let url = appleMusicURL { openURL(url) }
+        } label: {
+            HStack(spacing: 8) {
+                EqualizerBars(animating: animating)
+                Text("\(track.title) · \(track.artist)")
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                if appleMusicURL != nil {
+                    Image(systemName: "arrow.up.forward.app")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.ultraThinMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(KithTheme.pink.opacity(0.35)))
+            .contentShape(Capsule())
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(.ultraThinMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(KithTheme.pink.opacity(0.35)))
+        .buttonStyle(.plain)
+        .disabled(appleMusicURL == nil)
     }
 }
 
