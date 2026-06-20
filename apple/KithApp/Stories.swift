@@ -91,11 +91,8 @@ struct StoryViewer: View {
                 .padding(.bottom, 8)
             }
             if !s.body.isEmpty {
-                Text(s.body)
-                    .font(.title3.weight(.semibold)).foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 16).padding(.vertical, 10)
-                    .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 14))
+                let decoded = StoryCaptions.decode(s.body)
+                StyledCaption(text: decoded.text, style: decoded.style)
                     .padding(.horizontal, 24).padding(.bottom, 36)
             }
         }

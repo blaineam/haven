@@ -246,7 +246,10 @@ struct StoryComposerView: View {
     @State private var track: TrackRefFfi?
     @State private var showSongs = false
     @State private var editingCaption = false
+    @State private var captionStyleId = 0
     @FocusState private var captionFocused: Bool
+
+    private var style: StoryCaptionStyle { StoryCaptions.style(captionStyleId) }
 
     var body: some View {
         ZStack {
@@ -257,23 +260,30 @@ struct StoryComposerView: View {
             if !caption.isEmpty || editingCaption {
                 VStack {
                     Spacer()
-                    TextField("", text: $caption, axis: .vertical)
-                        .focused($captionFocused)
-                        .multilineTextAlignment(.center)
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(.white)
-                        .tint(.white)
-                        .padding(.horizontal, 16).padding(.vertical, 10)
-                        .background(.black.opacity(0.35), in: RoundedRectangle(cornerRadius: 14))
-                        .padding(.horizontal, 24)
+                    if captionFocused {
+                        TextField("", text: $caption, axis: .vertical)
+                            .focused($captionFocused)
+                            .multilineTextAlignment(.center)
+                            .font(style.font)
+                            .foregroundStyle(style.textColor)
+                            .tint(.white)
+                            .padding(.horizontal, style.bgColor == nil ? 0 : 12)
+                            .padding(.vertical, style.bgColor == nil ? 0 : 6)
+                            .background { if let bg = style.bgColor { RoundedRectangle(cornerRadius: 8).fill(bg) } }
+                            .padding(.horizontal, 24)
+                    } else {
+                        StyledCaption(text: caption, style: style)
+                            .padding(.horizontal, 24)
+                            .onTapGesture { editingCaption = true; captionFocused = true }
+                    }
                     Spacer()
                 }
-                .onTapGesture { captionFocused = true }
             }
 
             VStack {
                 topControls
                 Spacer()
+                if captionFocused { CaptionStyleRow(selectedId: $captionStyleId).padding(.bottom, 8) }
                 if let track { nowPlayingChip(track) }
                 shareBar
             }
@@ -342,7 +352,7 @@ struct StoryComposerView: View {
         HStack {
             Spacer()
             Button {
-                onShare(draft.mediaRef, caption.trimmingCharacters(in: .whitespacesAndNewlines), track)
+                onShare(draft.mediaRef, StoryCaptions.encode(caption, styleId: captionStyleId), track)
                 dismiss()
             } label: {
                 HStack(spacing: 8) {
