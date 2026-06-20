@@ -47,6 +47,11 @@ targets:
         NSPhotoLibraryUsageDescription: "Kith lets you pick photos and videos from your library to share privately with your circle."
         NSPhotoLibraryAddUsageDescription: "Kith can save photos and videos you share or receive to your Photos library, so they're ready when you open Photos."
         NSAppleMusicUsageDescription: "Kith lets you add a song to a post; it plays through your own Apple Music."
+        NSLocalNetworkUsageDescription: "Kith finds people in your circle who are nearby so it can share posts directly over Wi-Fi and Bluetooth — even with no internet."
+        NSBluetoothAlwaysUsageDescription: "Kith uses Bluetooth to share posts directly with nearby people in your circle when you're offline."
+        NSBonjourServices:
+          - _kith-circle._tcp
+          - _kith-circle._udp
         # EAR-exempt (standard mass-market crypto, not shipped to France) → NO. The app
         # still has full E2E post-quantum encryption; this is only the US export answer.
         ITSAppUsesNonExemptEncryption: false
@@ -59,7 +64,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.blaineam.kith
         GENERATE_INFOPLIST_FILE: NO
         MARKETING_VERSION: "1.0.0"
-        CURRENT_PROJECT_VERSION: "17"
+        CURRENT_PROJECT_VERSION: "18"
         IPHONEOS_DEPLOYMENT_TARGET: "17.0"
         ENABLE_USER_SCRIPT_SANDBOXING: YES
         "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64

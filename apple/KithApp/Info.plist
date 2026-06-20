@@ -35,8 +35,17 @@
 	<false/>
 	<key>NSAppleMusicUsageDescription</key>
 	<string>Kith lets you add a song to a post; it plays through your own Apple Music.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Kith uses Bluetooth to share posts directly with nearby people in your circle when you're offline.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_kith-circle._tcp</string>
+		<string>_kith-circle._udp</string>
+	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Kith uses the camera so you can capture photos and videos to share with your circle. Nothing is uploaded — media is encrypted on your device first.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Kith finds people in your circle who are nearby so it can share posts directly over Wi-Fi and Bluetooth — even with no internet.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Kith uses the microphone to record sound with your videos.</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>

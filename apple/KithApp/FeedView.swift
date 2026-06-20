@@ -23,6 +23,7 @@ final class FeedStore: ObservableObject {
 
     private var social: KithSocial?
     private var node: KithNode?
+    private var nearby: NearbyTransport?
     private var listener: InboundBridge?
     private var syncTimer: Timer?
     private init() {}
@@ -38,6 +39,18 @@ final class FeedStore: ObservableObject {
     }
 
     private func bringOnline(seed: Data) {
+        // Nearby Bluetooth / Wi-Fi mesh — works even with no internet at all.
+        if let social {
+            let nt = NearbyTransport(
+                displayName: social.myNodeHex(),
+                onInbound: { [weak self] data in Task { @MainActor in self?.handleInbound(data) } },
+                onPeerConnected: { [weak self] in Task { @MainActor in self?.nearbyPeerConnected() } }
+            )
+            nt.start()
+            nearby = nt
+            online = true
+        }
+        // Internet path (iroh + n0 discovery/relays).
         let bridge = InboundBridge { [weak self] data in
             Task { @MainActor in self?.handleInbound(data) }
         }
@@ -94,23 +107,40 @@ final class FeedStore: ObservableObject {
     /// Called when a contact is added or the node comes online: hand each contact our
     /// bundle (Hello) + our posts, so connections become mutual and back-fill.
     func syncWithContacts() {
-        guard let social, node != nil else { return }
+        guard let social else { return }
         let bundle = social.myBundle()
         let envs = social.syncEnvelopes()
         for contact in ContactsStore.shared.contacts {
-            send(0, bundle, to: contact.idHex)
-            for env in envs { send(1, env, to: contact.idHex) }
+            sendIroh(0, bundle, to: contact.idHex)
+            for env in envs { sendIroh(1, env, to: contact.idHex) }
         }
+        nearbyBroadcast(0, bundle)
+        for env in envs { nearbyBroadcast(1, env) }
+    }
+
+    /// A nearby peer just connected over Bluetooth/Wi-Fi — say hello + back-fill.
+    private func nearbyPeerConnected() {
+        guard let social else { return }
+        nearbyBroadcast(0, social.myBundle())
+        for env in social.syncEnvelopes() { nearbyBroadcast(1, env) }
+        refresh()
     }
 
     private func broadcastEvent(_ env: Data) {
-        for contact in ContactsStore.shared.contacts { send(1, env, to: contact.idHex) }
+        for contact in ContactsStore.shared.contacts { sendIroh(1, env, to: contact.idHex) }
+        nearbyBroadcast(1, env)
     }
 
-    private func send(_ type: UInt8, _ payload: Data, to nodeHex: String) {
+    private func frame(_ type: UInt8, _ payload: Data) -> Data {
+        var f = Data([type]); f.append(payload); return f
+    }
+    private func sendIroh(_ type: UInt8, _ payload: Data, to nodeHex: String) {
         guard let node else { return }
-        var frame = Data([type]); frame.append(payload)
-        Task { try? await node.sendToNode(nodeIdHex: nodeHex, payload: frame) }
+        let f = frame(type, payload)
+        Task { try? await node.sendToNode(nodeIdHex: nodeHex, payload: f) }
+    }
+    private func nearbyBroadcast(_ type: UInt8, _ payload: Data) {
+        nearby?.broadcast(frame(type, payload))
     }
 
     private func handleInbound(_ data: Data) {
@@ -135,9 +165,13 @@ final class FeedStore: ObservableObject {
             return
         }
         guard (try? social.addContactBundle(bundle: bundle)) != nil else { return }
-        // Reply so the link is mutual + back-fill our posts to them.
-        send(0, social.myBundle(), to: nodeHex)
-        for env in social.syncEnvelopes() { send(1, env, to: nodeHex) }
+        // Reply so the link is mutual + back-fill our posts to them (both transports).
+        let myBundle = social.myBundle()
+        let envs = social.syncEnvelopes()
+        sendIroh(0, myBundle, to: nodeHex)
+        for env in envs { sendIroh(1, env, to: nodeHex) }
+        nearbyBroadcast(0, myBundle)
+        for env in envs { nearbyBroadcast(1, env) }
         refresh()
     }
 
