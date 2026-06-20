@@ -1,60 +1,46 @@
+import MediaPlayer
 import SwiftUI
 
-/// A few sample songs so the music-on-posts experience is demonstrable today. Each
-/// is *reference data only* — title, artist, catalog id — never audio. Real Apple
-/// Music catalog search/playback activates once the MusicKit capability is enabled
-/// on the App ID and a subscriber runs it on device (see AudioCoordinator).
-enum SampleMusic {
-    static let tracks: [TrackRefFfi] = [
-        .init(catalogId: "1440857781", title: "Here Comes the Sun", artist: "The Beatles", artworkUrl: "", durationMs: 185_000),
-        .init(catalogId: "1443109064", title: "Dreams", artist: "Fleetwood Mac", artworkUrl: "", durationMs: 257_000),
-        .init(catalogId: "1452968391", title: "Sunflower", artist: "Post Malone, Swae Lee", artworkUrl: "", durationMs: 158_000),
-        .init(catalogId: "1564530719", title: "good 4 u", artist: "Olivia Rodrigo", artworkUrl: "", durationMs: 178_000),
-        .init(catalogId: "1490291913", title: "Watermelon Sugar", artist: "Harry Styles", artworkUrl: "", durationMs: 174_000),
-        .init(catalogId: "1469577741", title: "Lovely Day", artist: "Bill Withers", artworkUrl: "", durationMs: 254_000),
-    ]
-}
-
-/// Pick a song to play alongside a post.
-struct MusicPickerView: View {
+/// A real Apple Music song picker. Presents the system media picker so the user picks
+/// an actual song from their Apple Music / library; we keep only a `TrackRef`
+/// (catalog id + title + artist + duration) — never the audio. Each viewer plays it
+/// through their own Apple Music, so Kith shares the *reference*, not the file.
+struct SongPicker: UIViewControllerRepresentable {
     var onPick: (TrackRefFfi) -> Void
     @Environment(\.dismiss) private var dismiss
 
-    var body: some View {
-        NavigationStack {
-            ZStack {
-                KithBackground()
-                List {
-                    Section {
-                        ForEach(SampleMusic.tracks, id: \.catalogId) { t in
-                            Button {
-                                onPick(t)
-                                dismiss()
-                            } label: {
-                                HStack(spacing: 12) {
-                                    Image(systemName: "music.note")
-                                        .foregroundStyle(.white)
-                                        .frame(width: 40, height: 40)
-                                        .background(KithTheme.brand, in: RoundedRectangle(cornerRadius: 8))
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(t.title).font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
-                                        Text(t.artist).font(.caption).foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Image(systemName: "plus.circle.fill").foregroundStyle(KithTheme.pink)
-                                }
-                            }
-                            .listRowBackground(Color.clear)
-                        }
-                    } footer: {
-                        Text("Songs play through each person's own Apple Music subscription — Kith shares only the song's name, never the audio.")
-                    }
-                }
-                .scrollContentBackground(.hidden)
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIViewController(context: Context) -> MPMediaPickerController {
+        let picker = MPMediaPickerController(mediaTypes: .music)
+        picker.allowsPickingMultipleItems = false
+        picker.showsCloudItems = true
+        picker.prompt = "Pick a song to play on your post"
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ vc: MPMediaPickerController, context: Context) {}
+
+    final class Coordinator: NSObject, MPMediaPickerControllerDelegate {
+        let parent: SongPicker
+        init(_ parent: SongPicker) { self.parent = parent }
+
+        func mediaPicker(_ picker: MPMediaPickerController, didPickMediaItems collection: MPMediaItemCollection) {
+            if let item = collection.items.first {
+                parent.onPick(TrackRefFfi(
+                    catalogId: item.playbackStoreID,
+                    title: item.title ?? "Unknown song",
+                    artist: item.artist ?? "",
+                    artworkUrl: "",
+                    durationMs: UInt64(max(0, item.playbackDuration) * 1000)
+                ))
             }
-            .navigationTitle("Add a song")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            parent.dismiss()
+        }
+
+        func mediaPickerDidCancel(_ picker: MPMediaPickerController) {
+            parent.dismiss()
         }
     }
 }

@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import MediaPlayer
 
 /// Coordinates a post's audio: the attached song plays while its video stays muted.
 /// When the viewer unmutes the video, the music fades down as the video fades up — a
@@ -62,27 +63,31 @@ final class AudioCoordinator: ObservableObject {
     }
 }
 
-/// The Apple Music playback seam. Volume ducking is structured here; the actual
-/// `ApplicationMusicPlayer` calls light up once the **MusicKit capability** is enabled
-/// on the App ID and a subscriber runs it on device. Until then these are no-ops, so
-/// the rest of the experience (now-playing pill, video crossfade) works everywhere.
+/// Real Apple Music playback via the system music player. A shared song carries only
+/// its catalog id; we queue that id so it plays through the viewer's own Apple Music
+/// subscription — Kith never moves audio. When the viewer unmutes a post's video the
+/// song pauses (duck) and resumes (unduck) on re-mute.
 @MainActor
 final class MusicPlayback {
     static let shared = MusicPlayback()
     private(set) var current: TrackRefFfi?
+    private let player = MPMusicPlayerController.applicationMusicPlayer
 
     func play(_ track: TrackRefFfi) {
         current = track
-        // MusicKit: resolve Song(id: track.catalogId) → ApplicationMusicPlayer.shared.queue → play()
+        // Only catalog (store) songs are playable by id; library-only items have no id.
+        guard !track.catalogId.isEmpty, track.catalogId != "0" else { return }
+        player.setQueue(with: [track.catalogId])
+        player.play()
     }
     func duck() {
-        // MusicKit: fade ApplicationMusicPlayer toward silence / pause
+        if player.playbackState == .playing { player.pause() }
     }
     func unduck() {
-        // MusicKit: resume / fade ApplicationMusicPlayer back up
+        if current != nil { player.play() }
     }
     func stop() {
         current = nil
-        // MusicKit: ApplicationMusicPlayer.shared.stop()
+        if player.playbackState == .playing { player.pause() }
     }
 }

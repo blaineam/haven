@@ -19,6 +19,7 @@ struct ConnectView: View {
     @State private var friendName = ""
     @State private var problem: String?
     @State private var addedName: String?
+    @State private var showScanner = false
 
     var body: some View {
         NavigationStack {
@@ -40,6 +41,33 @@ struct ConnectView: View {
             .navigationTitle("Connect")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .sheet(isPresented: $showScanner) { scannerSheet }
+        }
+    }
+
+    private var scannerSheet: some View {
+        NavigationStack {
+            ZStack {
+                Color.black.ignoresSafeArea()
+                QRScannerView { code in
+                    pasted = code
+                    showScanner = false
+                    lookup()
+                }
+                .ignoresSafeArea()
+                VStack {
+                    Spacer()
+                    Text("Point at your friend's invite QR")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 16).padding(.vertical, 10)
+                        .background(.black.opacity(0.5), in: Capsule())
+                        .padding(.bottom, 40)
+                }
+            }
+            .navigationTitle("Scan QR")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Cancel") { showScanner = false } } }
         }
     }
 
@@ -53,7 +81,7 @@ struct ConnectView: View {
                 .font(.subheadline).foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
 
-            if let qr = QRCode.image(from: account.kithUri()) {
+            if let qr = QRCode.image(from: account.kithLink(domain: KithSite.inviteDomain)) {
                 Image(uiImage: qr)
                     .interpolation(.none).resizable().scaledToFit()
                     .frame(width: 210, height: 210)
@@ -89,9 +117,17 @@ struct ConnectView: View {
             } else {
                 Text("Add a friend")
                     .font(.title3.bold())
-                Text("Paste the invite link your friend sent you.")
+                Text("Scan their invite QR, or paste the link they sent you.")
                     .font(.subheadline).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
+
+                Button { showScanner = true } label: {
+                    Label("Scan their QR code", systemImage: "qrcode.viewfinder")
+                }
+                .buttonStyle(BrandButtonStyle())
+                .accessibilityIdentifier("scanQR")
+
+                Text("or").font(.caption).foregroundStyle(.secondary)
 
                 TextField("Paste invite link…", text: $pasted, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
@@ -103,7 +139,7 @@ struct ConnectView: View {
                 }
 
                 Button("Find my friend") { lookup() }
-                    .buttonStyle(BrandButtonStyle())
+                    .buttonStyle(.bordered).tint(KithTheme.pink)
                     .disabled(pasted.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }

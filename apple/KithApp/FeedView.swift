@@ -19,7 +19,6 @@ final class FeedStore: ObservableObject {
         demo = (try? SocialDemo(accountSeed: seed)) ?? {
             fatalError("SocialDemo requires a 32-byte seed")
         }()
-        seedInitialContent()
         refresh()
     }
 
@@ -42,38 +41,6 @@ final class FeedStore: ObservableObject {
     func react(_ id: String, _ emoji: String) { guard let demo else { return }; _ = demo.react(target: id, emoji: emoji, createdAt: now()); reactionTick += 1; refresh() }
     func edit(_ id: String, _ body: String) { guard let demo else { return }; _ = demo.edit(target: id, body: body, createdAt: now()); refresh() }
     func unsend(_ id: String) { guard let demo else { return }; _ = demo.unsend(target: id, createdAt: now()); refresh() }
-    func friendReply(_ id: String) { guard let demo else { return }; _ = demo.friendComment(target: id, body: "👏 love it", createdAt: now()); refresh() }
-
-    private func seedInitialContent() {
-        guard let demo else { return }
-        let t = now()
-        let welcome = demo.friendPost(body: "Welcome to Kith 🜂 — just us, no ads, no tracking.", createdAt: t)
-        _ = demo.react(target: welcome, emoji: "❤️", createdAt: t + 1)
-
-        // A photo post with a song attached, to show media + now-playing.
-        let imgRef = MediaStore.shared.addImage(Self.sampleImage())
-        let mine = demo.post(body: "Golden hour with the people I love 🌅",
-                             media: [imgRef], music: SampleMusic.tracks[0], retentionSecs: nil, createdAt: t + 2)
-        _ = demo.friendComment(target: mine, body: "This is so cozy.", createdAt: t + 3)
-        _ = demo.friendReact(target: mine, emoji: "🎉", createdAt: t + 4)
-    }
-
-    /// A pretty placeholder photo so the demo has visible media without bundling assets.
-    static func sampleImage() -> UIImage {
-        let size = CGSize(width: 1080, height: 1320)
-        return UIGraphicsImageRenderer(size: size).image { ctx in
-            let cg = ctx.cgContext
-            let colors = [
-                UIColor(red: 0.49, green: 0.23, blue: 0.93, alpha: 1).cgColor,
-                UIColor(red: 0.93, green: 0.28, blue: 0.60, alpha: 1).cgColor,
-                UIColor(red: 0.96, green: 0.62, blue: 0.04, alpha: 1).cgColor,
-            ]
-            let grad = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
-                                  colors: colors as CFArray, locations: [0, 0.55, 1])!
-            cg.drawLinearGradient(grad, start: .zero,
-                                  end: CGPoint(x: size.width, y: size.height), options: [])
-        }
-    }
 }
 
 struct FeedView: View {
@@ -86,8 +53,9 @@ struct FeedView: View {
     @State private var attachedTrack: TrackRefFfi?
     @State private var showMediaPicker = false
     @State private var showCamera = false
-    @State private var showMusicPicker = false
+    @State private var showSongPicker = false
     @State private var composeRetention: UInt64?
+    @FocusState private var composeFocused: Bool
 
     init(seed: Data, friendName: String) {
         self.seed = seed
@@ -98,17 +66,21 @@ struct FeedView: View {
         NavigationStack {
             ZStack {
                 KithBackground()
+                    .contentShape(Rectangle())
+                    .onTapGesture { composeFocused = false }
                 ScrollView {
                     LazyVStack(spacing: 16) {
                         banner
+                        if store.items.isEmpty {
+                            emptyState
+                        }
                         ForEach(store.items, id: \.id) { item in
                             PostCard(
                                 item: item, friendName: friendName,
                                 onReact: { e in withAnimation(KithTheme.bouncy) { store.react(item.id, e) } },
                                 onComment: { b, m in withAnimation(KithTheme.smooth) { store.comment(item.id, b, m) } },
                                 onEdit: { b in withAnimation(KithTheme.smooth) { store.edit(item.id, b) } },
-                                onUnsend: { withAnimation(KithTheme.smooth) { store.unsend(item.id) } },
-                                onFriendReply: { withAnimation(KithTheme.smooth) { store.friendReply(item.id) } }
+                                onUnsend: { withAnimation(KithTheme.smooth) { store.unsend(item.id) } }
                             )
                             .transition(.asymmetric(
                                 insertion: .move(edge: .top).combined(with: .opacity).combined(with: .scale(scale: 0.96)),
@@ -119,6 +91,7 @@ struct FeedView: View {
                     .padding(.horizontal, 16)
                     .padding(.bottom, 130)
                 }
+                .scrollDismissesKeyboard(.immediately)
                 composerBar
             }
             .navigationTitle("Feed")
@@ -132,10 +105,24 @@ struct FeedView: View {
             .fullScreenCover(isPresented: $showCamera) {
                 CameraView { refs in attachedMedia.append(contentsOf: refs) }.ignoresSafeArea()
             }
-            .sheet(isPresented: $showMusicPicker) {
-                MusicPickerView { track in attachedTrack = track }
+            .sheet(isPresented: $showSongPicker) {
+                SongPicker { track in attachedTrack = track }
             }
         }
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "sparkles")
+                .font(.system(size: 40)).foregroundStyle(KithTheme.pink)
+            Text("Nothing here yet")
+                .font(.headline)
+            Text("Share your first moment below. As your circle connects, their posts show up here too.")
+                .font(.subheadline).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.top, 60).padding(.horizontal, 24)
     }
 
     private var banner: some View {
@@ -156,7 +143,7 @@ struct FeedView: View {
                     Menu {
                         Button { showMediaPicker = true } label: { Label("Photo or Video", systemImage: "photo.on.rectangle") }
                         Button { showCamera = true } label: { Label("Camera", systemImage: "camera") }
-                        Button { showMusicPicker = true } label: { Label("Add a song", systemImage: "music.note") }
+                        Button { showSongPicker = true } label: { Label("Add a song", systemImage: "music.note") }
                         Divider()
                         Menu {
                             Button("Off") { composeRetention = nil }
@@ -171,6 +158,7 @@ struct FeedView: View {
 
                     TextField("Share something…", text: $compose, axis: .vertical)
                         .accessibilityIdentifier("composeField")
+                        .focused($composeFocused)
                         .padding(.horizontal, 14).padding(.vertical, 10)
                         .background(.background, in: Capsule())
                         .overlay(Capsule().strokeBorder(Color.white.opacity(0.08)))
@@ -247,6 +235,7 @@ struct FeedView: View {
         guard !text.isEmpty || !attachedMedia.isEmpty || attachedTrack != nil else { return }
         store.post(text, media: attachedMedia, music: attachedTrack, retentionSecs: composeRetention)
         compose = ""; attachedMedia = []; attachedTrack = nil; composeRetention = nil
+        composeFocused = false
     }
 }
 
@@ -257,7 +246,6 @@ private struct PostCard: View {
     let onComment: (String, [String]) -> Void
     let onEdit: (String) -> Void
     let onUnsend: () -> Void
-    let onFriendReply: () -> Void
 
     @ObservedObject private var audio = AudioCoordinator.shared
     @ObservedObject private var profile = ProfileStore.shared
@@ -376,13 +364,12 @@ private struct PostCard: View {
                     .background(Color(.tertiarySystemFill), in: Capsule()).foregroundStyle(.secondary)
             }
             Spacer()
-            Menu {
-                if item.isMe && !item.unsent {
+            if item.isMe && !item.unsent {
+                Menu {
                     Button { editText = item.body; showEdit = true } label: { Label("Edit", systemImage: "pencil") }
                     Button(role: .destructive) { onUnsend() } label: { Label("Unsend", systemImage: "arrow.uturn.backward") }
-                }
-                Button { onFriendReply() } label: { Label("Simulate friend reply", systemImage: "person.fill.badge.plus") }
-            } label: { Image(systemName: "ellipsis").foregroundStyle(.secondary).padding(6) }
+                } label: { Image(systemName: "ellipsis").foregroundStyle(.secondary).padding(6) }
+            }
         }
     }
 
@@ -530,8 +517,7 @@ struct ProfileView: View {
                                 onReact: { e in withAnimation(KithTheme.bouncy) { store.react(item.id, e) } },
                                 onComment: { b, m in withAnimation(KithTheme.smooth) { store.comment(item.id, b, m) } },
                                 onEdit: { b in withAnimation(KithTheme.smooth) { store.edit(item.id, b) } },
-                                onUnsend: { withAnimation(KithTheme.smooth) { store.unsend(item.id) } },
-                                onFriendReply: { withAnimation(KithTheme.smooth) { store.friendReply(item.id) } }
+                                onUnsend: { withAnimation(KithTheme.smooth) { store.unsend(item.id) } }
                             )
                         }
                     }
