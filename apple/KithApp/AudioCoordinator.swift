@@ -56,6 +56,23 @@ final class AudioCoordinator: ObservableObject {
         videoUnmuted = false
     }
 
+    /// Make sure the active post's song is playing — unless the viewer is intentionally
+    /// listening to a video's audio. Called when a post stays active (e.g. after a video
+    /// paused it) so the music resumes as long as you haven't scrolled past the post.
+    func ensureMusicPlaying() {
+        guard !videoUnmuted else { return }
+        MusicPlayback.shared.resume()
+    }
+
+    /// The active post's video finished playing — re-mute it and bring the song back.
+    func videoFinished() {
+        if videoUnmuted {
+            videoUnmuted = false
+            videoPlayer?.volume = 0
+        }
+        MusicPlayback.shared.resume()
+    }
+
     private func fadeVideo(to target: Float, duration: TimeInterval = 0.45) {
         guard let player = videoPlayer else { return }
         fadeTimer?.invalidate()
@@ -93,6 +110,11 @@ final class MusicPlayback {
     }
     func unduck() {
         if current != nil { player.play() }
+    }
+    /// Resume the queued song if it's paused (e.g. a video had ducked it).
+    func resume() {
+        guard current != nil, player.playbackState != .playing else { return }
+        player.play()
     }
     func stop() {
         current = nil

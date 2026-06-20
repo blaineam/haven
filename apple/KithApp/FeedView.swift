@@ -365,6 +365,17 @@ private struct PostCard: View {
         let p = AVPlayer(url: url)
         p.volume = 0
         p.actionAtItemEnd = .none
+        // When the clip ends, loop it (muted) and — if we're still on this post —
+        // bring the song back, so the music never stays paused under an idle video.
+        let postId = item.id
+        NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime,
+                                               object: p.currentItem, queue: .main) { _ in
+            p.seek(to: .zero)
+            if AudioCoordinator.shared.centeredPostId == postId {
+                p.play()
+                AudioCoordinator.shared.videoFinished()
+            }
+        }
         DispatchQueue.main.async {
             players[ref] = p
             if isActive { playVisibleVideo() }
@@ -377,6 +388,7 @@ private struct PostCard: View {
     private func syncPlayback() {
         if isActive {
             audio.start(postId: item.id, track: item.music, video: primaryVideoPlayer)
+            audio.ensureMusicPlaying()   // resume the song if a video had paused it
             playVisibleVideo()
         } else {
             pauseVideos()
