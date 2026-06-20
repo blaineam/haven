@@ -146,6 +146,28 @@ final class MediaStore: ObservableObject {
         }
     }
 
+    /// Final on-disk path for a ref (sender reads chunks from here).
+    func storagePath(for ref: String) -> URL? { fileURL(ref) }
+
+    /// A fresh empty temp file for reassembling an incoming chunked transfer.
+    func makeTempFile() -> URL {
+        let u = dir.appendingPathComponent("incoming_\(UUID().uuidString).part")
+        FileManager.default.createFile(atPath: u.path, contents: nil)
+        return u
+    }
+
+    /// Move a fully-reassembled temp file into place under `ref` and cache the item.
+    func adopt(_ ref: String, from temp: URL) {
+        guard let kind = MediaKind(ref: ref), let dst = fileURL(ref) else { return }
+        try? FileManager.default.removeItem(at: dst)
+        do { try FileManager.default.moveItem(at: temp, to: dst) } catch { return }
+        switch kind {
+        case .image: cache[ref] = MediaItem(id: ref, kind: .image, image: UIImage(contentsOfFile: dst.path), videoURL: nil)
+        case .video: cache[ref] = MediaItem(id: ref, kind: .video, image: Self.poster(for: dst), videoURL: dst)
+        case .audio: cache[ref] = MediaItem(id: ref, kind: .audio, image: nil, videoURL: dst)
+        }
+    }
+
     func item(_ ref: String) -> MediaItem? {
         if let c = cache[ref] { return c }
         guard let kind = MediaKind(ref: ref), let url = fileURL(ref),

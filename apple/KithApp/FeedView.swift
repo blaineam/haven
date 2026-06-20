@@ -52,6 +52,12 @@ final class FeedStore: ObservableObject {
     private var nearby: NearbyTransport?
     private var listener: InboundBridge?
     private var syncTimer: Timer?
+
+    // Chunked media reassembly: ref → temp file + which chunk indices we've received.
+    private static let mediaChunkSize = 512 * 1024
+    private struct IncomingMedia { let tempURL: URL; let total: Int; var got: Set<Int> }
+    private var incoming: [String: IncomingMedia] = [:]
+
     private init() {}
 
     /// Initialize the real networked store once (idempotent) and bring the P2P node
@@ -242,7 +248,7 @@ final class FeedStore: ObservableObject {
         case 0: handleHello(payload)
         case 1: handleEvent(payload)
         case 3: handleMediaRequest(payload)
-        case 4: handleMediaData(payload)
+        case 5: handleMediaChunk(payload)
         default: break
         }
     }
@@ -267,32 +273,81 @@ final class FeedStore: ObservableObject {
     }
 
     private func handleMediaRequest(_ payload: Data) {
-        guard let social, payload.count > 64 else { return }
+        guard payload.count > 64 else { return }
         let requesterHex = String(data: payload.prefix(64), encoding: .utf8) ?? ""
         let ref = String(data: payload.dropFirst(64), encoding: .utf8) ?? ""
-        guard requesterHex.count == 64, !ref.isEmpty, let bytes = MediaStore.shared.rawBytes(ref) else { return }
-        // Seal the bytes to the requester (only works if they're a contact of ours).
-        guard let sealed = try? social.sealMedia(recipientNodeHex: requesterHex, data: bytes) else { return }
-        var out = Data()
-        let rb = Data(ref.utf8)
-        let len = UInt16(rb.count)
-        out.append(UInt8(len & 0xff)); out.append(UInt8((len >> 8) & 0xff))
-        out.append(rb)
-        out.append(sealed)
-        sendIroh(4, out, to: requesterHex)
-        nearbyBroadcast(4, out)
+        guard requesterHex.count == 64, !ref.isEmpty,
+              let url = MediaStore.shared.storagePath(for: ref),
+              FileManager.default.fileExists(atPath: url.path) else { return }
+        sendMediaChunks(ref: ref, fileURL: url, to: requesterHex)
     }
 
-    private func handleMediaData(_ payload: Data) {
+    /// Stream a media file to the requester as individually-sealed chunks — low memory,
+    /// large-file friendly. Chunk N's plaintext goes at offset N*chunkSize on reassembly.
+    private func sendMediaChunks(ref: String, fileURL url: URL, to requesterHex: String) {
+        guard let social, let handle = try? FileHandle(forReadingFrom: url) else { return }
+        let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        let total = max(1, (size + Self.mediaChunkSize - 1) / Self.mediaChunkSize)
+        let refData = Data(ref.utf8)
+        Task { @MainActor in
+            defer { try? handle.close() }
+            var index = 0
+            while true {
+                let chunk = handle.readData(ofLength: Self.mediaChunkSize)
+                if chunk.isEmpty { break }
+                guard let sealed = try? social.sealMedia(recipientNodeHex: requesterHex, data: chunk) else { break }
+                let out = Data([5]) + Self.chunkFrame(refData: refData, index: index, total: total, sealed: sealed)
+                if let node { try? await node.sendToNode(nodeIdHex: requesterHex, payload: out) }
+                nearby?.broadcast(out)
+                index += 1
+            }
+        }
+    }
+
+    private static func chunkFrame(refData: Data, index: Int, total: Int, sealed: Data) -> Data {
+        var f = Data()
+        let rl = UInt16(refData.count)
+        f.append(UInt8(rl & 0xff)); f.append(UInt8(rl >> 8))
+        f.append(refData)
+        for v in [UInt32(index), UInt32(total)] {
+            f.append(UInt8(v & 0xff)); f.append(UInt8((v >> 8) & 0xff))
+            f.append(UInt8((v >> 16) & 0xff)); f.append(UInt8((v >> 24) & 0xff))
+        }
+        f.append(sealed)
+        return f
+    }
+
+    private func handleMediaChunk(_ payload: Data) {
         guard let social, payload.count >= 2 else { return }
         let lb = [UInt8](payload.prefix(2))
-        let len = Int(UInt16(lb[0]) | UInt16(lb[1]) << 8)
-        guard payload.count >= 2 + len else { return }
-        let ref = String(data: payload.subdata(in: 2..<(2 + len)), encoding: .utf8) ?? ""
-        let sealed = payload.subdata(in: (2 + len)..<payload.count)
-        guard !ref.isEmpty, !MediaStore.shared.has(ref), let media = social.openMedia(sealed: sealed) else { return }
-        MediaStore.shared.store(ref, media)
-        refresh()   // re-render so the media appears
+        let refLen = Int(UInt16(lb[0]) | UInt16(lb[1]) << 8)
+        guard payload.count >= 2 + refLen + 8 else { return }
+        let ref = String(data: payload.subdata(in: 2..<(2 + refLen)), encoding: .utf8) ?? ""
+        var off = 2 + refLen
+        let index = Int(Self.readU32(payload, off)); off += 4
+        let total = Int(Self.readU32(payload, off)); off += 4
+        let sealed = payload.subdata(in: off..<payload.count)
+        guard !ref.isEmpty, total > 0, !MediaStore.shared.has(ref),
+              let plain = social.openMedia(sealed: sealed) else { return }
+
+        var entry = incoming[ref] ?? IncomingMedia(tempURL: MediaStore.shared.makeTempFile(), total: total, got: [])
+        if let fh = try? FileHandle(forWritingTo: entry.tempURL) {
+            try? fh.seek(toOffset: UInt64(index) * UInt64(Self.mediaChunkSize))
+            fh.write(plain)
+            try? fh.close()
+        }
+        entry.got.insert(index)
+        incoming[ref] = entry
+        if entry.got.count >= entry.total {
+            MediaStore.shared.adopt(ref, from: entry.tempURL)
+            incoming[ref] = nil
+            refresh()   // re-render so the media appears
+        }
+    }
+
+    private static func readU32(_ d: Data, _ off: Int) -> UInt32 {
+        let s = d.startIndex + off
+        return UInt32(d[s]) | UInt32(d[s + 1]) << 8 | UInt32(d[s + 2]) << 16 | UInt32(d[s + 3]) << 24
     }
 
     private func nodeHex(_ d: Data) -> String { d.map { String(format: "%02x", $0) }.joined() }
