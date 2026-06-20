@@ -155,7 +155,7 @@ final class FeedStore: ObservableObject {
 
     /// Send a text message into a DM circle + broadcast it.
     func sendMessage(to circleId: String, _ body: String) {
-        guard let social, let env = try? social.post(circleId: circleId, body: body, media: [], music: nil, retentionSecs: nil, createdAt: now()) else { return }
+        guard let social, let env = try? social.post(circleId: circleId, body: body, media: [], music: nil, retentionSecs: nil, story: false, createdAt: now()) else { return }
         broadcastEvent(circleId, env)
         postTick += 1
     }
@@ -252,10 +252,20 @@ final class FeedStore: ObservableObject {
 
     // MARK: - Authoring (seal locally, then broadcast to contacts)
 
-    func post(_ body: String, media: [String] = [], music: TrackRefFfi? = nil, retentionSecs: UInt64? = nil) {
-        guard let social, let env = try? social.post(circleId: activeCircleId, body: body, media: media, music: music, retentionSecs: retentionSecs, createdAt: now()) else { return }
+    func post(_ body: String, media: [String] = [], music: TrackRefFfi? = nil, retentionSecs: UInt64? = nil, story: Bool = false) {
+        guard let social, let env = try? social.post(circleId: activeCircleId, body: body, media: media, music: music, retentionSecs: retentionSecs, story: story, createdAt: now()) else { return }
         broadcastEvent(activeCircleId, env); postTick += 1; refresh()
     }
+
+    /// Post a full-screen story to the active circle — auto-expires after 24h (retention).
+    func postStory(media: [String]) {
+        post("", media: media, retentionSecs: 86_400, story: true)
+    }
+
+    /// Stories in the active circle (full-screen, ephemeral), newest first.
+    var stories: [FeedItemFfi] { items.filter { $0.story && !$0.unsent && !$0.media.isEmpty } }
+    /// The regular feed (stories live in the tray, not the main list).
+    var feedItems: [FeedItemFfi] { items.filter { !$0.story } }
     func comment(_ id: String, _ body: String, _ media: [String] = []) {
         guard let social, let env = try? social.comment(circleId: activeCircleId, target: id, body: body, media: media, createdAt: now()) else { return }
         broadcastEvent(activeCircleId, env); refresh()
@@ -635,6 +645,9 @@ struct FeedView: View {
     @State private var composeRetention: UInt64?
     @State private var showNewCircle = false
     @State private var newCircleName = ""
+    @State private var showStoryPicker = false
+    @State private var showStories = false
+    @State private var storyIndex = 0
     @FocusState private var composeFocused: Bool
 
     init(seed: Data, friendName: String) {
@@ -651,10 +664,11 @@ struct FeedView: View {
                 ScrollView {
                     LazyVStack(spacing: 16) {
                         banner
-                        if store.items.isEmpty {
+                        storiesTray
+                        if store.feedItems.isEmpty {
                             emptyState
                         }
-                        ForEach(store.items, id: \.id) { item in
+                        ForEach(store.feedItems, id: \.id) { item in
                             PostCard(
                                 item: item, friendName: friendName,
                                 onReact: { e in withAnimation(KithTheme.bouncy) { store.react(item.id, e) } },
@@ -736,6 +750,12 @@ struct FeedView: View {
             .sheet(isPresented: $showSongPicker) {
                 SongPicker { track in attachedTrack = track }
             }
+            .sheet(isPresented: $showStoryPicker) {
+                MediaPicker { refs in if !refs.isEmpty { store.postStory(media: refs) } }
+            }
+            .fullScreenCover(isPresented: $showStories) {
+                StoryViewer(stories: store.stories, index: storyIndex, friendName: friendName)
+            }
         }
     }
 
@@ -751,6 +771,49 @@ struct FeedView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 60).padding(.horizontal, 24)
+    }
+
+    @ViewBuilder private var storiesTray: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 14) {
+                Button { showStoryPicker = true } label: {
+                    VStack(spacing: 6) {
+                        ZStack {
+                            Circle().strokeBorder(KithTheme.brandHorizontal, lineWidth: 2).frame(width: 62, height: 62)
+                            Image(systemName: "plus").font(.title2).foregroundStyle(KithTheme.pink)
+                        }
+                        Text("Add").font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.plain)
+                ForEach(Array(store.stories.enumerated()), id: \.element.id) { idx, s in
+                    Button { storyIndex = idx; showStories = true } label: {
+                        VStack(spacing: 6) {
+                            storyThumb(s)
+                            Text(s.isMe ? "You" : (ContactsStore.shared.name(forNodePrefix: s.authorShort) ?? friendName))
+                                .font(.caption2).foregroundStyle(.secondary).lineLimit(1).frame(maxWidth: 64)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 4).padding(.vertical, 2)
+        }
+    }
+
+    private func storyThumb(_ s: FeedItemFfi) -> some View {
+        let img = s.media.first.flatMap { MediaStore.shared.item($0)?.image }
+        return ZStack {
+            Circle().fill(LinearGradient(colors: [KithTheme.violet, KithTheme.pink, KithTheme.amber],
+                                         startPoint: .topLeading, endPoint: .bottomTrailing))
+                .frame(width: 64, height: 64)
+            if let img {
+                Image(uiImage: img).resizable().scaledToFill().frame(width: 56, height: 56).clipShape(Circle())
+            } else {
+                Circle().fill(Color(.secondarySystemBackground)).frame(width: 56, height: 56)
+                    .overlay(Image(systemName: "photo").foregroundStyle(.secondary))
+            }
+        }
     }
 
     private var banner: some View {

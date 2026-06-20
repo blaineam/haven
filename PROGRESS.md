@@ -34,21 +34,22 @@ Post-quantum E2E identity · invite QR + scanner + verified handshake · **two-w
 ## ✅ Mesh relay (#13) — DONE
 Relay frame (type 9): an internet-connected nearby phone forwards a sealed frame it can't read toward its destination (cleartext routing header, E2E payload), re-floods nearby (ttl-bounded), msg-id dedup. Posts + handshakes originate relays.
 
+## ✅ Direct messages (#9) — DONE
+A DM = a private 2-person circle (reuses the whole E2E + delivery + mesh stack).
+Messages list, contact picker, chat-bubble thread; DMs hidden from the feed switcher.
+
 ## 🔨 Now building
 
-### #9 — Direct messages
-A DM = a private 2-person circle (reuses all the circle + delivery machinery).
-- [ ] FeedStore DM helpers (deterministic dm circle id, start a DM, list DMs)
-- [ ] Messages list + chat-style thread view
-- [ ] Keep DM circles out of the feed's circle switcher
+### #10 — Stories (ephemeral full-screen)
+- [ ] Engine: a `story` flag on posts (reuses retention for auto-expiry)
+- [ ] Stories tray at the top of the feed (rings) + full-screen viewer with progress bars
 
 ---
 
 ## 🗺️ Queue (in order)
-1. ~~#4 Multi-circle~~ ✅ · ~~#13 Mesh relay~~ ✅
-2. **#9 Direct messages** ← here
-3. #10 Stories (ephemeral full-screen)
-4. **macOS** build · 5. **Static web client** (matching the iOS look)
+1. ~~#4 Multi-circle~~ ✅ · ~~#13 Mesh relay~~ ✅ · ~~#9 Direct messages~~ ✅
+2. **#10 Stories** ← here
+3. **macOS** build · 4. **Static web client** (matching the iOS look)
 - Backlog still to do: #6 notifications · #3 video trim/mute · #11 calls · #12 shared-S3
 - Backlog: #6 notifications (background fetch, no server) · #3 video trim + mute · #11 calls · #12 shared-circle S3 store
 

@@ -219,10 +219,10 @@ impl SocialDemo {
         created_at: u64,
     ) -> String {
         let music = music.map(|m| m.into_core());
-        self.author_event(true, created_at, EventKind::Post { body, media, music, retention_secs })
+        self.author_event(true, created_at, EventKind::Post { body, media, music, retention_secs, story: false })
     }
     pub fn friend_post(&self, body: String, created_at: u64) -> String {
-        self.author_event(false, created_at, EventKind::Post { body, media: vec![], music: None, retention_secs: None })
+        self.author_event(false, created_at, EventKind::Post { body, media: vec![], music: None, retention_secs: None, story: false })
     }
     pub fn comment(&self, target: String, body: String, media: Vec<String>, created_at: u64) -> String {
         self.author_event(true, created_at, EventKind::Comment { target, body, media })
@@ -259,6 +259,7 @@ impl SocialDemo {
                 music: it.music.map(TrackRefFfi::from_core),
                 edited: it.edited,
                 unsent: it.unsent,
+                story: it.story,
                 comments: it
                     .comments
                     .into_iter()
@@ -375,6 +376,7 @@ pub struct FeedItemFfi {
     pub music: Option<TrackRefFfi>,
     pub edited: bool,
     pub unsent: bool,
+    pub story: bool,
     pub comments: Vec<FeedCommentFfi>,
     pub reactions: Vec<ReactionFfi>,
 }
@@ -464,6 +466,7 @@ fn map_feed(events: Vec<Event>, me: &str, now_ms: u64, viewer_retention_secs: Op
             music: it.music.map(TrackRefFfi::from_core),
             edited: it.edited,
             unsent: it.unsent,
+            story: it.story,
             comments: it
                 .comments
                 .into_iter()
@@ -704,10 +707,11 @@ impl KithSocial {
         media: Vec<String>,
         music: Option<TrackRefFfi>,
         retention_secs: Option<u64>,
+        story: bool,
         created_at: u64,
     ) -> Result<Vec<u8>, KithError> {
         let music = music.map(|m| m.into_core());
-        self.author(&circle_id, created_at, EventKind::Post { body, media, music, retention_secs })
+        self.author(&circle_id, created_at, EventKind::Post { body, media, music, retention_secs, story })
     }
     pub fn comment(&self, circle_id: String, target: String, body: String, media: Vec<String>, created_at: u64) -> Result<Vec<u8>, KithError> {
         self.author(&circle_id, created_at, EventKind::Comment { target, body, media })
@@ -914,7 +918,7 @@ mod net_tests {
         assert_eq!(alice_id, alice.my_node_hex());
 
         // Alice posts → envelope → Bob receives and opens it.
-        let env = alice.post(cid.clone(), "hi mom 💜".into(), vec![], None, None, 1_000).unwrap();
+        let env = alice.post(cid.clone(), "hi mom 💜".into(), vec![], None, None, false, 1_000).unwrap();
         assert!(bob.receive(cid.clone(), env.clone()).unwrap(), "new on first receive");
         assert!(!bob.receive(cid.clone(), env).unwrap(), "deduped on second receive");
 
@@ -926,7 +930,7 @@ mod net_tests {
         // A stranger Bob hasn't added cannot be opened (ignored, not an error).
         let eve = KithSocial::new([9u8; 32].to_vec()).unwrap();
         eve.add_contact_bundle(cid.clone(), bob.my_bundle()).unwrap();
-        let eve_env = eve.post(cid.clone(), "spam".into(), vec![], None, None, 1_500).unwrap();
+        let eve_env = eve.post(cid.clone(), "spam".into(), vec![], None, None, false, 1_500).unwrap();
         assert!(!bob.receive(cid.clone(), eve_env).unwrap(), "unknown sender is ignored");
         assert_eq!(bob.feed(cid.clone(), 2_000, None).len(), 1, "stranger's post not in feed");
 
@@ -956,7 +960,7 @@ mod net_tests {
         alice.add_contact_bundle("fam".into(), bob.my_bundle()).unwrap();
         bob.create_circle("fam".into(), "Family".into());
         bob.add_contact_bundle("fam".into(), alice.my_bundle()).unwrap();
-        let fam_env = alice.post("fam".into(), "just family".into(), vec![], None, None, 3_000).unwrap();
+        let fam_env = alice.post("fam".into(), "just family".into(), vec![], None, None, false, 3_000).unwrap();
         assert!(bob.receive("fam".into(), fam_env).unwrap());
         assert_eq!(bob.feed("fam".into(), 4_000, None).len(), 1, "fam post lands in fam circle");
         assert_eq!(bob.feed(cid, 4_000, None).len(), 1, "default circle is unchanged");

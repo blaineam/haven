@@ -24,7 +24,7 @@ fn sealed_event_is_e2e_to_group_members_only() {
     let event = Event::new(
         &alice.public().node_id_bytes(),
         1000,
-        EventKind::Post { body: "beach day 🏖️".into(), media: vec![], music: None, retention_secs: None },
+        EventKind::Post { body: "beach day 🏖️".into(), media: vec![], music: None, retention_secs: None, story: false },
     );
     let env = seal_event(&alice, &group, &event).expect("seal");
 
@@ -69,13 +69,13 @@ fn feed_resolves_posts_comments_reactions_edits_unsends() {
 
     // Alice posts; Bob comments and reacts; Alice edits her post; Alice posts a
     // second thing then unsends it.
-    let post = Event::new(&a, 100, EventKind::Post { body: "first".into(), media: vec!["blob1".into()], music: None, retention_secs: None });
+    let post = Event::new(&a, 100, EventKind::Post { body: "first".into(), media: vec!["blob1".into()], music: None, retention_secs: None, story: false });
     let comment = Event::new(&b, 110, EventKind::Comment { target: post.id.clone(), body: "nice!".into(), media: vec![] });
     let react1 = Event::new(&b, 120, EventKind::Reaction { target: post.id.clone(), emoji: "❤️".into() });
     let react2 = Event::new(&a, 121, EventKind::Reaction { target: post.id.clone(), emoji: "❤️".into() });
     let edit = Event::new(&a, 130, EventKind::Edit { target: post.id.clone(), body: "first (fixed)".into() });
 
-    let post2 = Event::new(&a, 200, EventKind::Post { body: "oops".into(), media: vec![], music: None, retention_secs: None });
+    let post2 = Event::new(&a, 200, EventKind::Post { body: "oops".into(), media: vec![], music: None, retention_secs: None, story: false });
     let unsend = Event::new(&a, 210, EventKind::Unsend { target: post2.id.clone() });
 
     let feed = build_feed(vec![
@@ -108,7 +108,7 @@ fn cannot_edit_someone_elses_post() {
     let a = alice.public().node_id_bytes();
     let b = bob.public().node_id_bytes();
 
-    let post = Event::new(&a, 1, EventKind::Post { body: "mine".into(), media: vec![], music: None, retention_secs: None });
+    let post = Event::new(&a, 1, EventKind::Post { body: "mine".into(), media: vec![], music: None, retention_secs: None, story: false });
     // Bob tries to edit Alice's post.
     let forged_edit = Event::new(&b, 2, EventKind::Edit { target: post.id.clone(), body: "hacked".into() });
 
@@ -122,7 +122,7 @@ fn retention_drops_posts_past_the_shortest_window() {
     let a = Identity::generate().public().node_id_bytes();
     // Post at t=0ms. Sender retention 60s; nothing else.
     let p = Event::new(&a, 0, EventKind::Post {
-        body: "vanishing".into(), media: vec![], music: None, retention_secs: Some(60),
+        body: "vanishing".into(), media: vec![], music: None, retention_secs: Some(60), story: false,
     });
 
     // Within the window → present.
@@ -136,6 +136,7 @@ fn retention_drops_posts_past_the_shortest_window() {
     // No retention anywhere → never expires.
     let q = Event::new(&a, 0, EventKind::Post {
         body: "forever".into(), media: vec![], music: None, retention_secs: None,
+            story: false,
     });
     assert_eq!(build_feed(vec![q], u64::MAX, None).len(), 1);
 }

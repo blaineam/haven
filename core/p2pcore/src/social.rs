@@ -42,7 +42,7 @@ pub struct TrackRef {
 pub enum EventKind {
     /// A feed post: text, optional media content-refs, an optional song, and an
     /// optional sender-set retention (seconds; the post is dropped after this).
-    Post { body: String, media: Vec<String>, music: Option<TrackRef>, retention_secs: Option<u64> },
+    Post { body: String, media: Vec<String>, music: Option<TrackRef>, retention_secs: Option<u64>, story: bool },
     /// A direct/group message (rendered as a post in a 1:1 or chat group).
     Message { body: String },
     /// A comment on a post/message — text and/or media (a rich-media reply).
@@ -253,6 +253,7 @@ pub struct FeedItem {
     pub music: Option<TrackRef>,
     pub edited: bool,
     pub unsent: bool,
+    pub story: bool,
     pub comments: Vec<FeedComment>,
     pub reactions: Vec<ReactionGroup>,
 }
@@ -276,7 +277,7 @@ pub fn build_feed(
     // Pass 1: create posts/messages and comments.
     for e in &events {
         match &e.kind {
-            EventKind::Post { body, media, music, retention_secs } => {
+            EventKind::Post { body, media, music, retention_secs, story } => {
                 if is_expired(e.created_at, *retention_secs, viewer_retention_secs, now_ms) {
                     continue;
                 }
@@ -292,6 +293,7 @@ pub fn build_feed(
                         music: music.clone(),
                         edited: false,
                         unsent: false,
+                        story: *story,
                         comments: Vec::new(),
                         reactions: Vec::new(),
                     },
@@ -313,6 +315,7 @@ pub fn build_feed(
                         music: None,
                         edited: false,
                         unsent: false,
+                        story: false,
                         comments: Vec::new(),
                         reactions: Vec::new(),
                     },
