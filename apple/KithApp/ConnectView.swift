@@ -162,9 +162,11 @@ struct ConnectView: View {
                 words: SafetyWords.words(fromHex: f.verificationHex),
                 note: "Ask your friend to read their safety words aloud. If they match, it's really them."
             )
-            TextField("Give them a name", text: $friendName)
+            TextField("Add a nickname (optional)", text: $friendName)
                 .textFieldStyle(.roundedBorder)
                 .accessibilityIdentifier("friendName")
+            Text("Their own name will appear once you connect — they choose it, signed with their key.")
+                .font(.caption2).foregroundStyle(.secondary).multilineTextAlignment(.center)
             Button("Add to my circle") {
                 let trimmed = friendName.trimmingCharacters(in: .whitespaces)
                 let name = trimmed.isEmpty ? "Friend" : trimmed

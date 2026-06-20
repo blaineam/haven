@@ -107,8 +107,8 @@ struct YouView: View {
                 ForEach(contacts.contacts) { c in
                     HStack(spacing: 12) {
                         Circle().fill(KithTheme.brand).frame(width: 34, height: 34)
-                            .overlay(Text(String(c.name.prefix(1))).font(.caption.bold()).foregroundStyle(.white))
-                        Text(c.name).font(.subheadline.weight(.medium))
+                            .overlay(Text(String(c.displayName.prefix(1))).font(.caption.bold()).foregroundStyle(.white))
+                        Text(c.displayName).font(.subheadline.weight(.medium))
                         Spacer()
                         Text("waiting to connect")
                             .font(.caption2).foregroundStyle(.secondary)
@@ -142,6 +142,7 @@ struct AdvancedView: View {
 
     @State private var report: SelfTestReport?
     @State private var runCount = 0
+    @State private var showResetConfirm = false
 
     var body: some View {
         ZStack {
@@ -151,8 +152,7 @@ struct AdvancedView: View {
                     detailsCard
                     privacyCheckCard
                     Button(role: .destructive) {
-                        onReset()
-                        report = nil
+                        showResetConfirm = true
                     } label: {
                         Label("Start over (new identity)", systemImage: "arrow.counterclockwise")
                             .font(.footnote.weight(.medium))
@@ -165,6 +165,16 @@ struct AdvancedView: View {
         .navigationTitle("Advanced")
         .navigationBarTitleDisplayMode(.inline)
         .sensoryFeedback(trigger: runCount) { _, _ in report?.allOk == true ? .success : .error }
+        .confirmationDialog("Start over with a brand-new identity?",
+                            isPresented: $showResetConfirm, titleVisibility: .visible) {
+            Button("Erase everything & start over", role: .destructive) {
+                onReset()
+                report = nil
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently erases your identity, your whole circle, and every post on this device — and the people you've connected with will no longer recognize you. This can't be undone.")
+        }
     }
 
     private var detailsCard: some View {

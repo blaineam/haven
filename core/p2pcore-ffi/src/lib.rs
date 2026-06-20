@@ -537,6 +537,35 @@ impl KithSocial {
         Ok(hex(&id.verification()))
     }
 
+    /// A signed profile: your chosen name signed by your identity key, so contacts can
+    /// display the name **you** chose — you hold authority over it, not a free-text
+    /// label they typed. Layout: [u32 sig_len][hybrid signature][name utf8].
+    pub fn my_signed_profile(&self, name: String) -> Vec<u8> {
+        let st = self.state.lock().unwrap();
+        let sig = st.me.sign(name.as_bytes());
+        let mut out = (sig.len() as u32).to_le_bytes().to_vec();
+        out.extend_from_slice(&sig);
+        out.extend_from_slice(name.as_bytes());
+        out
+    }
+
+    /// Verify a contact's signed profile against their bundle; returns the authoritative
+    /// name only if the signature checks out (so a relay can't rename someone).
+    pub fn verify_profile(&self, bundle: Vec<u8>, blob: Vec<u8>) -> Option<String> {
+        if blob.len() < 4 {
+            return None;
+        }
+        let sig_len = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
+        if blob.len() < 4 + sig_len {
+            return None;
+        }
+        let sig = &blob[4..4 + sig_len];
+        let name_bytes = &blob[4 + sig_len..];
+        let id = KithId::from_bytes(&bundle).ok()?;
+        id.verify(name_bytes, sig).ok()?;
+        String::from_utf8(name_bytes.to_vec()).ok()
+    }
+
     /// Add a contact from their verified public bundle. Returns their node id hex.
     pub fn add_contact_bundle(&self, bundle: Vec<u8>) -> Result<String, KithError> {
         let id = KithId::from_bytes(&bundle)
@@ -676,5 +705,13 @@ mod net_tests {
         let eve_env = eve.post("spam".into(), vec![], None, None, 1_500).unwrap();
         assert!(!bob.receive(eve_env).unwrap(), "unknown sender is ignored");
         assert_eq!(bob.feed(2_000, None).len(), 1, "stranger's post not in feed");
+
+        // Signed profile: Bob reads Alice's authoritative name; a tampered name is rejected.
+        let prof = alice.my_signed_profile("Alice".into());
+        assert_eq!(bob.verify_profile(alice.my_bundle(), prof.clone()).as_deref(), Some("Alice"));
+        let mut forged = prof;
+        let last = forged.len() - 1;
+        forged[last] ^= 0xff;
+        assert!(bob.verify_profile(alice.my_bundle(), forged).is_none(), "tampered name rejected");
     }
 }

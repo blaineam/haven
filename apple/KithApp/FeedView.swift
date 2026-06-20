@@ -116,24 +116,38 @@ final class FeedStore: ObservableObject {
     /// Called when a contact is added or the node comes online: hand each contact our
     /// bundle (Hello) + our posts, so connections become mutual and back-fill.
     func syncWithContacts() {
-        guard let social else { return }
-        let bundle = social.myBundle()
+        guard let social, let hello = helloPayload() else { return }
         let envs = social.syncEnvelopes()
         for contact in ContactsStore.shared.contacts {
-            sendIroh(0, bundle, to: contact.idHex)
+            sendIroh(0, hello, to: contact.idHex)
             for env in envs { sendIroh(1, env, to: contact.idHex) }
         }
-        nearbyBroadcast(0, bundle)
+        nearbyBroadcast(0, hello)
         for env in envs { nearbyBroadcast(1, env) }
     }
 
     /// A nearby peer just connected over Bluetooth/Wi-Fi — say hello + back-fill.
     private func nearbyPeerConnected() {
-        guard let social else { return }
+        guard let social, let hello = helloPayload() else { return }
         nearbyActive = true
-        nearbyBroadcast(0, social.myBundle())
+        nearbyBroadcast(0, hello)
         for env in social.syncEnvelopes() { nearbyBroadcast(1, env) }
         refresh()
+    }
+
+    /// Hello payload = [u32 LE bundleLen][public bundle][signed profile (your name)].
+    private func helloPayload() -> Data? {
+        guard let social else { return nil }
+        let bundle = social.myBundle()
+        let myName = ProfileStore.shared.displayName.isEmpty ? "Someone" : ProfileStore.shared.displayName
+        let profile = social.mySignedProfile(name: myName)
+        var p = Data()
+        let len = UInt32(bundle.count)
+        p.append(UInt8(len & 0xff)); p.append(UInt8((len >> 8) & 0xff))
+        p.append(UInt8((len >> 16) & 0xff)); p.append(UInt8((len >> 24) & 0xff))
+        p.append(bundle)
+        p.append(profile)
+        return p
     }
 
     private func broadcastEvent(_ env: Data) {
@@ -164,8 +178,14 @@ final class FeedStore: ObservableObject {
         }
     }
 
-    private func handleHello(_ bundle: Data) {
-        guard let social, bundle.count >= 32 else { return }
+    private func handleHello(_ payload: Data) {
+        guard let social, payload.count >= 4 else { return }
+        let b = [UInt8](payload.prefix(4))
+        let bundleLen = Int(UInt32(b[0]) | UInt32(b[1]) << 8 | UInt32(b[2]) << 16 | UInt32(b[3]) << 24)
+        guard bundleLen >= 32, payload.count >= 4 + bundleLen else { return }
+        let bundle = payload.subdata(in: 4..<(4 + bundleLen))
+        let profileBlob = payload.subdata(in: (4 + bundleLen)..<payload.count)
+
         let nodeHex = bundle.prefix(32).map { String(format: "%02x", $0) }.joined()
         // Only accept a bundle from someone in our circle, verified against the hash
         // from their reach-me link (MITM guard).
@@ -176,13 +196,17 @@ final class FeedStore: ObservableObject {
             return
         }
         guard (try? social.addContactBundle(bundle: bundle)) != nil else { return }
+        // The name they signed wins over any local nickname (owner has authority).
+        if let authName = social.verifyProfile(bundle: bundle, blob: profileBlob), !authName.isEmpty {
+            ContactsStore.shared.setAuthoritativeName(idHex: nodeHex, authName)
+        }
         // Reply so the link is mutual + back-fill our posts to them (both transports).
-        let myBundle = social.myBundle()
+        if let hello = helloPayload() {
+            sendIroh(0, hello, to: nodeHex)
+            nearbyBroadcast(0, hello)
+        }
         let envs = social.syncEnvelopes()
-        sendIroh(0, myBundle, to: nodeHex)
-        for env in envs { sendIroh(1, env, to: nodeHex) }
-        nearbyBroadcast(0, myBundle)
-        for env in envs { nearbyBroadcast(1, env) }
+        for env in envs { sendIroh(1, env, to: nodeHex); nearbyBroadcast(1, env) }
         refresh()
     }
 
