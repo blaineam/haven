@@ -492,18 +492,47 @@ fn map_feed(events: Vec<Event>, me: &str, now_ms: u64, viewer_retention_secs: Op
         .collect()
 }
 
-struct NetState {
-    me: Identity,
-    contacts: Vec<KithId>,
+/// One circle: its own membership, event log, and dedup set.
+struct Circle {
+    id: String,
+    name: String,
+    members: Vec<KithId>,
     events: Vec<Event>,
     seen: HashSet<String>,
 }
 
-/// On-disk form of the store so posts + contacts survive app restarts and updates.
+struct NetState {
+    me: Identity,
+    circles: Vec<Circle>,
+}
+
+const DEFAULT_CIRCLE: &str = "default";
+
+/// A circle summary for the UI.
+#[derive(uniffi::Record)]
+pub struct CircleInfoFfi {
+    pub id: String,
+    pub name: String,
+    pub member_count: u32,
+}
+
+/// On-disk form, per circle, so circles/posts/contacts survive restarts and updates.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct PersistCircle {
+    id: String,
+    name: String,
+    /// Members as their public-bundle bytes (KithId isn't directly Serialize).
+    members: Vec<Vec<u8>>,
+    events: Vec<Event>,
+}
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PersistState {
+    circles: Vec<PersistCircle>,
+}
+/// Legacy single-circle on-disk form — migrated into the default circle on load.
+#[derive(serde::Deserialize)]
+struct LegacyPersistState {
     events: Vec<Event>,
-    /// Contacts as their public-bundle bytes (KithId isn't directly Serialize).
     contacts: Vec<Vec<u8>>,
 }
 
@@ -526,11 +555,44 @@ impl KithSocial {
         Ok(Arc::new(Self {
             state: Mutex::new(NetState {
                 me: Identity::from_seed(&seed),
-                contacts: vec![],
-                events: vec![],
-                seen: HashSet::new(),
+                circles: vec![Circle {
+                    id: DEFAULT_CIRCLE.to_string(),
+                    name: "My Circle".to_string(),
+                    members: vec![],
+                    events: vec![],
+                    seen: HashSet::new(),
+                }],
             }),
         }))
+    }
+
+    /// All circles (id, name, member count) for the UI switcher.
+    pub fn circles(&self) -> Vec<CircleInfoFfi> {
+        self.state.lock().unwrap().circles.iter().map(|c| CircleInfoFfi {
+            id: c.id.clone(),
+            name: c.name.clone(),
+            member_count: c.members.len() as u32,
+        }).collect()
+    }
+
+    /// Create a circle (no-op if the id already exists).
+    pub fn create_circle(&self, id: String, name: String) {
+        let mut st = self.state.lock().unwrap();
+        if !st.circles.iter().any(|c| c.id == id) {
+            st.circles.push(Circle { id, name, members: vec![], events: vec![], seen: HashSet::new() });
+        }
+    }
+
+    pub fn rename_circle(&self, id: String, name: String) {
+        if let Some(c) = self.state.lock().unwrap().circles.iter_mut().find(|c| c.id == id) {
+            c.name = name;
+        }
+    }
+
+    /// Leave/delete a circle (you keep the default one).
+    pub fn leave_circle(&self, id: String) {
+        let mut st = self.state.lock().unwrap();
+        st.circles.retain(|c| c.id != id || c.id == DEFAULT_CIRCLE);
     }
 
     pub fn my_node_hex(&self) -> String {
@@ -584,31 +646,38 @@ impl KithSocial {
         String::from_utf8(name_bytes.to_vec()).ok()
     }
 
-    /// Add a contact from their verified public bundle. Returns their node id hex.
-    pub fn add_contact_bundle(&self, bundle: Vec<u8>) -> Result<String, KithError> {
+    /// Add a contact's verified public bundle to a circle. Returns their node id hex.
+    pub fn add_contact_bundle(&self, circle_id: String, bundle: Vec<u8>) -> Result<String, KithError> {
         let id = KithId::from_bytes(&bundle)
             .map_err(|e| KithError::Invalid { msg: format!("bad bundle: {e}") })?;
         let node_hex = hex(&id.node_id_bytes());
         let mut st = self.state.lock().unwrap();
-        if !st.contacts.iter().any(|c| c.node_id_bytes() == id.node_id_bytes()) {
-            st.contacts.push(id);
+        let circle = st
+            .circles
+            .iter_mut()
+            .find(|c| c.id == circle_id)
+            .ok_or_else(|| KithError::Invalid { msg: "unknown circle".into() })?;
+        if !circle.members.iter().any(|c| c.node_id_bytes() == id.node_id_bytes()) {
+            circle.members.push(id);
         }
         Ok(node_hex)
     }
 
-    /// The node ids of all known contacts (who to broadcast to).
-    pub fn contact_node_ids(&self) -> Vec<String> {
+    /// Node ids of the members of a circle (who to broadcast that circle's posts to).
+    pub fn contact_node_ids(&self, circle_id: String) -> Vec<String> {
         self.state
             .lock()
             .unwrap()
-            .contacts
+            .circles
             .iter()
-            .map(|c| hex(&c.node_id_bytes()))
-            .collect()
+            .find(|c| c.id == circle_id)
+            .map(|c| c.members.iter().map(|m| hex(&m.node_id_bytes())).collect())
+            .unwrap_or_default()
     }
 
     pub fn post(
         &self,
+        circle_id: String,
         body: String,
         media: Vec<String>,
         music: Option<TrackRefFfi>,
@@ -616,63 +685,72 @@ impl KithSocial {
         created_at: u64,
     ) -> Result<Vec<u8>, KithError> {
         let music = music.map(|m| m.into_core());
-        self.author(created_at, EventKind::Post { body, media, music, retention_secs })
+        self.author(&circle_id, created_at, EventKind::Post { body, media, music, retention_secs })
     }
-    pub fn comment(&self, target: String, body: String, media: Vec<String>, created_at: u64) -> Result<Vec<u8>, KithError> {
-        self.author(created_at, EventKind::Comment { target, body, media })
+    pub fn comment(&self, circle_id: String, target: String, body: String, media: Vec<String>, created_at: u64) -> Result<Vec<u8>, KithError> {
+        self.author(&circle_id, created_at, EventKind::Comment { target, body, media })
     }
-    pub fn react(&self, target: String, emoji: String, created_at: u64) -> Result<Vec<u8>, KithError> {
-        self.author(created_at, EventKind::Reaction { target, emoji })
+    pub fn react(&self, circle_id: String, target: String, emoji: String, created_at: u64) -> Result<Vec<u8>, KithError> {
+        self.author(&circle_id, created_at, EventKind::Reaction { target, emoji })
     }
-    pub fn edit(&self, target: String, body: String, created_at: u64) -> Result<Vec<u8>, KithError> {
-        self.author(created_at, EventKind::Edit { target, body })
+    pub fn edit(&self, circle_id: String, target: String, body: String, created_at: u64) -> Result<Vec<u8>, KithError> {
+        self.author(&circle_id, created_at, EventKind::Edit { target, body })
     }
-    pub fn unsend(&self, target: String, created_at: u64) -> Result<Vec<u8>, KithError> {
-        self.author(created_at, EventKind::Unsend { target })
+    pub fn unsend(&self, circle_id: String, target: String, created_at: u64) -> Result<Vec<u8>, KithError> {
+        self.author(&circle_id, created_at, EventKind::Unsend { target })
     }
 
     /// Ingest a sealed envelope received from the network. Opens it against the known
     /// sender contact, dedups by event id, records it. Returns true if it was new.
-    pub fn receive(&self, envelope: Vec<u8>) -> Result<bool, KithError> {
+    pub fn receive(&self, circle_id: String, envelope: Vec<u8>) -> Result<bool, KithError> {
         let env = SealedEnvelope::from_bytes(&envelope)
             .map_err(|e| KithError::Invalid { msg: format!("bad envelope: {e}") })?;
-        let mut st = self.state.lock().unwrap();
         let sender_hex = env.sender_hex();
-        let sender = st
-            .contacts
+        let mut st = self.state.lock().unwrap();
+        let Some(idx) = st.circles.iter().position(|c| c.id == circle_id) else { return Ok(false) };
+        let sender = st.circles[idx]
+            .members
             .iter()
             .find(|c| hex(&c.node_id_bytes()) == sender_hex)
             .cloned();
         let Some(sender) = sender else { return Ok(false) };
         let event = open_event(&st.me, &sender, &env)
             .map_err(|e| KithError::Invalid { msg: format!("open failed: {e}") })?;
-        if st.seen.contains(&event.id) {
+        if st.circles[idx].seen.contains(&event.id) {
             return Ok(false);
         }
-        st.seen.insert(event.id.clone());
-        st.events.push(event);
+        st.circles[idx].seen.insert(event.id.clone());
+        st.circles[idx].events.push(event);
         Ok(true)
     }
 
-    /// Re-seal everything **I** authored to my current circle — to sync a peer that just
+    /// Re-seal everything **I** authored to a circle — to sync a peer that just
     /// connected. Only my own events (relaying others' would forge authorship).
-    pub fn sync_envelopes(&self) -> Vec<Vec<u8>> {
+    pub fn sync_envelopes(&self, circle_id: String) -> Vec<Vec<u8>> {
         let st = self.state.lock().unwrap();
         let me_hex = hex(&st.me.public().node_id_bytes());
+        let Some(circle) = st.circles.iter().find(|c| c.id == circle_id) else { return vec![] };
         let mut members = vec![st.me.public()];
-        members.extend(st.contacts.iter().cloned());
-        let group = Group::new("circle", members);
-        st.events
+        members.extend(circle.members.iter().cloned());
+        let group = Group::new(circle_id, members);
+        circle
+            .events
             .iter()
             .filter(|e| e.author == me_hex)
             .filter_map(|e| seal_event(&st.me, &group, e).ok().map(|env| env.to_bytes()))
             .collect()
     }
 
-    pub fn feed(&self, now_ms: u64, viewer_retention_secs: Option<u64>) -> Vec<FeedItemFfi> {
+    pub fn feed(&self, circle_id: String, now_ms: u64, viewer_retention_secs: Option<u64>) -> Vec<FeedItemFfi> {
         let st = self.state.lock().unwrap();
         let me = hex(&st.me.public().node_id_bytes());
-        map_feed(st.events.clone(), &me, now_ms, viewer_retention_secs)
+        let events = st
+            .circles
+            .iter()
+            .find(|c| c.id == circle_id)
+            .map(|c| c.events.clone())
+            .unwrap_or_default();
+        map_feed(events, &me, now_ms, viewer_retention_secs)
     }
 
     /// Seal a media blob to one contact (hybrid KEM → AES-256-GCM). The recipient
@@ -680,9 +758,10 @@ impl KithSocial {
     pub fn seal_media(&self, recipient_node_hex: String, data: Vec<u8>) -> Result<Vec<u8>, KithError> {
         let st = self.state.lock().unwrap();
         let recipient = st
-            .contacts
+            .circles
             .iter()
-            .find(|c| hex(&c.node_id_bytes()) == recipient_node_hex)
+            .flat_map(|c| c.members.iter())
+            .find(|m| hex(&m.node_id_bytes()) == recipient_node_hex)
             .ok_or_else(|| KithError::Invalid { msg: "unknown recipient".into() })?;
         let (enc, key) =
             encapsulate_to(recipient).map_err(|e| KithError::Invalid { msg: format!("{e}") })?;
@@ -713,49 +792,84 @@ impl KithSocial {
         open(&key, ct).ok()
     }
 
-    /// Serialize the store (events + contacts) for on-disk persistence.
+    /// Serialize all circles (members + events) for on-disk persistence.
     pub fn export_state(&self) -> Vec<u8> {
         let st = self.state.lock().unwrap();
         let ps = PersistState {
-            events: st.events.clone(),
-            contacts: st.contacts.iter().map(|c| c.to_bytes()).collect(),
+            circles: st.circles.iter().map(|c| PersistCircle {
+                id: c.id.clone(),
+                name: c.name.clone(),
+                members: c.members.iter().map(|m| m.to_bytes()).collect(),
+                events: c.events.clone(),
+            }).collect(),
         };
         serde_json::to_vec(&ps).unwrap_or_default()
     }
 
-    /// Merge a previously-exported store back in (dedup by event id / contact node id),
-    /// so posts and connections survive restarts and app updates.
+    /// Merge a previously-exported store back in (dedup by event id / member node id),
+    /// so circles, posts, and connections survive restarts and updates. Migrates the
+    /// legacy single-circle format into the default circle.
     pub fn import_state(&self, data: Vec<u8>) {
-        let Ok(ps) = serde_json::from_slice::<PersistState>(&data) else { return };
         let mut st = self.state.lock().unwrap();
-        for cb in ps.contacts {
-            if let Ok(id) = KithId::from_bytes(&cb) {
-                if !st.contacts.iter().any(|c| c.node_id_bytes() == id.node_id_bytes()) {
-                    st.contacts.push(id);
-                }
+        if let Ok(ps) = serde_json::from_slice::<PersistState>(&data) {
+            for pc in ps.circles {
+                Self::merge_circle(&mut st, pc);
             }
-        }
-        for e in ps.events {
-            if !st.seen.contains(&e.id) {
-                st.seen.insert(e.id.clone());
-                st.events.push(e);
-            }
+        } else if let Ok(old) = serde_json::from_slice::<LegacyPersistState>(&data) {
+            Self::merge_circle(&mut st, PersistCircle {
+                id: DEFAULT_CIRCLE.to_string(),
+                name: "My Circle".to_string(),
+                members: old.contacts,
+                events: old.events,
+            });
         }
     }
 }
 
 impl KithSocial {
-    fn author(&self, created_at: u64, kind: EventKind) -> Result<Vec<u8>, KithError> {
+    fn merge_circle(st: &mut NetState, pc: PersistCircle) {
+        let idx = match st.circles.iter().position(|c| c.id == pc.id) {
+            Some(i) => i,
+            None => {
+                st.circles.push(Circle {
+                    id: pc.id.clone(),
+                    name: pc.name.clone(),
+                    members: vec![],
+                    events: vec![],
+                    seen: HashSet::new(),
+                });
+                st.circles.len() - 1
+            }
+        };
+        for mb in pc.members {
+            if let Ok(id) = KithId::from_bytes(&mb) {
+                if !st.circles[idx].members.iter().any(|m| m.node_id_bytes() == id.node_id_bytes()) {
+                    st.circles[idx].members.push(id);
+                }
+            }
+        }
+        for e in pc.events {
+            if !st.circles[idx].seen.contains(&e.id) {
+                st.circles[idx].seen.insert(e.id.clone());
+                st.circles[idx].events.push(e);
+            }
+        }
+    }
+
+    fn author(&self, circle_id: &str, created_at: u64, kind: EventKind) -> Result<Vec<u8>, KithError> {
         let mut st = self.state.lock().unwrap();
         let me_pub = st.me.public();
         let event = Event::new(&me_pub.node_id_bytes(), created_at, kind);
+        let Some(idx) = st.circles.iter().position(|c| c.id == circle_id) else {
+            return Err(KithError::Invalid { msg: "unknown circle".into() });
+        };
         let mut members = vec![me_pub];
-        members.extend(st.contacts.iter().cloned());
-        let group = Group::new("circle", members);
+        members.extend(st.circles[idx].members.iter().cloned());
+        let group = Group::new(circle_id.to_string(), members);
         let env = seal_event(&st.me, &group, &event)
             .map_err(|e| KithError::Invalid { msg: format!("seal failed: {e}") })?;
-        st.seen.insert(event.id.clone());
-        st.events.push(event);
+        st.circles[idx].seen.insert(event.id.clone());
+        st.circles[idx].events.push(event);
         Ok(env.to_bytes())
     }
 }
@@ -769,28 +883,30 @@ mod net_tests {
         let alice = KithSocial::new([1u8; 32].to_vec()).unwrap();
         let bob = KithSocial::new([2u8; 32].to_vec()).unwrap();
 
-        // Handshake: each adds the other's verified bundle.
-        let bob_id = alice.add_contact_bundle(bob.my_bundle()).unwrap();
-        let alice_id = bob.add_contact_bundle(alice.my_bundle()).unwrap();
+        let cid = DEFAULT_CIRCLE.to_string();
+
+        // Handshake: each adds the other's verified bundle to their default circle.
+        let bob_id = alice.add_contact_bundle(cid.clone(), bob.my_bundle()).unwrap();
+        let alice_id = bob.add_contact_bundle(cid.clone(), alice.my_bundle()).unwrap();
         assert_eq!(bob_id, bob.my_node_hex());
         assert_eq!(alice_id, alice.my_node_hex());
 
         // Alice posts → envelope → Bob receives and opens it.
-        let env = alice.post("hi mom 💜".into(), vec![], None, None, 1_000).unwrap();
-        assert!(bob.receive(env.clone()).unwrap(), "new on first receive");
-        assert!(!bob.receive(env).unwrap(), "deduped on second receive");
+        let env = alice.post(cid.clone(), "hi mom 💜".into(), vec![], None, None, 1_000).unwrap();
+        assert!(bob.receive(cid.clone(), env.clone()).unwrap(), "new on first receive");
+        assert!(!bob.receive(cid.clone(), env).unwrap(), "deduped on second receive");
 
-        let feed = bob.feed(2_000, None);
+        let feed = bob.feed(cid.clone(), 2_000, None);
         assert_eq!(feed.len(), 1);
         assert_eq!(feed[0].body, "hi mom 💜");
         assert!(!feed[0].is_me, "the post is from Alice, not Bob");
 
         // A stranger Bob hasn't added cannot be opened (ignored, not an error).
         let eve = KithSocial::new([9u8; 32].to_vec()).unwrap();
-        eve.add_contact_bundle(bob.my_bundle()).unwrap();
-        let eve_env = eve.post("spam".into(), vec![], None, None, 1_500).unwrap();
-        assert!(!bob.receive(eve_env).unwrap(), "unknown sender is ignored");
-        assert_eq!(bob.feed(2_000, None).len(), 1, "stranger's post not in feed");
+        eve.add_contact_bundle(cid.clone(), bob.my_bundle()).unwrap();
+        let eve_env = eve.post(cid.clone(), "spam".into(), vec![], None, None, 1_500).unwrap();
+        assert!(!bob.receive(cid.clone(), eve_env).unwrap(), "unknown sender is ignored");
+        assert_eq!(bob.feed(cid.clone(), 2_000, None).len(), 1, "stranger's post not in feed");
 
         // Signed profile: Bob reads Alice's authoritative name; a tampered name is rejected.
         let prof = alice.my_signed_profile("Alice".into());
@@ -810,7 +926,18 @@ mod net_tests {
         let saved = bob.export_state();
         let bob2 = KithSocial::new([2u8; 32].to_vec()).unwrap();
         bob2.import_state(saved);
-        assert_eq!(bob2.feed(2_000, None).len(), 1, "posts survive a restart");
-        assert_eq!(bob2.contact_node_ids(), bob.contact_node_ids(), "contacts survive too");
+        assert_eq!(bob2.feed(cid.clone(), 2_000, None).len(), 1, "posts survive a restart");
+        assert_eq!(bob2.contact_node_ids(cid.clone()), bob.contact_node_ids(cid.clone()), "contacts survive too");
+
+        // Multi-circle isolation: a post in a new circle stays out of the default circle.
+        alice.create_circle("fam".into(), "Family".into());
+        alice.add_contact_bundle("fam".into(), bob.my_bundle()).unwrap();
+        bob.create_circle("fam".into(), "Family".into());
+        bob.add_contact_bundle("fam".into(), alice.my_bundle()).unwrap();
+        let fam_env = alice.post("fam".into(), "just family".into(), vec![], None, None, 3_000).unwrap();
+        assert!(bob.receive("fam".into(), fam_env).unwrap());
+        assert_eq!(bob.feed("fam".into(), 4_000, None).len(), 1, "fam post lands in fam circle");
+        assert_eq!(bob.feed(cid, 4_000, None).len(), 1, "default circle is unchanged");
+        assert_eq!(alice.circles().len(), 2, "alice now has two circles");
     }
 }
