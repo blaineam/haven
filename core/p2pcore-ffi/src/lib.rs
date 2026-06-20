@@ -599,6 +599,17 @@ impl KithSocial {
         st.circles.retain(|c| c.id != id || c.id == DEFAULT_CIRCLE);
     }
 
+    /// Block a node: remove them from every circle (members + their events) so their
+    /// posts vanish and they can no longer be a sealed recipient. The caller also keeps
+    /// a blocklist that drops their inbound frames and prevents re-add on handshake.
+    pub fn block_member(&self, node_hex: String) {
+        let mut st = self.state.lock().unwrap();
+        for c in st.circles.iter_mut() {
+            c.members.retain(|m| hex(&m.node_id_bytes()) != node_hex);
+            c.events.retain(|e| e.author != node_hex);
+        }
+    }
+
     pub fn my_node_hex(&self) -> String {
         hex(&self.state.lock().unwrap().me.public().node_id_bytes())
     }

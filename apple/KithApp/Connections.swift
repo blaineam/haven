@@ -1,0 +1,94 @@
+import SwiftUI
+
+/// A pending connection request — someone reached you through your invite. You approve
+/// (after checking the safety words match) or block them. This replaces the old
+/// "both must scan + silent auto-add" with: one person scans, the other gets asked.
+struct ConnectionRequest: Identifiable, Equatable {
+    let idHex: String
+    let name: String
+    let bundle: Data
+    let safetyWords: [String]
+    var id: String { idHex }
+}
+
+/// Holds incoming connection requests + the blocklist. The blocklist persists and is
+/// checked at the inbound gate so a blocked person's posts, messages, calls, and
+/// handshakes are all dropped — and they can't silently re-add themselves.
+@MainActor
+final class ConnectionsStore: ObservableObject {
+    static let shared = ConnectionsStore()
+
+    @Published private(set) var pending: [ConnectionRequest] = []
+    @Published private(set) var blocked: Set<String> = []
+
+    private let d = UserDefaults.standard
+    private let blockedKey = "kith.blocked"
+
+    private init() {
+        if let arr = d.array(forKey: blockedKey) as? [String] { blocked = Set(arr) }
+    }
+
+    func isBlocked(_ idHex: String) -> Bool { blocked.contains(idHex) }
+
+    func block(_ idHex: String) {
+        blocked.insert(idHex)
+        d.set(Array(blocked), forKey: blockedKey)
+        pending.removeAll { $0.idHex == idHex }
+    }
+    func unblock(_ idHex: String) {
+        blocked.remove(idHex)
+        d.set(Array(blocked), forKey: blockedKey)
+    }
+
+    func addPending(_ req: ConnectionRequest) {
+        guard !isBlocked(req.idHex), !pending.contains(where: { $0.idHex == req.idHex }) else { return }
+        pending.append(req)
+    }
+    func removePending(_ idHex: String) { pending.removeAll { $0.idHex == idHex } }
+}
+
+/// Review incoming requests: verify the safety words out-of-band, then Add or Block.
+struct ConnectionRequestsView: View {
+    @ObservedObject private var connections = ConnectionsStore.shared
+    @ObservedObject private var store = FeedStore.shared
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                KithBackground()
+                if connections.pending.isEmpty {
+                    Text("No pending requests.").foregroundStyle(.secondary)
+                } else {
+                    List {
+                        ForEach(connections.pending) { req in
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(req.name).font(.headline)
+                                Text(req.safetyWords.joined(separator: " · "))
+                                    .font(.caption.monospaced()).foregroundStyle(KithTheme.pink)
+                                Text("Check these safety words match what they see before adding.")
+                                    .font(.caption2).foregroundStyle(.secondary)
+                                HStack(spacing: 12) {
+                                    Button { store.approveConnection(req) } label: {
+                                        Label("Add", systemImage: "checkmark.circle.fill")
+                                    }
+                                    .buttonStyle(.borderedProminent).tint(KithTheme.pink)
+                                    Button(role: .destructive) { store.blockConnection(req.idHex) } label: {
+                                        Label("Block", systemImage: "hand.raised.fill")
+                                    }
+                                    .buttonStyle(.bordered)
+                                }
+                            }
+                            .padding(.vertical, 6)
+                            .listRowBackground(Color.clear)
+                        }
+                    }
+                    .scrollContentBackground(.hidden)
+                }
+            }
+            .navigationTitle("Connection requests")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+        }
+    }
+}

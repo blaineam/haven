@@ -153,6 +153,41 @@ final class FeedStore: ObservableObject {
         (social?.contactNodeIds(circleId: circleId) ?? []).first { $0 != myNodeHex }
     }
 
+    // MARK: - Connection approval + block
+
+    /// Approve a pending request: add them as a contact, complete the handshake (add
+    /// their bundle, Hello back, back-fill posts), then clear the request.
+    func approveConnection(_ req: ConnectionRequest) {
+        guard let social else { return }
+        let vhex = try? social.bundleVerificationHex(bundle: req.bundle)
+        ContactsStore.shared.add(name: req.name, idHex: req.idHex, verificationHex: vhex)
+        social.createCircle(id: "default", name: "Your circle")
+        _ = try? social.addContactBundle(circleId: "default", bundle: req.bundle)
+        ContactsStore.shared.setAuthoritativeName(idHex: req.idHex, req.name)
+        lastHeard[req.idHex] = Date()
+        persist(); refreshCircles()
+        if let hello = helloPayload(circleId: "default", circleName: "Your circle") {
+            sendIroh(0, hello, to: req.idHex); nearbyBroadcast(0, hello)
+        }
+        for env in social.syncEnvelopes(circleId: "default") {
+            sendIroh(1, eventPayload("default", env), to: req.idHex)
+            nearbyBroadcast(1, eventPayload("default", env))
+        }
+        ConnectionsStore.shared.removePending(req.idHex)
+        refresh()
+    }
+
+    /// Block a node id: remember it, purge them from every circle (engine), drop them
+    /// from contacts. Future posts/messages/calls/handshakes from them are dropped.
+    func blockConnection(_ idHex: String) {
+        ConnectionsStore.shared.block(idHex)
+        social?.blockMember(nodeHex: idHex)
+        if let c = ContactsStore.shared.contacts.first(where: { $0.idHex == idHex }) {
+            ContactsStore.shared.remove(c)
+        }
+        persist(); refreshCircles(); refresh()
+    }
+
     /// Messages of a circle (for a DM thread) without disturbing the main feed.
     func messages(in circleId: String) -> [FeedItemFfi] {
         social?.feed(circleId: circleId, nowMs: now(), viewerRetentionSecs: SettingsStore.shared.retentionSecs) ?? []
@@ -391,6 +426,11 @@ final class FeedStore: ObservableObject {
         guard let type = data.first else { return }
         if viaNearby { nearbyActive = true } else { internetActive = true }
         let payload = Data(data.dropFirst())
+        // Frames that lead with a 64-char sender id (media req + calls): drop if blocked.
+        if [3, 10, 11, 12, 13].contains(type) {
+            let head = String(data: payload.prefix(64), encoding: .utf8) ?? ""
+            if head.count == 64, ConnectionsStore.shared.isBlocked(head) { return }
+        }
         switch type {
         case 0: handleHello(payload)
         case 1: handleEvent(payload)
@@ -630,8 +670,22 @@ final class FeedStore: ObservableObject {
         guard !circleId.isEmpty else { return }
         let profileBlob = payload.subdata(in: (payload.startIndex + off)..<payload.endIndex)
         let idHex = nodeHex(bundle.prefix(32))
-        // Only accept from someone we've QR-handshaked, verified against their link hash.
-        guard isContact(idHex) else { return }
+        // Blocked people get dropped entirely — no add, no re-add.
+        if ConnectionsStore.shared.isBlocked(idHex) { return }
+        // Someone new reaching us through our invite → hold for approval (don't auto-add).
+        // One person scans; the other gets asked, with safety words to verify.
+        if !isContact(idHex) {
+            let name = social.verifyProfile(bundle: bundle, blob: profileBlob) ?? "Someone"
+            let vhex = (try? social.bundleVerificationHex(bundle: bundle)) ?? ""
+            let display = name.isEmpty ? "Someone" : name
+            ConnectionsStore.shared.addPending(ConnectionRequest(
+                idHex: idHex, name: display, bundle: bundle,
+                safetyWords: SafetyWords.words(fromHex: vhex)))
+            NotificationManager.shared.notify(title: "New connection",
+                                              body: "\(display) wants to connect",
+                                              dedupeKey: "req-\(idHex)")
+            return
+        }
         if let expected = ContactsStore.shared.verification(forNodePrefix: idHex),
            let actual = try? social.bundleVerificationHex(bundle: bundle),
            expected != actual {
@@ -703,6 +757,8 @@ struct FeedView: View {
     @State private var showStories = false
     @State private var storyIndex = 0
     @State private var trimmingRef: TrimTarget?
+    @State private var showRequests = false
+    @ObservedObject private var connections = ConnectionsStore.shared
     @FocusState private var composeFocused: Bool
 
     struct TrimTarget: Identifiable { let id = UUID(); let ref: String }
@@ -721,6 +777,7 @@ struct FeedView: View {
                 ScrollView {
                     LazyVStack(spacing: 16) {
                         banner
+                        if !connections.pending.isEmpty { pendingBanner }
                         storiesTray
                         if store.feedItems.isEmpty {
                             emptyState
@@ -812,6 +869,7 @@ struct FeedView: View {
                     store.postStory(media: [ref], caption: caption, music: track)
                 }
             }
+            .sheet(isPresented: $showRequests) { ConnectionRequestsView() }
             .fullScreenCover(isPresented: $showStories) {
                 StoryViewer(stories: store.stories, index: storyIndex, friendName: friendName)
             }
@@ -838,6 +896,25 @@ struct FeedView: View {
         }
         .frame(maxWidth: .infinity)
         .padding(.top, 60).padding(.horizontal, 24)
+    }
+
+    private var pendingBanner: some View {
+        Button { showRequests = true } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "person.crop.circle.badge.questionmark.fill")
+                    .font(.title2).foregroundStyle(.white)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(connections.pending.count == 1 ? "1 connection request" : "\(connections.pending.count) connection requests")
+                        .font(.subheadline.weight(.semibold)).foregroundStyle(.white)
+                    Text("Tap to review who wants to connect").font(.caption).foregroundStyle(.white.opacity(0.85))
+                }
+                Spacer()
+                Image(systemName: "chevron.right").foregroundStyle(.white.opacity(0.85))
+            }
+            .padding(14)
+            .background(KithTheme.brandHorizontal, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 
     @ViewBuilder private var storiesTray: some View {

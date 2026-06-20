@@ -36,6 +36,11 @@ struct CircleView: View {
                                     Label("Reconnect", systemImage: "arrow.clockwise")
                                 }.tint(KithTheme.pink)
                             }
+                            .swipeActions(edge: .trailing) {
+                                Button(role: .destructive) { store.blockConnection(c.idHex) } label: {
+                                    Label("Block", systemImage: "hand.raised.fill")
+                                }
+                            }
                     }
                     .onDelete { offsets in
                         guard isDefault else { return }   // removing from sub-circles: leave the circle instead
@@ -44,7 +49,7 @@ struct CircleView: View {
                 } header: {
                     Text(isDefault ? "People in your circle" : "In \(store.activeCircleName)")
                 } footer: {
-                    Text("“Waiting” means the secure handshake hasn't completed — both of you must add each other, on the **same app version**. New identity? Re-scan each other's QR.")
+                    Text("“Waiting” means the secure handshake hasn't completed yet. Now just one of you needs to scan the other's invite — the other gets a request to approve. New identity? Re-scan. Swipe left to block someone.")
                 }
 
                 if !isDefault {
