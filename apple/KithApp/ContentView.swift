@@ -21,7 +21,9 @@ struct YouView: View {
                     VStack(spacing: 20) {
                         profileHeader.entrance(appeared, delay: 0.00)
                         inviteButton.entrance(appeared, delay: 0.06)
-                        circleCard.entrance(appeared, delay: 0.12)
+                        NavigationLink { CircleView(account: account) } label: { circleCard }
+                            .buttonStyle(.plain)
+                            .entrance(appeared, delay: 0.12)
                         NavigationLink { ProfileView(friendName: "Friend") } label: {
                             HStack {
                                 Label("Your posts", systemImage: "square.stack.fill")
@@ -95,7 +97,12 @@ struct YouView: View {
 
     private var circleCard: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Your circle").font(.headline)
+            HStack {
+                Text("Your circle").font(.headline)
+                Spacer()
+                Label("Manage", systemImage: "chevron.right")
+                    .labelStyle(.titleAndIcon).font(.caption).foregroundStyle(.tertiary)
+            }
             if contacts.contacts.isEmpty {
                 HStack(spacing: 12) {
                     Image(systemName: "sparkles")

@@ -103,6 +103,11 @@ final class FeedStore: ObservableObject {
     var myNodeIdShort: String { social.map { String($0.myNodeHex().prefix(16)) } ?? "—" }
     var contactCount: Int { ContactsStore.shared.contacts.count }
     var handshakedCount: Int { social?.contactNodeIds().count ?? 0 }
+    /// True once we hold this contact's verified public bundle (handshake complete) —
+    /// the point at which we can actually seal to / open from them.
+    func isHandshaked(_ idHex: String) -> Bool {
+        social?.contactNodeIds().contains(idHex) ?? false
+    }
     func forceSync() { syncWithContacts() }
 
     private func startSyncTimer() {
