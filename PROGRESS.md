@@ -21,20 +21,28 @@ Post-quantum E2E identity · invite QR + scanner + verified handshake · **two-w
 
 ---
 
+## ✅ Multi-circle — DONE (committed, tested)
+- [x] Engine: `KithSocial` holds multiple circles (each its own group / event-log / seen-set)
+- [x] Persistence: per-circle state on disk + legacy-format migration
+- [x] Wire protocol: Hello/Event carry a circle id; received events route to the right circle
+- [x] FeedStore + UI: circle switcher in the feed title, per-circle feed, create circle
+- [x] Circle propagation: a Hello for an unknown circle auto-creates it (verified sender), so it forms on their side
+- [x] CircleView: add existing contacts to a circle / leave a circle
+
+---
+
 ## 🔨 Now building
 
-### #4 — Multi-circle (in progress)
-- [x] Engine: `KithSocial` holds multiple circles (each = its own group / event-log / seen-set) ✅ committed, tested
-- [x] Persistence: per-circle state on disk + legacy-format migration ✅
-- [ ] Wire protocol: frames carry a circle id; route received events to the right circle
-- [ ] FeedStore + UI: circle switcher + per-circle feed; create / add contacts to a circle
-- [ ] Circle propagation: adding a contact to a circle creates that circle on their side too
+### #13 — Mesh relay (next)
+- [ ] Routing envelope: cleartext [dest node id(s) + msg id + TTL] wrapping the sealed payload
+- [ ] An internet-connected peer forwards mesh messages it can't read toward the destination
+- [ ] Dedup by msg id + TTL/loop protection; security review of the routing header
 
 ---
 
 ## 🗺️ Queue (in order)
-1. **#4 Multi-circle** ← here
-2. #13 Mesh relay (nearby-first; internet peers relay opaque sealed messages onward)
+1. ~~#4 Multi-circle~~ ✅
+2. **#13 Mesh relay** ← here
 3. #9 Direct messages (1:1 private threads)
 4. #10 Stories (ephemeral full-screen)
 5. **macOS** build (adapt the iOS app)
