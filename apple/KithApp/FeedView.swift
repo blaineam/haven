@@ -45,6 +45,9 @@ final class FeedStore: ObservableObject {
     /// Per-contact time we last received a valid frame from them — the basis for a
     /// truthful "Connected" (a live two-way link), not just "we hold their keys".
     @Published private(set) var lastHeard: [String: Date] = [:]
+    /// The circles you belong to, and which one the feed is currently showing.
+    @Published private(set) var circles: [CircleInfoFfi] = []
+    @Published var activeCircleId = "default"
     static let shared = FeedStore()
 
     private var social: KithSocial?
@@ -66,9 +69,57 @@ final class FeedStore: ObservableObject {
         guard social == nil else { return }
         social = try? KithSocial(accountSeed: seed)
         loadPersisted()
+        refreshCircles()
         refresh()
         guard ProcessInfo.processInfo.environment["KITH_NO_NET"] != "1" else { return }
         bringOnline(seed: seed)
+    }
+
+    // MARK: - Circles
+
+    func refreshCircles() { circles = social?.circles() ?? [] }
+
+    var activeCircleName: String {
+        circles.first { $0.id == activeCircleId }?.name ?? "My Circle"
+    }
+
+    func setActiveCircle(_ id: String) {
+        guard id != activeCircleId else { return }
+        activeCircleId = id
+        refresh()
+        requestMissingMedia()
+    }
+
+    /// Create a circle from scratch and switch to it. Add existing contacts next.
+    func createCircle(name: String) {
+        guard let social else { return }
+        let id = UUID().uuidString
+        social.createCircle(id: id, name: name)
+        persist(); refreshCircles()
+        activeCircleId = id
+        refresh()
+    }
+
+    /// Add a known contact to the active circle, then sync so the circle forms on theirs.
+    func addContactToActiveCircle(idHex: String) {
+        guard let social else { return }
+        try? social.addExistingToCircle(circleId: activeCircleId, nodeHex: idHex)
+        persist(); refreshCircles()
+        syncWithContacts()
+    }
+
+    /// Leave the active circle (you always keep the default one).
+    func leaveActiveCircle() {
+        guard activeCircleId != "default", let social else { return }
+        social.leaveCircle(id: activeCircleId)
+        persist(); refreshCircles()
+        activeCircleId = "default"
+        refresh()
+    }
+
+    /// Node ids in a circle for whom we hold keys (handshake complete).
+    func handshaked(in circleId: String) -> [String] {
+        social?.contactNodeIds(circleId: circleId) ?? []
     }
 
     // MARK: - Persistence (so posts + contacts survive restarts and updates)
@@ -127,11 +178,11 @@ final class FeedStore: ObservableObject {
     var myNodeIdShort: String { social.map { String($0.myNodeHex().prefix(16)) } ?? "—" }
     var myNodeHex: String { social?.myNodeHex() ?? "" }
     var contactCount: Int { ContactsStore.shared.contacts.count }
-    var handshakedCount: Int { social?.contactNodeIds().count ?? 0 }
+    var handshakedCount: Int { social?.contactNodeIds(circleId: activeCircleId).count ?? 0 }
     /// True once we hold this contact's verified public bundle (handshake complete) —
     /// the point at which we can seal to / open from them.
     func isHandshaked(_ idHex: String) -> Bool {
-        social?.contactNodeIds().contains(idHex) ?? false
+        social?.contactNodeIds(circleId: activeCircleId).contains(idHex) ?? false
     }
     /// True only if we've actually heard from them recently — a real live link, not
     /// just holding (possibly stale) keys.
@@ -150,7 +201,7 @@ final class FeedStore: ObservableObject {
 
     private func now() -> UInt64 { UInt64(Date().timeIntervalSince1970 * 1000) }
     func refresh() {
-        items = social?.feed(nowMs: now(), viewerRetentionSecs: SettingsStore.shared.retentionSecs) ?? []
+        items = social?.feed(circleId: activeCircleId, nowMs: now(), viewerRetentionSecs: SettingsStore.shared.retentionSecs) ?? []
     }
 
     /// The current user's own posts — their personal archive.
@@ -159,70 +210,101 @@ final class FeedStore: ObservableObject {
     // MARK: - Authoring (seal locally, then broadcast to contacts)
 
     func post(_ body: String, media: [String] = [], music: TrackRefFfi? = nil, retentionSecs: UInt64? = nil) {
-        guard let social, let env = try? social.post(body: body, media: media, music: music, retentionSecs: retentionSecs, createdAt: now()) else { return }
-        broadcastEvent(env); postTick += 1; refresh()
+        guard let social, let env = try? social.post(circleId: activeCircleId, body: body, media: media, music: music, retentionSecs: retentionSecs, createdAt: now()) else { return }
+        broadcastEvent(activeCircleId, env); postTick += 1; refresh()
     }
     func comment(_ id: String, _ body: String, _ media: [String] = []) {
-        guard let social, let env = try? social.comment(target: id, body: body, media: media, createdAt: now()) else { return }
-        broadcastEvent(env); refresh()
+        guard let social, let env = try? social.comment(circleId: activeCircleId, target: id, body: body, media: media, createdAt: now()) else { return }
+        broadcastEvent(activeCircleId, env); refresh()
     }
     func react(_ id: String, _ emoji: String) {
-        guard let social, let env = try? social.react(target: id, emoji: emoji, createdAt: now()) else { return }
-        broadcastEvent(env); reactionTick += 1; refresh()
+        guard let social, let env = try? social.react(circleId: activeCircleId, target: id, emoji: emoji, createdAt: now()) else { return }
+        broadcastEvent(activeCircleId, env); reactionTick += 1; refresh()
     }
     func edit(_ id: String, _ body: String) {
-        guard let social, let env = try? social.edit(target: id, body: body, createdAt: now()) else { return }
-        broadcastEvent(env); refresh()
+        guard let social, let env = try? social.edit(circleId: activeCircleId, target: id, body: body, createdAt: now()) else { return }
+        broadcastEvent(activeCircleId, env); refresh()
     }
     func unsend(_ id: String) {
-        guard let social, let env = try? social.unsend(target: id, createdAt: now()) else { return }
-        broadcastEvent(env); refresh()
+        guard let social, let env = try? social.unsend(circleId: activeCircleId, target: id, createdAt: now()) else { return }
+        broadcastEvent(activeCircleId, env); refresh()
     }
 
-    // MARK: - Wire protocol  [type byte][payload]: 0 = Hello(bundle), 1 = Event(envelope)
+    // MARK: - Wire protocol  [type][payload]: 0 Hello, 1 Event, 3 MediaReq, 5 MediaChunk
+    //   Hello payload = [LP circleId][LP circleName][LP bundle][signed profile]
+    //   Event payload = [LP circleId][sealed envelope]
 
-    /// Called when a contact is added or the node comes online: hand each contact our
-    /// bundle (Hello) + our posts, so connections become mutual and back-fill.
+    /// On add / online / timer: for every circle, send each member our Hello + that
+    /// circle's posts, so the circle forms on their side and back-fills.
     func syncWithContacts() {
-        guard let social, let hello = helloPayload() else { return }
-        let envs = social.syncEnvelopes()
-        for contact in ContactsStore.shared.contacts {
-            sendIroh(0, hello, to: contact.idHex)
-            for env in envs { sendIroh(1, env, to: contact.idHex) }
+        guard let social else { return }
+        for circle in circles {
+            guard let hello = helloPayload(circleId: circle.id, circleName: circle.name) else { continue }
+            let envs = social.syncEnvelopes(circleId: circle.id)
+            // The default circle bootstraps with ALL QR contacts (newly-added ones aren't
+            // members yet — this is how we get their bundle). Other circles target members.
+            var targets = Set(social.contactNodeIds(circleId: circle.id))
+            if circle.id == "default" {
+                for c in ContactsStore.shared.contacts { targets.insert(c.idHex) }
+            }
+            for nodeHex in targets {
+                sendIroh(0, hello, to: nodeHex)
+                for env in envs { sendIroh(1, eventPayload(circle.id, env), to: nodeHex) }
+            }
+            nearbyBroadcast(0, hello)
+            for env in envs { nearbyBroadcast(1, eventPayload(circle.id, env)) }
         }
-        nearbyBroadcast(0, hello)
-        for env in envs { nearbyBroadcast(1, env) }
         requestMissingMedia()
     }
 
-    /// A nearby peer just connected over Bluetooth/Wi-Fi — say hello + back-fill.
+    /// A nearby peer just connected over Bluetooth/Wi-Fi — say hello + back-fill (all circles).
     private func nearbyPeerConnected() {
-        guard let social, let hello = helloPayload() else { return }
+        guard let social else { return }
         nearbyActive = true
-        nearbyBroadcast(0, hello)
-        for env in social.syncEnvelopes() { nearbyBroadcast(1, env) }
+        for circle in circles {
+            guard let hello = helloPayload(circleId: circle.id, circleName: circle.name) else { continue }
+            nearbyBroadcast(0, hello)
+            for env in social.syncEnvelopes(circleId: circle.id) { nearbyBroadcast(1, eventPayload(circle.id, env)) }
+        }
         refresh()
     }
 
-    /// Hello payload = [u32 LE bundleLen][public bundle][signed profile (your name)].
-    private func helloPayload() -> Data? {
+    private func helloPayload(circleId: String, circleName: String) -> Data? {
         guard let social else { return nil }
-        let bundle = social.myBundle()
         let myName = ProfileStore.shared.displayName.isEmpty ? "Someone" : ProfileStore.shared.displayName
-        let profile = social.mySignedProfile(name: myName)
         var p = Data()
-        let len = UInt32(bundle.count)
-        p.append(UInt8(len & 0xff)); p.append(UInt8((len >> 8) & 0xff))
-        p.append(UInt8((len >> 16) & 0xff)); p.append(UInt8((len >> 24) & 0xff))
-        p.append(bundle)
-        p.append(profile)
+        lpAppend(&p, Data(circleId.utf8))
+        lpAppend(&p, Data(circleName.utf8))
+        lpAppend(&p, social.myBundle())
+        p.append(social.mySignedProfile(name: myName))   // rest = profile
         return p
     }
 
-    private func broadcastEvent(_ env: Data) {
-        for contact in ContactsStore.shared.contacts { sendIroh(1, env, to: contact.idHex) }
-        nearbyBroadcast(1, env)
+    private func eventPayload(_ circleId: String, _ env: Data) -> Data {
+        var p = Data(); lpAppend(&p, Data(circleId.utf8)); p.append(env); return p
+    }
+
+    private func broadcastEvent(_ circleId: String, _ env: Data) {
+        let payload = eventPayload(circleId, env)
+        for nodeHex in (social?.contactNodeIds(circleId: circleId) ?? []) { sendIroh(1, payload, to: nodeHex) }
+        nearbyBroadcast(1, payload)
         persist()   // we just authored something — save it
+    }
+
+    // Length-prefixed field helpers ([u16 LE len][bytes]).
+    private func lpAppend(_ d: inout Data, _ field: Data) {
+        let n = UInt16(field.count)
+        d.append(UInt8(n & 0xff)); d.append(UInt8(n >> 8)); d.append(field)
+    }
+    private func lpRead(_ d: Data, _ off: inout Int) -> Data? {
+        guard d.count >= off + 2 else { return nil }
+        let s = d.startIndex
+        let n = Int(UInt16(d[s + off]) | UInt16(d[s + off + 1]) << 8)
+        off += 2
+        guard d.count >= off + n else { return nil }
+        let field = d.subdata(in: (s + off)..<(s + off + n))
+        off += n
+        return field
     }
 
     private func frame(_ type: UInt8, _ payload: Data) -> Data {
@@ -357,54 +439,53 @@ final class FeedStore: ObservableObject {
 
     private func handleHello(_ payload: Data) {
         guard let social else { return }
-        // Accept BOTH handshake formats (so a version-skewed pair still connects):
-        //   legacy: payload = bundle
-        //   current: payload = [u32 bundleLen][bundle][signed profile]
-        let bundle: Data
-        let profileBlob: Data
-        if payload.count >= 32, isContact(nodeHex(payload.prefix(32))) {
-            bundle = Data(payload)
-            profileBlob = Data()
-        } else if payload.count >= 36 {
-            let b = [UInt8](payload.prefix(4))
-            let n = Int(UInt32(b[0]) | UInt32(b[1]) << 8 | UInt32(b[2]) << 16 | UInt32(b[3]) << 24)
-            guard n >= 32, payload.count >= 4 + n,
-                  isContact(nodeHex(payload.subdata(in: 4..<36))) else { return }
-            bundle = payload.subdata(in: 4..<(4 + n))
-            profileBlob = payload.subdata(in: (4 + n)..<payload.count)
-        } else {
-            return
-        }
-
+        // [LP circleId][LP circleName][LP bundle][signed profile]
+        var off = 0
+        guard let circleIdData = lpRead(payload, &off),
+              let circleNameData = lpRead(payload, &off),
+              let bundle = lpRead(payload, &off), bundle.count >= 32 else { return }
+        let circleId = String(data: circleIdData, encoding: .utf8) ?? ""
+        let circleName = String(data: circleNameData, encoding: .utf8) ?? "Circle"
+        guard !circleId.isEmpty else { return }
+        let profileBlob = payload.subdata(in: (payload.startIndex + off)..<payload.endIndex)
         let idHex = nodeHex(bundle.prefix(32))
-        // Verify the bundle against the hash from their reach-me link (MITM guard).
+        // Only accept from someone we've QR-handshaked, verified against their link hash.
+        guard isContact(idHex) else { return }
         if let expected = ContactsStore.shared.verification(forNodePrefix: idHex),
            let actual = try? social.bundleVerificationHex(bundle: bundle),
            expected != actual {
             return
         }
-        guard (try? social.addContactBundle(bundle: bundle)) != nil else { return }
-        lastHeard[idHex] = Date()   // a real, current ping from them
-        persist()   // contact's bundle is now known — keep it
-        // The name they signed wins over any local nickname (owner has authority).
+        // Ensure the circle exists on our side, then add the sender to it.
+        social.createCircle(id: circleId, name: circleName)
+        guard (try? social.addContactBundle(circleId: circleId, bundle: bundle)) != nil else { return }
+        lastHeard[idHex] = Date()
+        persist(); refreshCircles()
         if !profileBlob.isEmpty,
            let authName = social.verifyProfile(bundle: bundle, blob: profileBlob), !authName.isEmpty {
             ContactsStore.shared.setAuthoritativeName(idHex: idHex, authName)
         }
-        // Reply so the link is mutual + back-fill our posts to them (both transports).
-        if let hello = helloPayload() {
-            sendIroh(0, hello, to: idHex)
-            nearbyBroadcast(0, hello)
+        // Reply so the circle is mutual + back-fill its posts to them (both transports).
+        if let hello = helloPayload(circleId: circleId, circleName: circleName) {
+            sendIroh(0, hello, to: idHex); nearbyBroadcast(0, hello)
         }
-        let envs = social.syncEnvelopes()
-        for env in envs { sendIroh(1, env, to: idHex); nearbyBroadcast(1, env) }
+        for env in social.syncEnvelopes(circleId: circleId) {
+            sendIroh(1, eventPayload(circleId, env), to: idHex)
+            nearbyBroadcast(1, eventPayload(circleId, env))
+        }
         refresh()
     }
 
-    private func handleEvent(_ env: Data) {
+    private func handleEvent(_ payload: Data) {
         guard let social else { return }
-        if (try? social.receive(envelope: env)) == true {
-            persist()   // a new post arrived — save it
+        // [LP circleId][sealed envelope]
+        var off = 0
+        guard let circleIdData = lpRead(payload, &off) else { return }
+        let circleId = String(data: circleIdData, encoding: .utf8) ?? ""
+        let envelope = payload.subdata(in: (payload.startIndex + off)..<payload.endIndex)
+        guard !circleId.isEmpty, !envelope.isEmpty else { return }
+        if (try? social.receive(circleId: circleId, envelope: envelope)) == true {
+            persist()
             refresh()
             requestMissingMedia()   // pull any photos/videos it references
         }
@@ -424,6 +505,8 @@ struct FeedView: View {
     @State private var showCamera = false
     @State private var showSongPicker = false
     @State private var composeRetention: UInt64?
+    @State private var showNewCircle = false
+    @State private var newCircleName = ""
     @FocusState private var composeFocused: Bool
 
     init(seed: Data, friendName: String) {
@@ -473,9 +556,28 @@ struct FeedView: View {
                 }
                 composerBar
             }
-            .navigationTitle("Feed")
-            .navigationBarTitleDisplayMode(.large)
+            .navigationTitle(store.activeCircleName)
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Menu {
+                        ForEach(store.circles, id: \.id) { c in
+                            Button { store.setActiveCircle(c.id) } label: {
+                                Label(c.name, systemImage: c.id == store.activeCircleId ? "checkmark" : "circle.dashed")
+                            }
+                        }
+                        Divider()
+                        Button { newCircleName = ""; showNewCircle = true } label: {
+                            Label("New circle…", systemImage: "plus.circle")
+                        }
+                    } label: {
+                        HStack(spacing: 4) {
+                            Text(store.activeCircleName).font(.headline)
+                            Image(systemName: "chevron.down").font(.caption2)
+                        }
+                        .foregroundStyle(.primary)
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { settings.silent.toggle() } label: {
                         Image(systemName: settings.silent ? "speaker.slash.fill" : "speaker.wave.2.fill")
@@ -483,6 +585,16 @@ struct FeedView: View {
                     .tint(settings.silent ? .secondary : KithTheme.pink)
                     .accessibilityLabel(settings.silent ? "Unmute app" : "Mute app")
                 }
+            }
+            .alert("New circle", isPresented: $showNewCircle) {
+                TextField("Circle name", text: $newCircleName)
+                Button("Create") {
+                    let n = newCircleName.trimmingCharacters(in: .whitespaces)
+                    if !n.isEmpty { store.createCircle(name: n) }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Make a separate space — like “Family” or “Roommates”. Add people to it from Your circle.")
             }
             .onAppear { store.configure(seed: seed) }
             .sensoryFeedback(.success, trigger: store.postTick)

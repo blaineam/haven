@@ -663,6 +663,28 @@ impl KithSocial {
         Ok(node_hex)
     }
 
+    /// Add an already-known contact (bundle held in some circle) to another circle —
+    /// for composing a new circle out of your existing contacts.
+    pub fn add_existing_to_circle(&self, circle_id: String, node_hex: String) -> Result<(), KithError> {
+        let mut st = self.state.lock().unwrap();
+        let bundle = st
+            .circles
+            .iter()
+            .flat_map(|c| c.members.iter())
+            .find(|m| hex(&m.node_id_bytes()) == node_hex)
+            .cloned()
+            .ok_or_else(|| KithError::Invalid { msg: "unknown contact".into() })?;
+        let circle = st
+            .circles
+            .iter_mut()
+            .find(|c| c.id == circle_id)
+            .ok_or_else(|| KithError::Invalid { msg: "unknown circle".into() })?;
+        if !circle.members.iter().any(|m| m.node_id_bytes() == bundle.node_id_bytes()) {
+            circle.members.push(bundle);
+        }
+        Ok(())
+    }
+
     /// Node ids of the members of a circle (who to broadcast that circle's posts to).
     pub fn contact_node_ids(&self, circle_id: String) -> Vec<String> {
         self.state

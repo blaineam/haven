@@ -10,17 +10,25 @@ struct CircleView: View {
     @ObservedObject private var store = FeedStore.shared
     @State private var showInvite = false
 
+    private var isDefault: Bool { store.activeCircleId == "default" }
+    private var memberIds: Set<String> { Set(store.handshaked(in: store.activeCircleId)) }
+    private var membersInCircle: [Contact] {
+        isDefault ? contacts.contacts : contacts.contacts.filter { memberIds.contains($0.idHex) }
+    }
+    private var addable: [Contact] { contacts.contacts.filter { !memberIds.contains($0.idHex) } }
+
     var body: some View {
         ZStack {
             KithBackground()
             List {
                 Section {
-                    if contacts.contacts.isEmpty {
-                        Text("No one yet. Tap the + to invite someone.")
+                    if membersInCircle.isEmpty {
+                        Text(isDefault ? "No one yet. Tap + to invite someone."
+                                       : "No one here yet — add from your contacts below.")
                             .font(.subheadline).foregroundStyle(.secondary)
                             .listRowBackground(Color.clear)
                     }
-                    ForEach(contacts.contacts) { c in
+                    ForEach(membersInCircle) { c in
                         row(c)
                             .listRowBackground(Color.clear)
                             .swipeActions(edge: .leading) {
@@ -30,17 +38,41 @@ struct CircleView: View {
                             }
                     }
                     .onDelete { offsets in
-                        offsets.map { contacts.contacts[$0] }.forEach(contacts.remove)
+                        guard isDefault else { return }   // removing from sub-circles: leave the circle instead
+                        offsets.map { membersInCircle[$0] }.forEach(contacts.remove)
                     }
                 } header: {
-                    Text("People in your circle")
+                    Text(isDefault ? "People in your circle" : "In \(store.activeCircleName)")
                 } footer: {
-                    Text("Swipe left to remove someone. “Waiting” means the secure handshake hasn't completed — make sure you've **both** added each other and are on the **same app version**. If either of you started a new identity, re-scan each other's QR codes.")
+                    Text("“Waiting” means the secure handshake hasn't completed — both of you must add each other, on the **same app version**. New identity? Re-scan each other's QR.")
+                }
+
+                if !isDefault {
+                    Section("Add from your contacts") {
+                        if addable.isEmpty {
+                            Text("Everyone you know is already here.")
+                                .font(.caption).foregroundStyle(.secondary).listRowBackground(Color.clear)
+                        }
+                        ForEach(addable) { c in
+                            Button { store.addContactToActiveCircle(idHex: c.idHex) } label: {
+                                HStack {
+                                    Text(c.displayName).foregroundStyle(.primary)
+                                    Spacer()
+                                    Image(systemName: "plus.circle.fill").foregroundStyle(KithTheme.pink)
+                                }
+                            }.listRowBackground(Color.clear)
+                        }
+                    }
+                    Section {
+                        Button(role: .destructive) { store.leaveActiveCircle() } label: {
+                            Label("Leave this circle", systemImage: "rectangle.portrait.and.arrow.right")
+                        }.listRowBackground(Color.clear)
+                    }
                 }
             }
             .scrollContentBackground(.hidden)
         }
-        .navigationTitle("Your circle")
+        .navigationTitle(isDefault ? "Your circle" : store.activeCircleName)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {

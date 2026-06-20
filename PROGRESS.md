@@ -24,11 +24,11 @@ Post-quantum E2E identity · invite QR + scanner + verified handshake · **two-w
 ## 🔨 Now building
 
 ### #4 — Multi-circle (in progress)
-- [ ] Engine: `KithSocial` holds multiple circles (each = its own group / event-log / seen-set)
+- [x] Engine: `KithSocial` holds multiple circles (each = its own group / event-log / seen-set) ✅ committed, tested
+- [x] Persistence: per-circle state on disk + legacy-format migration ✅
 - [ ] Wire protocol: frames carry a circle id; route received events to the right circle
-- [ ] Persistence: per-circle state in the on-disk store
-- [ ] UI: circle switcher + per-circle feed; create / name / leave a circle
-- [ ] Circle roster: signed member list so joiners can see who else is in a circle
+- [ ] FeedStore + UI: circle switcher + per-circle feed; create / add contacts to a circle
+- [ ] Circle propagation: adding a contact to a circle creates that circle on their side too
 
 ---
 
