@@ -6,6 +6,7 @@
 
 use std::sync::{Arc, Mutex};
 
+use kith_net::Node;
 use p2pcore::crypto::{decapsulate, encapsulate_to, open, seal};
 use p2pcore::identity::Identity;
 use p2pcore::link::KithLink;
@@ -373,3 +374,45 @@ fn short(node_hex: &str) -> String {
     node_hex.chars().take(8).collect()
 }
 
+
+// ===== Networking: a live P2P node =====
+
+/// Foreign listener that receives inbound sealed-envelope bytes.
+#[uniffi::export(with_foreign)]
+pub trait InboundListener: Send + Sync {
+    fn on_inbound(&self, payload: Vec<u8>);
+}
+
+/// A live peer-to-peer node: listens for inbound sealed posts and dials peers by
+/// ticket. The bytes it moves are already E2E-encrypted by `p2pcore`.
+#[derive(uniffi::Object)]
+pub struct KithNode {
+    node: Node,
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+impl KithNode {
+    /// Start a node; inbound payloads are delivered to `listener`.
+    #[uniffi::constructor]
+    pub async fn start(listener: Arc<dyn InboundListener>) -> Result<Arc<Self>, KithError> {
+        let l = listener.clone();
+        let handler: kith_net::InboundHandler = Arc::new(move |payload| l.on_inbound(payload));
+        let node = Node::spawn(handler)
+            .await
+            .map_err(|e| KithError::Invalid { msg: e.to_string() })?;
+        Ok(Arc::new(Self { node }))
+    }
+
+    /// A shareable ticket a peer dials to reach this node.
+    pub async fn ticket(&self) -> Result<String, KithError> {
+        self.node.ticket().await.map_err(|e| KithError::Invalid { msg: e.to_string() })
+    }
+
+    /// Send sealed bytes to a peer identified by their ticket.
+    pub async fn send(&self, ticket: String, payload: Vec<u8>) -> Result<(), KithError> {
+        self.node
+            .send_ticket(&ticket, &payload)
+            .await
+            .map_err(|e| KithError::Invalid { msg: e.to_string() })
+    }
+}

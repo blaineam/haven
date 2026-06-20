@@ -1,25 +1,27 @@
 //! Kith networking — an iroh-backed P2P node that carries opaque payloads (in
 //! practice, `p2pcore::social::SealedEnvelope` bytes) between peers over QUIC.
 //!
-//! A [`Node`] both listens (an accept loop pushes received payloads to a queue) and
-//! dials. The bytes on the wire are already end-to-end encrypted by `p2pcore`, so the
-//! network layer never sees plaintext. This is the transport the app uses to turn
-//! "waiting to connect" into a real connection.
+//! A [`Node`] both listens (an accept loop hands each received payload to a callback)
+//! and dials. The bytes on the wire are already end-to-end encrypted by `p2pcore`, so
+//! the network layer never sees plaintext. Peers exchange a [`Node::ticket`] string
+//! (a base32-encoded address) to find each other.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{anyhow, Result};
+use data_encoding::BASE32_NOPAD;
 use iroh::{
     endpoint::{presets::Empty, Endpoint},
     EndpointAddr, RelayMode,
 };
-use tokio::sync::mpsc;
 
-/// Application protocol id.
 const ALPN: &[u8] = b"kith/social/0";
 const MAX_PAYLOAD: usize = 256 * 1024 * 1024;
+
+/// Called for each inbound payload (sealed envelope bytes).
+pub type InboundHandler = Arc<dyn Fn(Vec<u8>) + Send + Sync>;
 
 trait IntoAnyhow<T> {
     fn ah(self) -> Result<T>;
@@ -30,15 +32,15 @@ impl<T, E: std::fmt::Debug> IntoAnyhow<T> for std::result::Result<T, E> {
     }
 }
 
-/// A peer-to-peer node: listens for inbound sealed payloads and dials out to send.
+/// A peer-to-peer node.
 pub struct Node {
     endpoint: Endpoint,
-    inbound: mpsc::UnboundedReceiver<Vec<u8>>,
 }
 
 impl Node {
-    /// Bind a node with relays disabled (direct / LAN). Spawns the accept loop.
-    pub async fn spawn() -> Result<Self> {
+    /// Bind a node (relays disabled / direct) and start its accept loop, which hands
+    /// every inbound payload to `handler`.
+    pub async fn spawn(handler: InboundHandler) -> Result<Self> {
         let endpoint = Endpoint::builder(Empty)
             .crypto_provider(Arc::new(rustls::crypto::ring::default_provider()))
             .alpns(vec![ALPN.to_vec()])
@@ -46,16 +48,28 @@ impl Node {
             .bind()
             .await
             .ah()?;
-
-        let (tx, rx) = mpsc::unbounded_channel();
-        let accept_ep = endpoint.clone();
-        tokio::spawn(async move { accept_loop(accept_ep, tx).await });
-
-        Ok(Self { endpoint, inbound: rx })
+        let ep = endpoint.clone();
+        tokio::spawn(async move { accept_loop(ep, handler).await });
+        Ok(Self { endpoint })
     }
 
-    /// A same-machine dial address (loopback + this node's port), for tests and
-    /// local development. Real peers dial the full advertised address / via discovery.
+    /// A shareable ticket (base32 of this node's address) for a peer to dial.
+    pub async fn ticket(&self) -> Result<String> {
+        let addr = wait_for_direct_addr(&self.endpoint).await?;
+        let bytes = serde_json::to_vec(&addr).ah()?;
+        Ok(BASE32_NOPAD.encode(&bytes))
+    }
+
+    /// Send a payload to a peer identified by their [`Node::ticket`].
+    pub async fn send_ticket(&self, ticket: &str, payload: &[u8]) -> Result<()> {
+        let bytes = BASE32_NOPAD
+            .decode(ticket.trim().as_bytes())
+            .map_err(|_| anyhow!("bad ticket"))?;
+        let addr: EndpointAddr = serde_json::from_slice(&bytes).map_err(|_| anyhow!("bad ticket"))?;
+        self.send(addr, payload).await
+    }
+
+    /// Same-machine dial address (loopback + this node's port), for local tests.
     pub async fn local_dial_addr(&self) -> Result<EndpointAddr> {
         let addr = wait_for_direct_addr(&self.endpoint).await?;
         let port = addr
@@ -66,48 +80,33 @@ impl Node {
         Ok(EndpointAddr::new(addr.id).with_ip_addr(SocketAddr::from(([127, 0, 0, 1], port))))
     }
 
-    /// Send a payload (a sealed envelope) to a peer.
+    /// Send a payload to a peer address.
     pub async fn send(&self, to: EndpointAddr, payload: &[u8]) -> Result<()> {
         let conn = self.endpoint.connect(to, ALPN).await.ah()?;
         let (mut send, mut recv) = conn.open_bi().await.ah()?;
         send.write_all(payload).await.ah()?;
         send.finish().ah()?;
-        let _ = recv.read_to_end(16).await; // wait for ack
+        let _ = recv.read_to_end(16).await; // ack
         conn.close(0u32.into(), b"done");
         Ok(())
     }
 
-    /// Await the next inbound payload (sealed envelope bytes). `None` once closed.
-    pub async fn recv(&mut self) -> Option<Vec<u8>> {
-        self.inbound.recv().await
-    }
-
-    /// Gracefully close the node.
     pub async fn close(self) {
         self.endpoint.close().await;
     }
 }
 
-async fn accept_loop(endpoint: Endpoint, tx: mpsc::UnboundedSender<Vec<u8>>) {
+async fn accept_loop(endpoint: Endpoint, handler: InboundHandler) {
     while let Some(incoming) = endpoint.accept().await {
-        let tx = tx.clone();
+        let handler = handler.clone();
         tokio::spawn(async move {
-            let connecting = match incoming.accept() {
-                Ok(c) => c,
-                Err(_) => return,
-            };
-            let conn = match connecting.await {
-                Ok(c) => c,
-                Err(_) => return,
-            };
-            let (mut send, mut recv) = match conn.accept_bi().await {
-                Ok(x) => x,
-                Err(_) => return,
-            };
+            let Ok(connecting) = incoming.accept() else { return };
+            let Ok(conn) = connecting.await else { return };
+            let Ok((mut send, mut recv)) = conn.accept_bi().await else { return };
             if let Ok(payload) = recv.read_to_end(MAX_PAYLOAD).await {
                 let _ = send.write_all(b"ok").await;
                 let _ = send.finish();
-                let _ = tx.send(payload);
+                handler(payload);
             }
             let _ = conn.closed().await;
         });

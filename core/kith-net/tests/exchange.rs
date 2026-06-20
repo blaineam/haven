@@ -1,6 +1,8 @@
 //! Two nodes exchange a real sealed social post over QUIC — the networking proof
 //! that turns "waiting to connect" into an actual connection.
 
+use std::sync::Arc;
+
 use kith_net::Node;
 use p2pcore::identity::Identity;
 use p2pcore::social::{open_event, seal_event, Event, EventKind, Group, SealedEnvelope};
@@ -20,14 +22,15 @@ async fn two_nodes_exchange_a_sealed_post() {
     );
     let payload = seal_event(&alice, &group, &event).unwrap().to_bytes();
 
-    // Bob listens; Alice dials Bob and sends the sealed bytes.
-    let mut bob_node = Node::spawn().await.unwrap();
+    // Bob listens (inbound payloads go to a channel); Alice dials Bob and sends.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let bob_node = Node::spawn(Arc::new(move |p| { let _ = tx.send(p); })).await.unwrap();
     let bob_addr = bob_node.local_dial_addr().await.unwrap();
-    let alice_node = Node::spawn().await.unwrap();
+    let alice_node = Node::spawn(Arc::new(|_| {})).await.unwrap();
     alice_node.send(bob_addr, &payload).await.unwrap();
 
     // Bob receives the opaque bytes and opens the post with his own keys.
-    let received = timeout(Duration::from_secs(10), bob_node.recv())
+    let received = timeout(Duration::from_secs(10), rx.recv())
         .await
         .expect("recv timed out")
         .expect("channel closed");

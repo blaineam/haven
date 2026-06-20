@@ -150,6 +150,16 @@ struct AdvancedView: View {
                 VStack(spacing: 20) {
                     detailsCard
                     privacyCheckCard
+                    NavigationLink { NetworkingView() } label: {
+                        HStack {
+                            Label("Networking (beta)", systemImage: "wifi")
+                                .font(.subheadline.weight(.medium))
+                            Spacer()
+                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .kithCard()
                     Button(role: .destructive) {
                         onReset()
                         report = nil

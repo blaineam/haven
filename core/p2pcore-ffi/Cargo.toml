@@ -9,6 +9,8 @@ name = "kith_ffi"
 crate-type = ["lib", "staticlib", "cdylib"]
 
 [dependencies]
+kith-net = { version = "0.0.1", path = "../kith-net" }
 p2pcore = { path = "../p2pcore" }
 thiserror = "1"
-uniffi = { version = "0.31.2", features = ["cli"] }
+tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
+uniffi = { version = "0.31.2", features = ["cli", "tokio"] }

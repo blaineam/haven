@@ -187,6 +187,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-compat"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1ba85bc55464dcbf728b56d97e119d673f4cf9062be330a9a26f3acf504a590"
+dependencies = [
+ "futures-core",
+ "futures-io",
+ "once_cell",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2281,9 +2294,11 @@ name = "kith-net"
 version = "0.0.1"
 dependencies = [
  "anyhow",
+ "data-encoding",
  "iroh",
  "p2pcore",
  "rustls",
+ "serde_json",
  "tokio",
 ]
 
@@ -2291,8 +2306,10 @@ dependencies = [
 name = "kith_ffi"
 version = "0.0.1"
 dependencies = [
+ "kith-net",
  "p2pcore",
  "thiserror 1.0.69",
+ "tokio",
  "uniffi",
 ]
 
@@ -4703,6 +4720,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eec017b112701681f6fbbe5d92014b5c468eb0b177a94389de03ceec40665095"
 dependencies = [
  "anyhow",
+ "async-compat",
  "bytes",
  "once_cell",
  "static_assertions",

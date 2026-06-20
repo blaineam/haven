@@ -327,3 +327,42 @@ the same E2E path and the maker out of the trust chain.
 
 **Trade-off:** camera + MusicKit can't run in the Simulator, so implementation is
 device-verified via TestFlight; MusicKit needs the capability/entitlement on the App ID.
+
+## D19 — Post retention: auto-delete with sender override (shortest wins)
+
+**Decision:** Posts can expire. A viewer sets a default ("Auto-delete old posts":
+off / 1 week / 1 month / 3 months / 1 year) and a sender can attach a shorter
+override per post ("Disappears after…": 1h / 1d / 1w). The **shorter of the two**
+governs; absence of both = keep forever. Enforcement lives in the reducer
+(`build_feed(events, now_ms, viewer_retention_secs)`): a post past
+`created_at + min(sender, viewer)` is dropped from the feed (and thus from any
+device that rebuilds it). `retention_secs` is carried inside the **already-sealed**
+`EventKind::Post`, so the limit is integrity-protected like the rest of the post.
+
+**Security posture:** retention is a property of signed content — a recipient can't
+forge a *longer* life than the sender allowed (sender override is enforced for
+everyone), and a recipient can always choose *shorter* (their own default). No
+central component, no maker-held state. This is client-side expiry, not a DRM claim:
+an honest client deletes; we don't pretend to defeat a malicious client that screenshots.
+
+**Why:** ephemerality is table stakes for a private network; "shortest wins" gives
+both sides control without either being able to weaken the other.
+
+## D20 — Real P2P transport wired into the app (iroh, ticket-based)
+
+**Decision:** Ship the live networking layer in the app, not just the core. `kith-net`
+exposes a callback-based `Node` (accept loop → handler) with `ticket()` /
+`send_ticket()`; `kith_ffi` wraps it as an async UniFFI `KithNode` (+ `InboundListener`
+foreign callback) driven on a tokio runtime. The Swift "Networking (beta)" screen goes
+online, shows a dial ticket (QR + copy), and sends sealed bytes to a pasted peer ticket.
+iroh cross-compiles cleanly to `aarch64-apple-ios`; the app links
+`SystemConfiguration.framework` (netdev/hickory DNS need `SCDynamicStore*`).
+
+**Security posture:** the transport only ever moves `SealedEnvelope` bytes — the
+network never sees plaintext, and the node id is the Ed25519 routable key. No relay,
+no server, no maker-held address book. Verified: `kith-net` round-trips a real sealed
+post over QUIC; on-device UI test brings a node online and mints a ticket.
+
+**Trade-off:** iroh+tokio grows the XCFramework to ~252 MB (App Store thinning applies
+per-arch). Two-device sync (replacing the demo friend with a connected contact) and
+relay-assisted reachability beyond the LAN are the next networking milestones.
