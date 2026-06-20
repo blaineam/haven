@@ -54,7 +54,7 @@ struct MediaPicker: UIViewControllerRepresentable {
                             .appendingPathComponent(UUID().uuidString + "." + url.pathExtension)
                         try? FileManager.default.copyItem(at: url, to: dest)
                         Task { @MainActor in
-                            let ref = MediaStore.shared.addVideo(url: dest)
+                            let ref = await MediaStore.shared.addVideo(url: dest)
                             lock.lock(); refs.append(ref); lock.unlock()
                             group.leave()
                         }

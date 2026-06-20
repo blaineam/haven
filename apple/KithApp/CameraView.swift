@@ -163,7 +163,7 @@ final class CameraViewController: UIViewController,
     func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo url: URL,
                     from connections: [AVCaptureConnection], error: Error?) {
         Task { @MainActor in
-            let ref = MediaStore.shared.addVideo(url: url)
+            let ref = await MediaStore.shared.addVideo(url: url)
             finish([ref])
         }
     }

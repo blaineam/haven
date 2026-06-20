@@ -51,22 +51,61 @@ final class MediaStore: ObservableObject {
     @discardableResult
     func addImage(_ image: UIImage) -> String {
         let ref = "img_\(UUID().uuidString)"
-        if let data = image.jpegData(compressionQuality: 0.9), let url = fileURL(ref) {
+        // Optimize: downscale large photos + compress, so they're light to seal+send.
+        let optimize = SettingsStore.shared.autoOptimize
+        let img = optimize ? Self.downscale(image, maxDimension: 2048) : image
+        let quality: CGFloat = optimize ? 0.82 : 0.95
+        if let data = img.jpegData(compressionQuality: quality), let url = fileURL(ref) {
             try? data.write(to: url)
         }
-        cache[ref] = MediaItem(id: ref, kind: .image, image: image, videoURL: nil)
+        cache[ref] = MediaItem(id: ref, kind: .image, image: img, videoURL: nil)
         return ref
     }
 
+    /// Async because optimizing transcodes the video (AVAssetExportSession). Without
+    /// this, full-size originals (often 50–200MB) are too big to seal + send P2P.
     @discardableResult
-    func addVideo(url src: URL) -> String {
+    func addVideo(url src: URL) async -> String {
         let ref = "vid_\(UUID().uuidString)"
-        if let dst = fileURL(ref) {
-            try? FileManager.default.removeItem(at: dst)
-            try? FileManager.default.copyItem(at: src, to: dst)
-            cache[ref] = MediaItem(id: ref, kind: .video, image: Self.poster(for: dst), videoURL: dst)
+        guard let dst = fileURL(ref) else { return ref }
+        try? FileManager.default.removeItem(at: dst)
+        var ok = false
+        if SettingsStore.shared.autoOptimize {
+            ok = await Self.optimizeVideo(src, to: dst)
         }
+        if !ok {
+            try? FileManager.default.copyItem(at: src, to: dst)
+        }
+        cache[ref] = MediaItem(id: ref, kind: .video, image: Self.poster(for: dst), videoURL: dst)
         return ref
+    }
+
+    /// Downscale so the longest side is at most `maxDimension` (keeps aspect ratio).
+    static func downscale(_ image: UIImage, maxDimension: CGFloat) -> UIImage {
+        let m = max(image.size.width, image.size.height)
+        guard m > maxDimension else { return image }
+        let scale = maxDimension / m
+        let size = CGSize(width: image.size.width * scale, height: image.size.height * scale)
+        let fmt = UIGraphicsImageRendererFormat.default()
+        fmt.scale = 1
+        return UIGraphicsImageRenderer(size: size, format: fmt).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }
+    }
+
+    /// Transcode a video to a small, watchable, network-friendly MP4 (≈540p H.264).
+    static func optimizeVideo(_ src: URL, to dst: URL) async -> Bool {
+        let asset = AVURLAsset(url: src)
+        guard let export = AVAssetExportSession(asset: asset, presetName: AVAssetExportPreset960x540) else {
+            return false
+        }
+        export.outputURL = dst
+        export.outputFileType = .mp4
+        export.shouldOptimizeForNetworkUse = true
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            export.exportAsynchronously { cont.resume() }
+        }
+        return export.status == .completed
     }
 
     /// Audio reuses `videoURL` as the file URL.
