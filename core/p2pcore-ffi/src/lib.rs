@@ -210,13 +210,14 @@ impl SocialDemo {
         body: String,
         media: Vec<String>,
         music: Option<TrackRefFfi>,
+        retention_secs: Option<u64>,
         created_at: u64,
     ) -> String {
         let music = music.map(|m| m.into_core());
-        self.author_event(true, created_at, EventKind::Post { body, media, music })
+        self.author_event(true, created_at, EventKind::Post { body, media, music, retention_secs })
     }
     pub fn friend_post(&self, body: String, created_at: u64) -> String {
-        self.author_event(false, created_at, EventKind::Post { body, media: vec![], music: None })
+        self.author_event(false, created_at, EventKind::Post { body, media: vec![], music: None, retention_secs: None })
     }
     pub fn comment(&self, target: String, body: String, media: Vec<String>, created_at: u64) -> String {
         self.author_event(true, created_at, EventKind::Comment { target, body, media })
@@ -238,10 +239,10 @@ impl SocialDemo {
     }
 
     /// The current feed (newest first), with comments and reactions resolved.
-    pub fn feed(&self) -> Vec<FeedItemFfi> {
+    pub fn feed(&self, now_ms: u64, viewer_retention_secs: Option<u64>) -> Vec<FeedItemFfi> {
         let st = self.state.lock().unwrap();
         let me = hex(&st.me.public().node_id_bytes());
-        build_feed(st.events.clone())
+        build_feed(st.events.clone(), now_ms, viewer_retention_secs)
             .into_iter()
             .map(|it| FeedItemFfi {
                 id: it.id,

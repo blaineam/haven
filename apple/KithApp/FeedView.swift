@@ -24,15 +24,17 @@ final class FeedStore: ObservableObject {
     }
 
     private func now() -> UInt64 { UInt64(Date().timeIntervalSince1970 * 1000) }
-    func refresh() { items = demo?.feed() ?? [] }
+    func refresh() {
+        items = demo?.feed(nowMs: now(), viewerRetentionSecs: SettingsStore.shared.retentionSecs) ?? []
+    }
 
     /// The current user's own posts — their personal archive (a local copy of
     /// everything they've shared).
     var myPosts: [FeedItemFfi] { items.filter(\.isMe) }
 
-    func post(_ body: String, media: [String] = [], music: TrackRefFfi? = nil) {
+    func post(_ body: String, media: [String] = [], music: TrackRefFfi? = nil, retentionSecs: UInt64? = nil) {
         guard let demo else { return }
-        _ = demo.post(body: body, media: media, music: music, createdAt: now())
+        _ = demo.post(body: body, media: media, music: music, retentionSecs: retentionSecs, createdAt: now())
         postTick += 1
         refresh()
     }
@@ -51,7 +53,7 @@ final class FeedStore: ObservableObject {
         // A photo post with a song attached, to show media + now-playing.
         let imgRef = MediaStore.shared.addImage(Self.sampleImage())
         let mine = demo.post(body: "Golden hour with the people I love 🌅",
-                             media: [imgRef], music: SampleMusic.tracks[0], createdAt: t + 2)
+                             media: [imgRef], music: SampleMusic.tracks[0], retentionSecs: nil, createdAt: t + 2)
         _ = demo.friendComment(target: mine, body: "This is so cozy.", createdAt: t + 3)
         _ = demo.friendReact(target: mine, emoji: "🎉", createdAt: t + 4)
     }
@@ -85,6 +87,7 @@ struct FeedView: View {
     @State private var showMediaPicker = false
     @State private var showCamera = false
     @State private var showMusicPicker = false
+    @State private var composeRetention: UInt64?
 
     init(seed: Data, friendName: String) {
         self.seed = seed
@@ -148,12 +151,19 @@ struct FeedView: View {
     private var composerBar: some View {
         VStack { Spacer()
             VStack(spacing: 8) {
-                if !attachedMedia.isEmpty || attachedTrack != nil { attachmentTray }
+                if !attachedMedia.isEmpty || attachedTrack != nil || composeRetention != nil { attachmentTray }
                 HStack(spacing: 10) {
                     Menu {
                         Button { showMediaPicker = true } label: { Label("Photo or Video", systemImage: "photo.on.rectangle") }
                         Button { showCamera = true } label: { Label("Camera", systemImage: "camera") }
                         Button { showMusicPicker = true } label: { Label("Add a song", systemImage: "music.note") }
+                        Divider()
+                        Menu {
+                            Button("Off") { composeRetention = nil }
+                            Button("1 hour") { composeRetention = 3_600 }
+                            Button("1 day") { composeRetention = 86_400 }
+                            Button("1 week") { composeRetention = 604_800 }
+                        } label: { Label("Disappears after…", systemImage: "timer") }
                     } label: {
                         Image(systemName: "plus.circle.fill").font(.title).foregroundStyle(KithTheme.pink)
                     }
@@ -201,7 +211,26 @@ struct FeedView: View {
                     .padding(.horizontal, 10).padding(.vertical, 8)
                     .background(KithTheme.brandHorizontal.opacity(0.18), in: Capsule())
                 }
+                if let secs = composeRetention {
+                    HStack(spacing: 6) {
+                        Image(systemName: "timer")
+                        Text("Disappears: \(Self.retentionLabel(secs))").font(.caption2).lineLimit(1)
+                        Button { composeRetention = nil } label: { Image(systemName: "xmark.circle.fill") }
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 8)
+                    .background(Color(.tertiarySystemFill), in: Capsule())
+                }
             }
+        }
+    }
+
+    private static func retentionLabel(_ secs: UInt64) -> String {
+        switch secs {
+        case ..<3_600: return "\(secs / 60)m"
+        case ..<86_400: return "\(secs / 3_600)h"
+        case ..<604_800: return "\(secs / 86_400)d"
+        default: return "\(secs / 604_800)w"
         }
     }
 
@@ -216,8 +245,8 @@ struct FeedView: View {
     private func send() {
         let text = compose.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty || !attachedMedia.isEmpty || attachedTrack != nil else { return }
-        store.post(text, media: attachedMedia, music: attachedTrack)
-        compose = ""; attachedMedia = []; attachedTrack = nil
+        store.post(text, media: attachedMedia, music: attachedTrack, retentionSecs: composeRetention)
+        compose = ""; attachedMedia = []; attachedTrack = nil; composeRetention = nil
     }
 }
 

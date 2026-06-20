@@ -8,15 +8,22 @@ final class SettingsStore: ObservableObject {
 
     @Published var saveToPhotos: Bool { didSet { d.set(saveToPhotos, forKey: kSave) } }
     @Published var autoOptimize: Bool { didSet { d.set(autoOptimize, forKey: kOpt) } }
+    /// Auto-delete posts older than this many days (0 = keep forever).
+    @Published var retentionDays: Int { didSet { d.set(retentionDays, forKey: kRet) } }
 
     private let d = UserDefaults.standard
     private let kSave = "kith.saveToPhotos"
     private let kOpt = "kith.autoOptimize"
+    private let kRet = "kith.retentionDays"
 
     private init() {
         saveToPhotos = d.object(forKey: kSave) as? Bool ?? true   // default ON
         autoOptimize = d.object(forKey: kOpt) as? Bool ?? true
+        retentionDays = d.object(forKey: kRet) as? Int ?? 0       // default forever
     }
+
+    /// Viewer retention in seconds (nil = forever).
+    var retentionSecs: UInt64? { retentionDays <= 0 ? nil : UInt64(retentionDays) * 86_400 }
 }
 
 /// Saves shared/received media into the user's Photos library so it's ready whenever
@@ -62,6 +69,18 @@ struct SettingsView: View {
                         .tint(KithTheme.pink)
                 } footer: {
                     Text("Share smaller, optimized photos and videos by default. Turn off to send pristine originals.")
+                }
+                Section {
+                    Picker("Auto-delete old posts", selection: $settings.retentionDays) {
+                        Text("Off").tag(0)
+                        Text("After 1 week").tag(7)
+                        Text("After 1 month").tag(30)
+                        Text("After 3 months").tag(90)
+                        Text("After 1 year").tag(365)
+                    }
+                    .tint(KithTheme.pink)
+                } footer: {
+                    Text("Automatically remove posts older than this from your feed. A sender can set a shorter limit on their own posts — the shorter one always wins.")
                 }
                 Section {
                     NavigationLink { StorageSettingsView() } label: {

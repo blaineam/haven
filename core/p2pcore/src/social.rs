@@ -40,8 +40,9 @@ pub struct TrackRef {
 /// What a social event *is*. Targets reference another event's id.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EventKind {
-    /// A feed post: text, optional media content-refs, and an optional song.
-    Post { body: String, media: Vec<String>, music: Option<TrackRef> },
+    /// A feed post: text, optional media content-refs, an optional song, and an
+    /// optional sender-set retention (seconds; the post is dropped after this).
+    Post { body: String, media: Vec<String>, music: Option<TrackRef>, retention_secs: Option<u64> },
     /// A direct/group message (rendered as a post in a 1:1 or chat group).
     Message { body: String },
     /// A comment on a post/message — text and/or media (a rich-media reply).
@@ -258,7 +259,11 @@ pub struct FeedItem {
 
 /// Reduce a set of decrypted events into a timeline. Newest posts first; comments
 /// oldest-first. Edits/unsends apply only to the original author's own events.
-pub fn build_feed(mut events: Vec<Event>) -> Vec<FeedItem> {
+pub fn build_feed(
+    mut events: Vec<Event>,
+    now_ms: u64,
+    viewer_retention_secs: Option<u64>,
+) -> Vec<FeedItem> {
     // Deterministic order: by time, then id (dedup identical ids).
     events.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
     events.dedup_by(|a, b| a.id == b.id);
@@ -271,7 +276,10 @@ pub fn build_feed(mut events: Vec<Event>) -> Vec<FeedItem> {
     // Pass 1: create posts/messages and comments.
     for e in &events {
         match &e.kind {
-            EventKind::Post { body, media, music } => {
+            EventKind::Post { body, media, music, retention_secs } => {
+                if is_expired(e.created_at, *retention_secs, viewer_retention_secs, now_ms) {
+                    continue;
+                }
                 order.push(e.id.clone());
                 items.insert(
                     e.id.clone(),
@@ -290,6 +298,9 @@ pub fn build_feed(mut events: Vec<Event>) -> Vec<FeedItem> {
                 );
             }
             EventKind::Message { body } => {
+                if is_expired(e.created_at, None, viewer_retention_secs, now_ms) {
+                    continue;
+                }
                 order.push(e.id.clone());
                 items.insert(
                     e.id.clone(),
@@ -410,6 +421,26 @@ fn comment_target(events: &[Event], comment_id: &str) -> Option<String> {
         EventKind::Comment { target, .. } if e.id == comment_id => Some(target.clone()),
         _ => None,
     })
+}
+
+/// Effective retention = the SHORTER of the sender's override and the viewer's
+/// default (None = keep forever). Returns true once `created_at + retention` is past.
+fn is_expired(
+    created_at_ms: u64,
+    sender_secs: Option<u64>,
+    viewer_secs: Option<u64>,
+    now_ms: u64,
+) -> bool {
+    let effective = match (sender_secs, viewer_secs) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    };
+    match effective {
+        Some(secs) => now_ms >= created_at_ms.saturating_add(secs.saturating_mul(1000)),
+        None => false,
+    }
 }
 
 fn hex(bytes: &[u8]) -> String {
