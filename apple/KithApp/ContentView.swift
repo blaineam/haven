@@ -22,6 +22,17 @@ struct YouView: View {
                         profileHeader.entrance(appeared, delay: 0.00)
                         inviteButton.entrance(appeared, delay: 0.06)
                         circleCard.entrance(appeared, delay: 0.12)
+                        NavigationLink { ProfileView(friendName: "Sam") } label: {
+                            HStack {
+                                Label("Your posts", systemImage: "square.stack.fill")
+                                    .font(.subheadline.weight(.medium))
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .kithCard()
+                        .entrance(appeared, delay: 0.15)
                         privacyCard.entrance(appeared, delay: 0.18)
                         NavigationLink {
                             SettingsView()

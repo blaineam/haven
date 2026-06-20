@@ -9,9 +9,13 @@ final class FeedStore: ObservableObject {
     @Published private(set) var items: [FeedItemFfi] = []
     @Published private(set) var postTick = 0
     @Published private(set) var reactionTick = 0
-    private let demo: SocialDemo
+    static let shared = FeedStore()
+    private var demo: SocialDemo?
+    private init() {}
 
-    init(seed: Data) {
+    /// Initialize the local social session once (idempotent).
+    func configure(seed: Data) {
+        guard demo == nil else { return }
         demo = (try? SocialDemo(accountSeed: seed)) ?? {
             fatalError("SocialDemo requires a 32-byte seed")
         }()
@@ -20,20 +24,26 @@ final class FeedStore: ObservableObject {
     }
 
     private func now() -> UInt64 { UInt64(Date().timeIntervalSince1970 * 1000) }
-    func refresh() { items = demo.feed() }
+    func refresh() { items = demo?.feed() ?? [] }
+
+    /// The current user's own posts — their personal archive (a local copy of
+    /// everything they've shared).
+    var myPosts: [FeedItemFfi] { items.filter(\.isMe) }
 
     func post(_ body: String, media: [String] = [], music: TrackRefFfi? = nil) {
+        guard let demo else { return }
         _ = demo.post(body: body, media: media, music: music, createdAt: now())
         postTick += 1
         refresh()
     }
-    func comment(_ id: String, _ body: String, _ media: [String] = []) { _ = demo.comment(target: id, body: body, media: media, createdAt: now()); refresh() }
-    func react(_ id: String, _ emoji: String) { _ = demo.react(target: id, emoji: emoji, createdAt: now()); reactionTick += 1; refresh() }
-    func edit(_ id: String, _ body: String) { _ = demo.edit(target: id, body: body, createdAt: now()); refresh() }
-    func unsend(_ id: String) { _ = demo.unsend(target: id, createdAt: now()); refresh() }
-    func friendReply(_ id: String) { _ = demo.friendComment(target: id, body: "👏 love it", createdAt: now()); refresh() }
+    func comment(_ id: String, _ body: String, _ media: [String] = []) { guard let demo else { return }; _ = demo.comment(target: id, body: body, media: media, createdAt: now()); refresh() }
+    func react(_ id: String, _ emoji: String) { guard let demo else { return }; _ = demo.react(target: id, emoji: emoji, createdAt: now()); reactionTick += 1; refresh() }
+    func edit(_ id: String, _ body: String) { guard let demo else { return }; _ = demo.edit(target: id, body: body, createdAt: now()); refresh() }
+    func unsend(_ id: String) { guard let demo else { return }; _ = demo.unsend(target: id, createdAt: now()); refresh() }
+    func friendReply(_ id: String) { guard let demo else { return }; _ = demo.friendComment(target: id, body: "👏 love it", createdAt: now()); refresh() }
 
     private func seedInitialContent() {
+        guard let demo else { return }
         let t = now()
         let welcome = demo.friendPost(body: "Welcome to Kith 🜂 — just us, no ads, no tracking.", createdAt: t)
         _ = demo.react(target: welcome, emoji: "❤️", createdAt: t + 1)
@@ -65,8 +75,9 @@ final class FeedStore: ObservableObject {
 }
 
 struct FeedView: View {
-    @StateObject private var store: FeedStore
+    @ObservedObject private var store = FeedStore.shared
     let friendName: String
+    let seed: Data
 
     @State private var compose = ""
     @State private var attachedMedia: [String] = []
@@ -76,7 +87,7 @@ struct FeedView: View {
     @State private var showMusicPicker = false
 
     init(seed: Data, friendName: String) {
-        _store = StateObject(wrappedValue: FeedStore(seed: seed))
+        self.seed = seed
         self.friendName = friendName
     }
 
@@ -109,6 +120,7 @@ struct FeedView: View {
             }
             .navigationTitle("Feed")
             .navigationBarTitleDisplayMode(.large)
+            .onAppear { store.configure(seed: seed) }
             .sensoryFeedback(.success, trigger: store.postTick)
             .sensoryFeedback(.impact(weight: .light), trigger: store.reactionTick)
             .sheet(isPresented: $showMediaPicker) {
@@ -460,5 +472,55 @@ private struct PostCard: View {
         guard !t.isEmpty || !commentMedia.isEmpty else { return }
         onComment(t, commentMedia)
         commentText = ""; commentMedia = []
+    }
+}
+
+/// Your profile / archive: every post you've shared, kept as a copy on your device.
+struct ProfileView: View {
+    @ObservedObject private var store = FeedStore.shared
+    @ObservedObject private var profile = ProfileStore.shared
+    let friendName: String
+
+    var body: some View {
+        ZStack {
+            KithBackground()
+            ScrollView {
+                VStack(spacing: 16) {
+                    header
+                    if store.myPosts.isEmpty {
+                        ContentUnavailableView(
+                            "No posts yet",
+                            systemImage: "tray",
+                            description: Text("Everything you share lives here — and a copy stays on your device.")
+                        )
+                        .padding(.top, 40)
+                    } else {
+                        ForEach(store.myPosts, id: \.id) { item in
+                            PostCard(
+                                item: item, friendName: friendName,
+                                onReact: { e in withAnimation(KithTheme.bouncy) { store.react(item.id, e) } },
+                                onComment: { b, m in withAnimation(KithTheme.smooth) { store.comment(item.id, b, m) } },
+                                onEdit: { b in withAnimation(KithTheme.smooth) { store.edit(item.id, b) } },
+                                onUnsend: { withAnimation(KithTheme.smooth) { store.unsend(item.id) } },
+                                onFriendReply: { withAnimation(KithTheme.smooth) { store.friendReply(item.id) } }
+                            )
+                        }
+                    }
+                }
+                .padding(16)
+            }
+        }
+        .navigationTitle("Your posts")
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private var header: some View {
+        VStack(spacing: 8) {
+            KithAvatar(image: profile.avatar, emoji: profile.emoji, size: 76)
+            Text(profile.displayName.isEmpty ? "You" : profile.displayName).font(.title3.bold())
+            Text("\(store.myPosts.count) post\(store.myPosts.count == 1 ? "" : "s") · a copy lives on your device")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(.bottom, 4)
     }
 }

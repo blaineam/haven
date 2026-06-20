@@ -50,6 +50,7 @@ struct RootView: View {
             ConnectView(account: accountStore.account, contacts: contacts)
         }
         .onAppear {
+            FeedStore.shared.configure(seed: accountStore.account.secretSeed())
             if ProcessInfo.processInfo.environment["KITH_OPEN_CONNECT"] == "1" {
                 showConnect = true
                 return
