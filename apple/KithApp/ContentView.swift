@@ -7,6 +7,7 @@ struct YouView: View {
     let account: Account
     @ObservedObject var profile: ProfileStore
     @ObservedObject var contacts: ContactsStore
+    @ObservedObject private var feed = FeedStore.shared
     var onReset: () -> Void
 
     @State private var showConnect = false
@@ -112,13 +113,17 @@ struct YouView: View {
                 }
             } else {
                 ForEach(contacts.contacts) { c in
+                    let connected = feed.isConnected(c.idHex)
                     HStack(spacing: 12) {
                         Circle().fill(KithTheme.brand).frame(width: 34, height: 34)
                             .overlay(Text(String(c.displayName.prefix(1))).font(.caption.bold()).foregroundStyle(.white))
                         Text(c.displayName).font(.subheadline.weight(.medium))
                         Spacer()
-                        Text("waiting to connect")
-                            .font(.caption2).foregroundStyle(.secondary)
+                        HStack(spacing: 5) {
+                            Circle().fill(connected ? Color.green : Color.secondary).frame(width: 6, height: 6)
+                            Text(connected ? "Connected" : "Waiting to connect")
+                                .font(.caption2).foregroundStyle(connected ? .green : .secondary)
+                        }
                     }
                 }
             }
