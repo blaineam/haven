@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0b0b10" />
+<title>Kith</title>
+<style>
+  :root{
+    --violet:#7C3AED; --pink:#EC4899; --amber:#F59E0B;
+    --brand:linear-gradient(135deg,var(--violet),var(--pink),var(--amber));
+    --bg:#0b0b10; --card:rgba(255,255,255,.055); --card-border:rgba(255,255,255,.08);
+    --text:#f5f5f7; --text2:rgba(245,245,247,.62); --text3:rgba(245,245,247,.38);
+    --radius:20px; --shadow:0 10px 30px rgba(0,0,0,.35);
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;height:100%}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,system-ui,sans-serif;
+    color:var(--text); background:var(--bg); overflow:hidden;
+    background-image:
+      radial-gradient(60% 40% at 80% -5%, rgba(236,72,153,.20), transparent 60%),
+      radial-gradient(55% 40% at 0% 8%, rgba(124,58,237,.20), transparent 60%);
+  }
+  /* phone column on desktop, full-bleed on mobile */
+  #app{position:relative;max-width:480px;height:100dvh;margin:0 auto;display:flex;flex-direction:column;
+       border-left:1px solid var(--card-border);border-right:1px solid var(--card-border)}
+  header.bar{display:flex;align-items:center;justify-content:space-between;padding:14px 18px 8px;}
+  .logo{font-weight:800;font-size:26px;letter-spacing:-.5px;
+        background:var(--brand);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .circlepill{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text2);
+        background:var(--card);border:1px solid var(--card-border);padding:6px 12px;border-radius:999px;cursor:pointer}
+  .iconbtn{width:38px;height:38px;border-radius:999px;border:1px solid var(--card-border);background:var(--card);
+        color:var(--text);font-size:16px;display:grid;place-items:center;cursor:pointer}
+  main{flex:1;overflow-y:auto;overflow-x:hidden;padding:6px 14px 90px;-webkit-overflow-scrolling:touch}
+  main::-webkit-scrollbar{display:none}
+
+  /* stories */
+  .stories{display:flex;gap:14px;overflow-x:auto;padding:8px 2px 14px;scrollbar-width:none}
+  .stories::-webkit-scrollbar{display:none}
+  .story{flex:0 0 auto;text-align:center;cursor:pointer;width:66px}
+  .ring{width:64px;height:64px;border-radius:999px;padding:3px;background:var(--brand);margin:0 auto}
+  .ring.add{background:none;border:2px solid transparent;
+        background-image:linear-gradient(var(--bg),var(--bg)),var(--brand);
+        background-origin:border-box;background-clip:content-box,border-box;display:grid;place-items:center}
+  .ring img,.ring .ph{width:100%;height:100%;border-radius:999px;object-fit:cover;display:block;background:#222}
+  .story .add-plus{font-size:22px;color:var(--pink)}
+  .story small{display:block;margin-top:6px;font-size:11px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+  /* compose */
+  .compose{display:flex;gap:10px;align-items:center;background:var(--card);border:1px solid var(--card-border);
+        border-radius:var(--radius);padding:10px 12px;margin:4px 2px 16px;box-shadow:var(--shadow)}
+  .compose input{flex:1;background:none;border:none;color:var(--text);font-size:15px;outline:none}
+  .compose input::placeholder{color:var(--text3)}
+  .send{border:none;background:var(--brand);color:#fff;font-weight:700;border-radius:999px;padding:9px 16px;cursor:pointer;font-size:14px}
+
+  /* post card */
+  .card{background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);
+        padding:14px;margin-bottom:16px;box-shadow:var(--shadow)}
+  .phead{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+  .avatar{width:38px;height:38px;border-radius:999px;background:var(--brand);display:grid;place-items:center;
+        color:#fff;font-weight:700;font-size:15px;flex:0 0 auto}
+  .pname{font-weight:600;font-size:15px}
+  .ptime{font-size:12px;color:var(--text3)}
+  .pbody{font-size:15px;line-height:1.45;margin:2px 0 10px;white-space:pre-wrap}
+  .pmedia{border-radius:14px;overflow:hidden;margin-bottom:10px;background:#15151c}
+  .pmedia img{width:100%;display:block}
+  .react{display:flex;gap:8px;flex-wrap:wrap}
+  .chip{font-size:13px;background:rgba(255,255,255,.06);border:1px solid var(--card-border);
+        border-radius:999px;padding:5px 10px;cursor:pointer;user-select:none}
+  .chip.hearted{background:rgba(236,72,153,.18);border-color:rgba(236,72,153,.5)}
+
+  /* messages */
+  .mrow{display:flex;align-items:center;gap:12px;padding:12px 4px;border-bottom:1px solid var(--card-border);cursor:pointer}
+  .mrow .meta{flex:1;min-width:0}
+  .mrow .nm{font-weight:600;font-size:15px}
+  .mrow .pv{font-size:13px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .bubbles{display:flex;flex-direction:column;gap:8px;padding:8px 2px}
+  .bub{max-width:78%;padding:9px 13px;border-radius:18px;font-size:15px;line-height:1.35}
+  .bub.me{align-self:flex-end;background:var(--brand);color:#fff}
+  .bub.them{align-self:flex-start;background:rgba(255,255,255,.08)}
+  .bubtime{font-size:10px;color:var(--text3);margin-top:2px}
+
+  /* you page */
+  .you-head{text-align:center;padding:12px 0 20px}
+  .you-av{width:92px;height:92px;border-radius:999px;background:var(--brand);display:grid;place-items:center;
+        color:#fff;font-weight:800;font-size:34px;margin:0 auto 12px;box-shadow:0 10px 24px rgba(236,72,153,.35)}
+  .you-name{font-size:22px;font-weight:700}
+  .you-sub{font-size:13px;color:var(--text2);margin-top:4px}
+  .listcard{background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);padding:4px 0;margin-bottom:14px;overflow:hidden}
+  .li{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer;border-bottom:1px solid var(--card-border)}
+  .li:last-child{border-bottom:none}
+  .li .ic{color:var(--pink)} .li .gr{margin-left:auto;color:var(--text3)}
+  .privacy{display:flex;gap:12px;background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);padding:14px;margin-bottom:14px}
+  .privacy .lk{color:#34d399;font-size:22px}
+  .invite{display:block;width:100%;border:none;background:var(--brand);color:#fff;font-weight:700;
+        padding:15px;border-radius:999px;font-size:16px;cursor:pointer;margin-bottom:16px;box-shadow:0 10px 24px rgba(236,72,153,.35)}
+
+  /* tab bar */
+  nav.tabs{position:absolute;left:0;right:0;bottom:0;display:flex;background:rgba(11,11,16,.8);
+        backdrop-filter:blur(18px);border-top:1px solid var(--card-border);padding:8px 0 calc(8px + env(safe-area-inset-bottom))}
+  nav.tabs button{flex:1;background:none;border:none;color:var(--text3);font-size:11px;display:flex;flex-direction:column;
+        align-items:center;gap:3px;cursor:pointer}
+  nav.tabs button .ti{font-size:20px}
+  nav.tabs button.on{color:var(--pink)}
+
+  .title{font-size:20px;font-weight:700;padding:6px 2px 14px}
+  .backbtn{background:none;border:none;color:var(--pink);font-size:15px;cursor:pointer;padding:6px 0}
+
+  /* story viewer */
+  #viewer{position:fixed;inset:0;background:#000;z-index:50;display:none}
+  #viewer.show{display:block}
+  #viewer .vmedia{position:absolute;inset:0;display:grid;place-items:center}
+  #viewer .vmedia img{max-width:100%;max-height:100%}
+  #viewer .vbars{position:absolute;top:0;left:0;right:0;display:flex;gap:4px;padding:14px 14px 0}
+  #viewer .vbar{flex:1;height:3px;background:rgba(255,255,255,.3);border-radius:2px;overflow:hidden}
+  #viewer .vbar i{display:block;height:100%;width:0;background:#fff}
+  #viewer .vhead{position:absolute;top:26px;left:16px;right:16px;display:flex;align-items:center;gap:8px;color:#fff}
+  #viewer .vcap{position:absolute;left:24px;right:24px;bottom:80px;text-align:center;color:#fff;font-weight:600;
+        font-size:20px;text-shadow:0 1px 8px rgba(0,0,0,.5)}
+  #viewer .vsong{position:absolute;left:0;right:0;bottom:36px;text-align:center;color:#fff;font-size:13px;opacity:.9}
+  #viewer .vclose{position:absolute;top:24px;right:18px;color:#fff;font-size:22px;background:none;border:none;cursor:pointer;z-index:2}
+  .hidden{display:none!important}
+  .heartpop{position:fixed;font-size:90px;color:var(--pink);pointer-events:none;z-index:60;
+        animation:hp .8s ease forwards;text-shadow:0 4px 20px rgba(0,0,0,.4)}
+  @keyframes hp{0%{transform:scale(.2);opacity:0}30%{transform:scale(1.1);opacity:1}100%{transform:scale(1);opacity:0}}
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="bar" id="topbar">
+    <div class="logo">Kith</div>
+    <div style="display:flex;gap:10px;align-items:center">
+      <div class="circlepill" id="circlepill">✨ Family ▾</div>
+      <button class="iconbtn" id="silentBtn" title="Silent">🔔</button>
+    </div>
+  </header>
+  <main id="screen"></main>
+  <nav class="tabs">
+    <button data-tab="feed" class="on"><span class="ti">✨</span>Circle</button>
+    <button data-tab="messages"><span class="ti">💬</span>Messages</button>
+    <button data-tab="you"><span class="ti">👤</span>You</button>
+  </nav>
+</div>
+
+<div id="viewer">
+  <div class="vbars" id="vbars"></div>
+  <button class="vclose" onclick="closeViewer()">✕</button>
+  <div class="vhead" id="vhead"></div>
+  <div class="vmedia" id="vmedia"></div>
+  <div class="vcap" id="vcap"></div>
+  <div class="vsong" id="vsong"></div>
+  <div style="position:absolute;inset:0;display:flex">
+    <div style="flex:1" onclick="viewerPrev()"></div>
+    <div style="flex:1" onclick="viewerNext()"></div>
+  </div>
+</div>
+
+<script>
+// A faithful, interactive web replica of the Kith iOS app. Local sample data for now —
+// the same look and flows (feed, stories, reactions, DMs, You), ready to wire to a
+// WASM build of the Rust core (p2pcore) + a browser transport later. No tracking,
+// no server: everything here is local to the page.
+const me = { name:"You", initial:"Y" };
+const C = { violet:"#7C3AED", pink:"#EC4899", amber:"#F59E0B" };
+const img = (seed)=>`https://picsum.photos/seed/${seed}/640/640`;
+
+let state = {
+  tab:"feed", thread:null,
+  stories:[
+    {who:"Mom", initial:"M", media:img("kithmom"), caption:"Sunset from the porch 🌅", song:"Here Comes the Sun · The Beatles"},
+    {who:"Austin", initial:"A", media:img("kithaus"), caption:"", song:""},
+  ],
+  posts:[
+    {who:"Mom", initial:"M", time:"2m", body:"Made too much soup again. Come over? 🍲", media:img("kithsoup"), hearts:1, reacts:[["❤️",1],["😍",1]], hearted:false},
+    {who:"Austin", initial:"A", time:"1h", body:"First hike of the season. The whole valley was green.", media:img("kithhike"), hearts:0, reacts:[["🔥",2]], hearted:false},
+    {who:"You", initial:"Y", time:"3h", body:"Trying the web version of Kith. Looks just like the phone 💜", media:"", hearts:0, reacts:[], hearted:false},
+  ],
+  dms:[
+    {who:"Mom", initial:"M", msgs:[
+      {me:false, t:"Did you eat?", time:"9:01"},
+      {me:true, t:"Yes mom 😄", time:"9:02"},
+      {me:false, t:"Good. Love you", time:"9:02"},
+    ]},
+    {who:"Austin", initial:"A", msgs:[
+      {me:true, t:"You free Saturday?", time:"Yesterday"},
+      {me:false, t:"For the trail? Always.", time:"Yesterday"},
+    ]},
+  ],
+  silent:false,
+};
+
+const el = (id)=>document.getElementById(id);
+const screen = ()=>el("screen");
+
+function render(){
+  document.querySelectorAll("nav.tabs button").forEach(b=>b.classList.toggle("on", b.dataset.tab===state.tab));
+  el("topbar").style.display = (state.tab==="feed") ? "flex" : "flex";
+  if(state.thread!=null){ renderThread(); return; }
+  if(state.tab==="feed") renderFeed();
+  else if(state.tab==="messages") renderMessages();
+  else renderYou();
+}
+
+function renderFeed(){
+  let h = `<div class="stories">`;
+  h += `<div class="story" onclick="alert('Open the iOS/macOS app to capture a story 📸')">
+          <div class="ring add"><span class="add-plus">＋</span></div><small>Add</small></div>`;
+  state.stories.forEach((s,i)=>{
+    h += `<div class="story" onclick="openViewer(${i})">
+            <div class="ring"><img src="${s.media}" alt=""></div><small>${s.who}</small></div>`;
+  });
+  h += `</div>`;
+  h += `<div class="compose">
+          <input id="composeInput" placeholder="Share something with your circle…" onkeydown="if(event.key==='Enter')postNow()">
+          <button class="send" onclick="postNow()">Post</button></div>`;
+  state.posts.forEach((p,i)=> h += postCard(p,i));
+  screen().innerHTML = h;
+}
+
+function postCard(p,i){
+  const media = p.media ? `<div class="pmedia" ondblclick="heart(${i},event)"><img src="${p.media}" alt=""></div>` : "";
+  const chips = p.reacts.map(r=>`<span class="chip">${r[0]} ${r[1]}</span>`).join("")
+    + `<span class="chip ${p.hearted?'hearted':''}" onclick="heart(${i},event)">❤️ ${p.hearts}</span>`;
+  return `<div class="card">
+    <div class="phead"><div class="avatar">${p.initial}</div>
+      <div><div class="pname">${p.who}</div><div class="ptime">${p.time} ago</div></div></div>
+    ${p.body?`<div class="pbody">${esc(p.body)}</div>`:""}
+    ${media}
+    <div class="react">${chips}</div></div>`;
+}
+
+function renderMessages(){
+  let h = `<div class="title">Messages</div>`;
+  state.dms.forEach((d,i)=>{
+    const last = d.msgs[d.msgs.length-1];
+    h += `<div class="mrow" onclick="openThread(${i})">
+      <div class="avatar">${d.initial}</div>
+      <div class="meta"><div class="nm">${d.who}</div><div class="pv">${esc(last.t)}</div></div></div>`;
+  });
+  screen().innerHTML = h;
+}
+
+function renderThread(){
+  const d = state.dms[state.thread];
+  let h = `<button class="backbtn" onclick="state.thread=null;render()">‹ Messages</button>
+           <div class="title" style="padding-top:0">${d.who}</div><div class="bubbles">`;
+  d.msgs.forEach(m=>{
+    h += `<div class="bub ${m.me?'me':'them'}">${esc(m.t)}<div class="bubtime" style="${m.me?'text-align:right':''}">${m.time}</div></div>`;
+  });
+  h += `</div><div class="compose" style="margin-top:14px">
+        <input id="dmInput" placeholder="Message…" onkeydown="if(event.key==='Enter')sendDM()">
+        <button class="send" onclick="sendDM()">Send</button></div>`;
+  screen().innerHTML = h;
+  screen().scrollTop = screen().scrollHeight;
+}
+
+function renderYou(){
+  screen().innerHTML = `
+    <div class="you-head"><div class="you-av">Y</div>
+      <div class="you-name">You</div><div class="you-sub">This is just for the people you choose.</div></div>
+    <button class="invite" onclick="alert('Scan this person\\'s QR in the app to connect')">＋  Invite a friend</button>
+    <div class="listcard">
+      <div class="li" onclick="state.tab='messages';state.thread=null;render()"><span class="ic">💬</span> Messages <span class="gr">›</span></div>
+      <div class="li"><span class="ic">✨</span> Your circle <span class="gr">›</span></div>
+      <div class="li"><span class="ic">🗂️</span> Your posts <span class="gr">›</span></div>
+    </div>
+    <div class="privacy"><div class="lk">🔒</div>
+      <div><div style="font-weight:600">Your circle is private</div>
+      <div style="font-size:13px;color:var(--text2);margin-top:3px">Everything you share is locked so only your people can see it. No ads, no tracking — ever. Hybrid post-quantum encryption.</div></div></div>
+    <div class="listcard"><div class="li"><span class="ic">⚙️</span> Settings <span class="gr">›</span></div></div>`;
+}
+
+// actions
+function postNow(){
+  const inp = el("composeInput"); const t=(inp.value||"").trim(); if(!t) return;
+  state.posts.unshift({who:"You",initial:"Y",time:"now",body:t,media:"",hearts:0,reacts:[],hearted:false});
+  render();
+}
+function heart(i,e){
+  if(e) e.stopPropagation();
+  const p=state.posts[i]; p.hearted=!p.hearted; p.hearts+=p.hearted?1:-1;
+  if(p.hearted && e){ const h=document.createElement("div"); h.className="heartpop"; h.textContent="❤️";
+    h.style.left=(e.clientX-45)+"px"; h.style.top=(e.clientY-60)+"px"; document.body.appendChild(h);
+    setTimeout(()=>h.remove(),800); }
+  render();
+}
+function openThread(i){ state.thread=i; render(); }
+function sendDM(){
+  const inp=el("dmInput"); const t=(inp.value||"").trim(); if(!t) return;
+  state.dms[state.thread].msgs.push({me:true,t,time:"now"}); render();
+}
+el("silentBtn").onclick=()=>{ state.silent=!state.silent; el("silentBtn").textContent=state.silent?"🔕":"🔔"; };
+
+// story viewer
+let vIdx=0, vTimer=null, vProg=0;
+function openViewer(i){ vIdx=i; el("viewer").classList.add("show"); showStory(); }
+function closeViewer(){ el("viewer").classList.remove("show"); clearInterval(vTimer); }
+function showStory(){
+  const s=state.stories[vIdx]; if(!s){ closeViewer(); return; }
+  el("vmedia").innerHTML=`<img src="${s.media}" alt="">`;
+  el("vhead").innerHTML=`<div class="avatar" style="width:30px;height:30px;font-size:13px">${s.initial}</div>
+        <b>${s.who}</b><span style="opacity:.7;font-size:12px">· now</span>`;
+  el("vcap").textContent=s.caption||"";
+  el("vsong").innerHTML=s.song?`🎵 ${s.song}`:"";
+  let bars=""; state.stories.forEach((_,i)=>bars+=`<div class="vbar"><i id="vb${i}"></i></div>`);
+  el("vbars").innerHTML=bars;
+  for(let i=0;i<vIdx;i++) el("vb"+i).style.width="100%";
+  clearInterval(vTimer); vProg=0;
+  vTimer=setInterval(()=>{ vProg+=0.02; const b=el("vb"+vIdx); if(b) b.style.width=(vProg*100)+"%";
+        if(vProg>=1) viewerNext(); },100);
+}
+function viewerNext(){ if(vIdx+1<state.stories.length){vIdx++;showStory();} else closeViewer(); }
+function viewerPrev(){ if(vIdx>0){vIdx--;showStory();} }
+
+function esc(s){ return (s||"").replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>{ state.tab=b.dataset.tab; state.thread=null; render(); });
+render();
+</script>
+</body>
+</html>

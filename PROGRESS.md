@@ -47,16 +47,23 @@ Attached video chips get a Trim (system editor) + Mute-audio (strip audio track)
 ## ✅ Notifications (#6) — DONE
 Local-only, no server/third party. BGAppRefreshTask wakes → syncs → local notification for anything new; live inbound notifies directly (deduped, foreground-suppressed).
 
+## ✅ macOS — DONE (Mac Catalyst)
+Same engine + SwiftUI app builds + runs on macOS (Apple Silicon). Added the macabi Rust slice; guarded the one iOS-only API. Mac Catalyst build green.
+
+## ✅ Modern story camera — DONE
+Instagram-style: live camera (tap=photo, hold=video, flip, library), then a composer to add a **song** + an easy **caption**, then Share to story. Viewer plays the song while watching.
+
 ## 🔨 Now building
 
-### macOS build (adapt the iOS app)
-- [ ] Add a macOS target sharing the engine + SwiftUI code
+### Static web client (matching the iOS look)
+- [ ] A faithful visual web app — Kith brand gradient, cards, typography, feed layout
+- [ ] Landing + invite-link handling (foundation for a WASM core later)
 
 ---
 
 ## 🗺️ Queue (in order)
-1. ~~#4 Multi-circle~~ ✅ · ~~#13 Mesh~~ ✅ · ~~#9 DMs~~ ✅ · ~~#10 Stories~~ ✅ · ~~#3 Video~~ ✅ · ~~#6 Notifications~~ ✅
-2. **macOS** build ← here · **Static web client**
+1. ~~Multi-circle~~ ✅ · ~~Mesh~~ ✅ · ~~DMs~~ ✅ · ~~Stories + camera~~ ✅ · ~~Video~~ ✅ · ~~Notifications~~ ✅ · ~~macOS~~ ✅
+2. **Static web client** ← here
 3. Hardest, last: #11 calls · #12 shared-S3 store
 
 ---
