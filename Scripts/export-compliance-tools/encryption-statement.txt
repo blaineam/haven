@@ -1,0 +1,33 @@
+KITH — ENCRYPTION SELF-CLASSIFICATION STATEMENT
+
+Product:        Kith
+Developer:      Blaine Miller (blaine@wemiller.com)
+Source code:    https://github.com/blaineam/kith
+Classification: ECCN 5D992.c (mass market)
+Authorization:  License Exception ENC, EAR Section 740.17(b)(1)
+
+APP FUNCTIONALITY AND PURPOSE
+
+Kith is a private, peer-to-peer social application for sharing photos, videos,
+music, and messages within a small, invitation-only circle of friends and
+family. All user content (posts, media, messages, comments, and reactions) is
+end-to-end encrypted.
+
+ENCRYPTION DETAILS
+
+Kith uses only standard, published cryptographic algorithms:
+  - AES-256-GCM            (symmetric content encryption)
+  - X25519 + ML-KEM-768    (hybrid key establishment; FIPS 203)
+  - Ed25519 + ML-DSA-65    (digital signatures; FIPS 204)
+  - HKDF-SHA256, BLAKE3    (key derivation and hashing)
+
+Encryption is used solely to protect the confidentiality, integrity, and
+authenticity of user-to-user communications and the user's own stored media.
+
+The application implements NO proprietary or non-standard cryptography. There
+is no central server that can access user content; encryption keys are
+generated and stored on the user's own device. The product is mass market and
+its source code is publicly available.
+
+Blaine Miller
+blaine@wemiller.com
