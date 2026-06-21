@@ -363,9 +363,11 @@ final class FeedStore: ObservableObject {
         guard let social, let env = try? social.react(circleId: activeCircleId, target: id, emoji: emoji, createdAt: now()) else { return }
         broadcastEvent(activeCircleId, env); reactionTick += 1; refresh()
     }
-    func edit(_ id: String, _ body: String) {
-        guard let social, let env = try? social.edit(circleId: activeCircleId, target: id, body: body, createdAt: now()) else { return }
+    func edit(_ id: String, _ body: String, media: [String] = [], music: TrackRefFfi? = nil) {
+        guard let social, let env = try? social.edit(circleId: activeCircleId, target: id, body: body, media: media, music: music, createdAt: now()) else { return }
         broadcastEvent(activeCircleId, env); refresh()
+        let circle = activeCircleId
+        for ref in media { Task { await SharedStore.backup(ref: ref, circleId: circle, social: social) } }
     }
     func unsend(_ id: String) {
         guard let social, let env = try? social.unsend(circleId: activeCircleId, target: id, createdAt: now()) else { return }
@@ -1243,7 +1245,6 @@ private struct PostCard: View {
     @State private var showCommentMediaPicker = false
     @State private var showAudioRecorder = false
     @State private var showEdit = false
-    @State private var editText = ""
     @State private var players: [String: AVPlayer] = [:]
     @State private var showReactionPicker = false
     @State private var currentPage = 0
@@ -1324,11 +1325,7 @@ private struct PostCard: View {
         .onDisappear { pauseVideos() }
         .onChange(of: audio.centeredPostId) { syncPlayback() }
         .onChange(of: currentPage) { if isActive { playVisibleVideo() } }
-        .alert("Edit post", isPresented: $showEdit) {
-            TextField("New text", text: $editText)
-            Button("Save") { if !editText.isEmpty { onEdit(editText) } }
-            Button("Cancel", role: .cancel) {}
-        }
+        .sheet(isPresented: $showEdit) { EditPostSheet(item: item) }
     }
 
     @ViewBuilder private var mediaView: some View {
@@ -1471,7 +1468,7 @@ private struct PostCard: View {
             Spacer()
             if item.isMe && !item.unsent {
                 Menu {
-                    Button { editText = item.body; showEdit = true } label: { Label("Edit", systemImage: "pencil") }
+                    Button { showEdit = true } label: { Label("Edit", systemImage: "pencil") }
                     Button(role: .destructive) { onUnsend() } label: { Label("Unsend", systemImage: "arrow.uturn.backward") }
                 } label: { Image(systemName: "ellipsis").foregroundStyle(.secondary).padding(6) }
             }

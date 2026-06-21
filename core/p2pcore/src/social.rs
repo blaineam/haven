@@ -50,7 +50,7 @@ pub enum EventKind {
     /// A reaction (emoji) to a post/message.
     Reaction { target: String, emoji: String },
     /// Edit the body of one of *your own* prior events.
-    Edit { target: String, body: String },
+    Edit { target: String, body: String, media: Vec<String>, music: Option<TrackRef> },
     /// Retract ("unsend") one of *your own* prior events.
     Unsend { target: String },
 }
@@ -395,15 +395,18 @@ pub fn build_feed(
     // Pass 2: apply edits/unsends (author must match), then reactions.
     for e in &events {
         match &e.kind {
-            EventKind::Edit { target, body } => {
+            EventKind::Edit { target, body, media, music } => {
                 if let Some(it) = items.get_mut(target) {
                     if it.author == e.author && !it.unsent {
                         it.body = body.clone();
+                        it.media = media.clone();
+                        it.music = music.clone();
                         it.edited = true;
                     }
                 } else if let Some(c) = comments.get_mut(target) {
                     if c.author == e.author && !c.unsent {
                         c.body = body.clone();
+                        c.media = media.clone();
                         c.edited = true;
                     }
                 }

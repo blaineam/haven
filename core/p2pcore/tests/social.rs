@@ -89,7 +89,7 @@ fn feed_resolves_posts_comments_reactions_edits_unsends() {
     let comment = Event::new(&b, 110, EventKind::Comment { target: post.id.clone(), body: "nice!".into(), media: vec![] });
     let react1 = Event::new(&b, 120, EventKind::Reaction { target: post.id.clone(), emoji: "❤️".into() });
     let react2 = Event::new(&a, 121, EventKind::Reaction { target: post.id.clone(), emoji: "❤️".into() });
-    let edit = Event::new(&a, 130, EventKind::Edit { target: post.id.clone(), body: "first (fixed)".into() });
+    let edit = Event::new(&a, 130, EventKind::Edit { target: post.id.clone(), body: "first (fixed)".into(), media: vec![], music: None });
 
     let post2 = Event::new(&a, 200, EventKind::Post { body: "oops".into(), media: vec![], music: None, retention_secs: None, story: false });
     let unsend = Event::new(&a, 210, EventKind::Unsend { target: post2.id.clone() });
@@ -126,7 +126,7 @@ fn cannot_edit_someone_elses_post() {
 
     let post = Event::new(&a, 1, EventKind::Post { body: "mine".into(), media: vec![], music: None, retention_secs: None, story: false });
     // Bob tries to edit Alice's post.
-    let forged_edit = Event::new(&b, 2, EventKind::Edit { target: post.id.clone(), body: "hacked".into() });
+    let forged_edit = Event::new(&b, 2, EventKind::Edit { target: post.id.clone(), body: "hacked".into(), media: vec![], music: None });
 
     let feed = build_feed(vec![post.clone(), forged_edit], 1_000_000_000, None);
     assert_eq!(feed[0].body, "mine", "edit by non-author is ignored");

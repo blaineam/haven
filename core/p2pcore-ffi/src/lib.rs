@@ -238,7 +238,7 @@ impl SocialDemo {
         self.author_event(false, created_at, EventKind::Reaction { target, emoji })
     }
     pub fn edit(&self, target: String, body: String, created_at: u64) -> String {
-        self.author_event(true, created_at, EventKind::Edit { target, body })
+        self.author_event(true, created_at, EventKind::Edit { target, body, media: vec![], music: None })
     }
     pub fn unsend(&self, target: String, created_at: u64) -> String {
         self.author_event(true, created_at, EventKind::Unsend { target })
@@ -741,8 +741,9 @@ impl KithSocial {
     pub fn react(&self, circle_id: String, target: String, emoji: String, created_at: u64) -> Result<Vec<u8>, KithError> {
         self.author(&circle_id, created_at, EventKind::Reaction { target, emoji })
     }
-    pub fn edit(&self, circle_id: String, target: String, body: String, created_at: u64) -> Result<Vec<u8>, KithError> {
-        self.author(&circle_id, created_at, EventKind::Edit { target, body })
+    pub fn edit(&self, circle_id: String, target: String, body: String, media: Vec<String>, music: Option<TrackRefFfi>, created_at: u64) -> Result<Vec<u8>, KithError> {
+        let music = music.map(|m| m.into_core());
+        self.author(&circle_id, created_at, EventKind::Edit { target, body, media, music })
     }
     pub fn unsend(&self, circle_id: String, target: String, created_at: u64) -> Result<Vec<u8>, KithError> {
         self.author(&circle_id, created_at, EventKind::Unsend { target })
