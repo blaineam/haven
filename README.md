@@ -1,6 +1,6 @@
 # Haven
 
-> *Kith and kin* — your friends *and* your family. That's the whole product.
+> Your friends *and* your family. That's the whole product.
 
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
 [![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange.svg)](docs/ROADMAP.md)

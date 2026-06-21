@@ -1,4 +1,4 @@
-# Kith — App Store metadata
+# Haven — App Store metadata
 
 <!-- Edit, then sync: rocket meta Kith   (preview first: rocket meta Kith --dry-run) -->
 
@@ -9,7 +9,7 @@ Haven Circle
 Encrypted circles, no servers
 
 ## description
-Haven is a private social network for the people who actually matter — your kith and kin. No ads. No tracking. No algorithm deciding what you see. No company server holding your memories.
+Haven is a private social network for the people who actually matter. No ads. No tracking. No algorithm deciding what you see. No company server holding your memories.
 
 Everything you share is end-to-end encrypted with hybrid post-quantum cryptography and travels directly between your devices — over the internet, or over Bluetooth and Wi‑Fi when you're together offline. Even we can't read it.
 
@@ -27,7 +27,7 @@ Haven is a stronghold for the people you love. It's built so that no one — not
 private,encrypted,family,friends,circle,secure,messaging,offline,stories,calls,no ads,quantum
 
 ## promotional_text
-A private, end‑to‑end encrypted home for your closest people. No ads, no tracking, no servers — just kith and kin.
+A private, end‑to‑end encrypted home for your closest people. No ads, no tracking, no servers — just your people.
 
 ## whats_new
 What's new:
