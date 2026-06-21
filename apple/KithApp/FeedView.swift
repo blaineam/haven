@@ -1245,6 +1245,7 @@ private struct PostCard: View {
     @State private var showCommentMediaPicker = false
     @State private var showAudioRecorder = false
     @State private var showEdit = false
+    @State private var zoomTarget: ZoomTarget?
     @State private var players: [String: AVPlayer] = [:]
     @State private var showReactionPicker = false
     @State private var currentPage = 0
@@ -1326,27 +1327,52 @@ private struct PostCard: View {
         .onChange(of: audio.centeredPostId) { syncPlayback() }
         .onChange(of: currentPage) { if isActive { playVisibleVideo() } }
         .sheet(isPresented: $showEdit) { EditPostSheet(item: item) }
+        .fullScreenCover(item: $zoomTarget) { t in MediaZoomViewer(refs: t.refs, index: t.index) }
     }
 
     @ViewBuilder private var mediaView: some View {
-        if item.media.count > 1 {
-            // Swipeable carousel for multiple photos/videos, with page dots.
-            TabView(selection: $currentPage) {
-                ForEach(Array(item.media.enumerated()), id: \.offset) { idx, ref in
-                    mediaPage(ref).tag(idx)
-                }
-            }
-            .tabViewStyle(.page(indexDisplayMode: .always))
-            .indexViewStyle(.page(backgroundDisplayMode: .interactive))
-            .frame(height: 340)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-        } else if let ref = item.media.first {
+        if item.media.count == 1, let ref = item.media.first {
             ZStack(alignment: .bottomTrailing) {
                 mediaPage(ref)
                 if isVideo(ref) { muteButton }
             }
             .frame(height: 340)
             .clipShape(RoundedRectangle(cornerRadius: 16))
+            .onTapGesture { zoomTarget = ZoomTarget(refs: item.media, index: 0) }
+        } else if !item.media.isEmpty {
+            masonry   // up to 30 photos/videos in a staggered grid; tap any to zoom
+        }
+    }
+
+    /// Pinterest-style 2-column masonry that keeps each tile's natural aspect ratio.
+    private var masonry: some View {
+        let cols = 2
+        let columns = (0..<cols).map { ci in
+            item.media.enumerated().filter { $0.offset % cols == ci }.map { $0.element }
+        }
+        return HStack(alignment: .top, spacing: 6) {
+            ForEach(0..<cols, id: \.self) { ci in
+                VStack(spacing: 6) {
+                    ForEach(columns[ci], id: \.self) { ref in masonryTile(ref) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private func masonryTile(_ ref: String) -> some View {
+        if let m = MediaStore.shared.item(ref), let img = m.image {
+            Image(uiImage: img).resizable().aspectRatio(contentMode: .fit)
+                .frame(maxWidth: .infinity)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .overlay(alignment: .center) {
+                    if m.kind == .video {
+                        Image(systemName: "play.circle.fill").font(.largeTitle)
+                            .foregroundStyle(.white.opacity(0.9)).shadow(radius: 4)
+                    }
+                }
+                .onTapGesture {
+                    if let idx = item.media.firstIndex(of: ref) { zoomTarget = ZoomTarget(refs: item.media, index: idx) }
+                }
         }
     }
 
