@@ -87,6 +87,7 @@ final class FeedStore: ObservableObject {
         social = try? KithSocial(accountSeed: seed)
         loadPersisted()
         refreshCircles()
+        purgeDMIntruders()   // repair any DM circle the old broadcast-Hello bug contaminated
         refresh()
         guard ProcessInfo.processInfo.environment["KITH_NO_NET"] != "1" else { return }
         bringOnline(seed: seed)
@@ -161,6 +162,28 @@ final class FeedStore: ObservableObject {
     func dmCircleId(with idHex: String) -> String {
         let pair = [myNodeHex, idHex].sorted()
         return "dm:" + pair[0].prefix(16) + "-" + pair[1].prefix(16)
+    }
+
+    /// True only if `nodeHex` is one of the two parties encoded in a `dm:` circle id —
+    /// the guard that stops a third party from handshaking their way into a private DM.
+    func dmCircleAllows(_ circleId: String, _ nodeHex: String) -> Bool {
+        let parts = circleId.dropFirst(3).split(separator: "-").map(String.init)
+        guard parts.count == 2 else { return false }
+        return parts.contains(String(nodeHex.prefix(16)))
+    }
+
+    /// One-time repair for the old broadcast-Hello bug: drop anyone who wrongly ended up
+    /// inside a DM circle, so existing threads stop leaking to non-participants.
+    func purgeDMIntruders() {
+        guard let social else { return }
+        var fixed = false
+        for circle in circles where circle.id.hasPrefix("dm:") {
+            for nodeHex in social.contactNodeIds(circleId: circle.id) where !dmCircleAllows(circle.id, nodeHex) {
+                social.removeFromCircle(circleId: circle.id, nodeHex: nodeHex)
+                fixed = true
+            }
+        }
+        if fixed { persist(); refreshCircles() }
     }
 
     /// Start or open a DM with a known contact; returns the dm circle id.
@@ -411,8 +434,12 @@ final class FeedStore: ObservableObject {
                     for env in envs { sendIroh(1, eventPayload(circle.id, env), to: nodeHex) }
                 }
             }
-            nearbyBroadcast(0, hello)
-            for env in envs { nearbyBroadcast(1, eventPayload(circle.id, env)) }
+            // DMs are point-to-point — never broadcast their handshake/events to nearby
+            // non-members (that's what let a third party join someone else's DM).
+            if !circle.id.hasPrefix("dm:") {
+                nearbyBroadcast(0, hello)
+                for env in envs { nearbyBroadcast(1, eventPayload(circle.id, env)) }
+            }
             // Mesh: let a relay carry our handshake to members we can't reach directly.
             originateRelay(dests: Array(targets), inner: frame(0, hello))
         }
@@ -423,7 +450,7 @@ final class FeedStore: ObservableObject {
     private func nearbyPeerConnected() {
         guard let social else { return }
         nearbyActive = true
-        for circle in circles {
+        for circle in circles where !circle.id.hasPrefix("dm:") {   // never broadcast DMs to nearby
             guard let hello = helloPayload(circleId: circle.id, circleName: circle.name) else { continue }
             nearbyBroadcast(0, hello)
             for env in social.syncEnvelopes(circleId: circle.id) { nearbyBroadcast(1, eventPayload(circle.id, env)) }
@@ -450,7 +477,7 @@ final class FeedStore: ObservableObject {
         let payload = eventPayload(circleId, env)
         let members = social?.contactNodeIds(circleId: circleId) ?? []
         for nodeHex in members { sendIroh(1, payload, to: nodeHex) }
-        nearbyBroadcast(1, payload)
+        if !circleId.hasPrefix("dm:") { nearbyBroadcast(1, payload) }   // never broadcast DMs to nearby
         originateRelay(dests: members, inner: frame(1, payload))   // reach members behind a relay
         Task { await SharedStore.uploadEvent(circleId: circleId, env: env) }   // store-and-forward mailbox
         persist()   // we just authored something — save it
@@ -807,6 +834,9 @@ final class FeedStore: ObservableObject {
            expected != actual {
             return
         }
+        // A DM circle is strictly its two encoded parties — never let a third party (e.g. a
+        // contact who picked up a broadcast Hello) handshake their way into someone else's DM.
+        if circleId.hasPrefix("dm:") && !dmCircleAllows(circleId, idHex) { return }
         // Ensure the circle exists on our side, then add the sender to it.
         let isNewCircle = circleId != "default" && !circles.contains { $0.id == circleId }
         social.createCircle(id: circleId, name: circleName)
@@ -823,13 +853,16 @@ final class FeedStore: ObservableObject {
            let authName = social.verifyProfile(bundle: bundle, blob: profileBlob), !authName.isEmpty {
             ContactsStore.shared.setAuthoritativeName(idHex: idHex, authName)
         }
-        // Reply so the circle is mutual + back-fill its posts to them (both transports).
+        // Reply so the circle is mutual + back-fill its posts to them. Direct-send always;
+        // only fan out to nearby for non-DM circles (DMs stay strictly point-to-point).
+        let isDM = circleId.hasPrefix("dm:")
         if let hello = helloPayload(circleId: circleId, circleName: circleName) {
-            sendIroh(0, hello, to: idHex); nearbyBroadcast(0, hello)
+            sendIroh(0, hello, to: idHex)
+            if !isDM { nearbyBroadcast(0, hello) }
         }
         for env in social.syncEnvelopes(circleId: circleId) {
             sendIroh(1, eventPayload(circleId, env), to: idHex)
-            nearbyBroadcast(1, eventPayload(circleId, env))
+            if !isDM { nearbyBroadcast(1, eventPayload(circleId, env)) }
         }
         refresh()
     }
