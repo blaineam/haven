@@ -44,6 +44,10 @@
         background-image:linear-gradient(var(--bg),var(--bg)),var(--brand);
         background-origin:border-box;background-clip:content-box,border-box;display:grid;place-items:center}
   .ring img,.ring .ph{width:100%;height:100%;border-radius:999px;object-fit:cover;display:block;background:#222}
+  .ring-fallback{width:100%;height:100%;border-radius:999px;display:grid;place-items:center;
+        background:var(--brand);color:#fff;font-weight:800;font-size:22px;text-transform:uppercase}
+  .vmedia-fallback{position:absolute;inset:0;display:grid;place-items:center;padding:32px;text-align:center;
+        background:var(--brand);color:#fff;font-weight:700;font-size:22px;line-height:1.4}
   .story .add-plus{font-size:22px;color:var(--pink)}
   .story small{display:block;margin-top:6px;font-size:11px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
@@ -162,7 +166,9 @@
 // happen in your browser — no mock data, no server. (Networking to your circle over
 // iroh-in-browser is the next layer; until then the feed shows your own real, sealed
 // posts + anything synced in.)
-import init, { HavenEngine } from "./engine/kith_wasm.js";
+// The wasm class keeps its internal name (KithEngine) — bundle id + internal identifiers
+// stay "kith" so identities aren't wiped — but we read it as HavenEngine in the UI.
+import init, { KithEngine as HavenEngine } from "./engine/kith_wasm.js";
 let engine = null;
 
 async function boot(){
@@ -202,32 +208,27 @@ function relTime(ms){
 
 const me = { name:"You", initial:"Y" };
 const C = { violet:"#7C3AED", pink:"#EC4899", amber:"#F59E0B" };
-const img = (seed)=>`https://picsum.photos/seed/${seed}/640/640`;
 
-let state = {
-  tab:"feed", thread:null,
-  stories:[
-    {who:"Mom", initial:"M", media:img("kithmom"), caption:"Sunset from the porch 🌅", song:"Here Comes the Sun · The Beatles"},
-    {who:"Austin", initial:"A", media:img("kithaus"), caption:"", song:""},
-  ],
-  posts:[
-    {who:"Mom", initial:"M", time:"2m", body:"Made too much soup again. Come over? 🍲", media:img("kithsoup"), hearts:1, reacts:[["❤️",1],["😍",1]], hearted:false},
-    {who:"Austin", initial:"A", time:"1h", body:"First hike of the season. The whole valley was green.", media:img("kithhike"), hearts:0, reacts:[["🔥",2]], hearted:false},
-    {who:"You", initial:"Y", time:"3h", body:"Trying the web version of Haven. Looks just like the phone 💜", media:"", hearts:0, reacts:[], hearted:false},
-  ],
-  dms:[
-    {who:"Mom", initial:"M", msgs:[
-      {me:false, t:"Did you eat?", time:"9:01"},
-      {me:true, t:"Yes mom 😄", time:"9:02"},
-      {me:false, t:"Good. Love you", time:"9:02"},
-    ]},
-    {who:"Austin", initial:"A", msgs:[
-      {me:true, t:"You free Saturday?", time:"Yesterday"},
-      {me:false, t:"For the trail? Always.", time:"Yesterday"},
-    ]},
-  ],
-  silent:false,
-};
+// No sample data — everything below comes from the real engine. The browser holds your
+// identity + sealed posts/stories; media bytes and DM threads live on the phone until the
+// networking layer (see docs/KITH-NET-RELAY.md) syncs them here.
+let state = { tab:"feed", thread:null, silent:false };
+let currentStories = [];
+
+/// Real stories reduced from the engine's feed (story==true), newest first.
+function feedStories(){
+  if(!engine) return [];
+  let items=[];
+  try{ items=JSON.parse(engine.feed_json(BigInt(Date.now()))); }catch(e){ items=[]; }
+  const myId=engine.node_id_hex();
+  return items.filter(it=>it.story && !it.unsent)
+    .sort((a,b)=>b.created_at-a.created_at)
+    .map(it=>({
+      who: it.author===myId ? "You" : it.author.slice(0,6),
+      initial: it.author===myId ? "Y" : it.author.slice(0,1).toUpperCase(),
+      caption: it.body||"", media:"", song:"",
+    }));
+}
 
 const el = (id)=>document.getElementById(id);
 const screen = ()=>el("screen");
@@ -235,19 +236,21 @@ const screen = ()=>el("screen");
 function render(){
   document.querySelectorAll("nav.tabs button").forEach(b=>b.classList.toggle("on", b.dataset.tab===state.tab));
   el("topbar").style.display = (state.tab==="feed") ? "flex" : "flex";
-  if(state.thread!=null){ renderThread(); return; }
   if(state.tab==="feed") renderFeed();
   else if(state.tab==="messages") renderMessages();
   else renderYou();
 }
 
 function renderFeed(){
+  currentStories = feedStories();
   let h = `<div class="stories">`;
   h += `<div class="story" onclick="alert('Open the iOS/macOS app to capture a story 📸')">
           <div class="ring add"><span class="add-plus">＋</span></div><small>Add</small></div>`;
-  state.stories.forEach((s,i)=>{
+  currentStories.forEach((s,i)=>{
+    const face = s.media ? `<img src="${s.media}" alt="">`
+      : `<div class="ring-fallback">${esc((s.caption||s.who).slice(0,1))}</div>`;
     h += `<div class="story" onclick="openViewer(${i})">
-            <div class="ring"><img src="${s.media}" alt=""></div><small>${s.who}</small></div>`;
+            <div class="ring">${face}</div><small>${esc(s.who)}</small></div>`;
   });
   h += `</div>`;
   h += `<div class="compose">
@@ -276,28 +279,13 @@ function postCard(p,i){
 }
 
 function renderMessages(){
-  let h = `<div class="title">Messages</div>`;
-  state.dms.forEach((d,i)=>{
-    const last = d.msgs[d.msgs.length-1];
-    h += `<div class="mrow" onclick="openThread(${i})">
-      <div class="avatar">${d.initial}</div>
-      <div class="meta"><div class="nm">${d.who}</div><div class="pv">${esc(last.t)}</div></div></div>`;
-  });
-  screen().innerHTML = h;
-}
-
-function renderThread(){
-  const d = state.dms[state.thread];
-  let h = `<button class="backbtn" onclick="state.thread=null;render()">‹ Messages</button>
-           <div class="title" style="padding-top:0">${d.who}</div><div class="bubbles">`;
-  d.msgs.forEach(m=>{
-    h += `<div class="bub ${m.me?'me':'them'}">${esc(m.t)}<div class="bubtime" style="${m.me?'text-align:right':''}">${m.time}</div></div>`;
-  });
-  h += `</div><div class="compose" style="margin-top:14px">
-        <input id="dmInput" placeholder="Message…" onkeydown="if(event.key==='Enter')sendDM()">
-        <button class="send" onclick="sendDM()">Send</button></div>`;
-  screen().innerHTML = h;
-  screen().scrollTop = screen().scrollHeight;
+  // DMs are private 1:1 threads that live on your phone; they reach the web client with
+  // the networking layer (docs/KITH-NET-RELAY.md). No fake threads here — honest empty state.
+  screen().innerHTML = `<div class="title">Messages</div>
+    <div class="card" style="text-align:center;color:var(--text2)">
+      💬<br><b>Your conversations live on your phone</b><br>
+      <span style="font-size:13px">Direct messages are end-to-end sealed to each person. They'll
+      appear here once the web client syncs with your circle (networking, next).</span></div>`;
 }
 
 function renderYou(){
@@ -334,11 +322,6 @@ window.heart = function(i,e){
     h.style.left=(e.clientX-45)+"px"; h.style.top=(e.clientY-60)+"px"; document.body.appendChild(h);
     setTimeout(()=>h.remove(),800); }
 };
-function openThread(i){ state.thread=i; render(); }
-function sendDM(){
-  const inp=el("dmInput"); const t=(inp.value||"").trim(); if(!t) return;
-  state.dms[state.thread].msgs.push({me:true,t,time:"now"}); render();
-}
 el("silentBtn").onclick=()=>{ state.silent=!state.silent; el("silentBtn").textContent=state.silent?"🔕":"🔔"; };
 
 // story viewer
@@ -346,26 +329,27 @@ let vIdx=0, vTimer=null, vProg=0;
 function openViewer(i){ vIdx=i; el("viewer").classList.add("show"); showStory(); }
 function closeViewer(){ el("viewer").classList.remove("show"); clearInterval(vTimer); }
 function showStory(){
-  const s=state.stories[vIdx]; if(!s){ closeViewer(); return; }
-  el("vmedia").innerHTML=`<img src="${s.media}" alt="">`;
+  const s=currentStories[vIdx]; if(!s){ closeViewer(); return; }
+  el("vmedia").innerHTML = s.media ? `<img src="${s.media}" alt="">`
+    : `<div class="vmedia-fallback">${esc(s.caption||s.who)}</div>`;
   el("vhead").innerHTML=`<div class="avatar" style="width:30px;height:30px;font-size:13px">${s.initial}</div>
-        <b>${s.who}</b><span style="opacity:.7;font-size:12px">· now</span>`;
+        <b>${esc(s.who)}</b><span style="opacity:.7;font-size:12px">· now</span>`;
   el("vcap").textContent=s.caption||"";
-  el("vsong").innerHTML=s.song?`🎵 ${s.song}`:"";
-  let bars=""; state.stories.forEach((_,i)=>bars+=`<div class="vbar"><i id="vb${i}"></i></div>`);
+  el("vsong").innerHTML=s.song?`🎵 ${esc(s.song)}`:"";
+  let bars=""; currentStories.forEach((_,i)=>bars+=`<div class="vbar"><i id="vb${i}"></i></div>`);
   el("vbars").innerHTML=bars;
   for(let i=0;i<vIdx;i++) el("vb"+i).style.width="100%";
   clearInterval(vTimer); vProg=0;
   vTimer=setInterval(()=>{ vProg+=0.02; const b=el("vb"+vIdx); if(b) b.style.width=(vProg*100)+"%";
         if(vProg>=1) viewerNext(); },100);
 }
-function viewerNext(){ if(vIdx+1<state.stories.length){vIdx++;showStory();} else closeViewer(); }
+function viewerNext(){ if(vIdx+1<currentStories.length){vIdx++;showStory();} else closeViewer(); }
 function viewerPrev(){ if(vIdx>0){vIdx--;showStory();} }
 
 function esc(s){ return (s||"").replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 
 // Inline onclick handlers in the rendered HTML run in global scope, so expose them.
-Object.assign(window, { render, state, openThread, sendDM, openViewer, viewerPrev, viewerNext, closeViewer });
+Object.assign(window, { render, state, openViewer, viewerPrev, viewerNext, closeViewer });
 document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>{ state.tab=b.dataset.tab; state.thread=null; render(); });
 boot();
 </script>
