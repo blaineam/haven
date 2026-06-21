@@ -132,6 +132,13 @@ final class FeedStore: ObservableObject {
         syncWithContacts()
     }
 
+    /// Remove a member from the active (custom) circle only — not a global block.
+    func removeFromActiveCircle(_ idHex: String) {
+        guard let social, activeCircleId != "default" else { return }
+        social.removeFromCircle(circleId: activeCircleId, nodeHex: idHex)
+        persist(); refreshCircles(); refresh()
+    }
+
     /// Leave the active circle (you always keep the default one).
     func leaveActiveCircle() {
         guard activeCircleId != "default", let social else { return }

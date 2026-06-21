@@ -599,6 +599,16 @@ impl KithSocial {
         st.circles.retain(|c| c.id != id || c.id == DEFAULT_CIRCLE);
     }
 
+    /// Remove a member from ONE circle (their membership + their events there) without
+    /// blocking them globally — they stay in your other circles and your default circle.
+    pub fn remove_from_circle(&self, circle_id: String, node_hex: String) {
+        let mut st = self.state.lock().unwrap();
+        if let Some(c) = st.circles.iter_mut().find(|c| c.id == circle_id) {
+            c.members.retain(|m| hex(&m.node_id_bytes()) != node_hex);
+            c.events.retain(|e| e.author != node_hex);
+        }
+    }
+
     /// Block a node: remove them from every circle (members + their events) so their
     /// posts vanish and they can no longer be a sealed recipient. The caller also keeps
     /// a blocklist that drops their inbound frames and prevents re-add on handshake.

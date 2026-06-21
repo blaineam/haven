@@ -43,13 +43,19 @@ struct CircleView: View {
                             }
                     }
                     .onDelete { offsets in
-                        guard isDefault else { return }   // removing from sub-circles: leave the circle instead
-                        offsets.map { membersInCircle[$0] }.forEach(contacts.remove)
+                        let members = offsets.map { membersInCircle[$0] }
+                        if isDefault {
+                            members.forEach(contacts.remove)        // leaves your whole circle
+                        } else {
+                            members.forEach { store.removeFromActiveCircle($0.idHex) }   // this circle only
+                        }
                     }
                 } header: {
                     Text(isDefault ? "People in your circle" : "In \(store.activeCircleName)")
                 } footer: {
-                    Text("“Waiting” means the secure handshake hasn't completed yet. Now just one of you needs to scan the other's invite — the other gets a request to approve. New identity? Re-scan. Swipe left to block someone.")
+                    Text(isDefault
+                         ? "“Waiting” means the secure handshake hasn't completed yet. Now just one of you needs to scan the other's invite — the other gets a request to approve. Swipe to remove, or swipe left to block."
+                         : "Swipe to remove someone from just this circle (they stay in your other circles). Swipe left to block them everywhere.")
                 }
 
                 if !isDefault {
