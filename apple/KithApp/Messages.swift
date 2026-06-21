@@ -42,7 +42,7 @@ struct MessagesView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(name).font(.subheadline.weight(.medium))
                 if let last = store.messages(in: circleId).last {
-                    Text(last.unsent ? "Message unsent" : last.body)
+                    Text(last.unsent ? "Message unsent" : (SecretMessages.isSecret(last.body) ? "🔒 Secret message" : last.body))
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
@@ -82,6 +82,7 @@ struct DMThreadView: View {
     let circleId: String
     @ObservedObject private var store = FeedStore.shared
     @State private var text = ""
+    @State private var secret = false
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -120,16 +121,20 @@ struct DMThreadView: View {
         .onAppear { store.forceSync() }
     }
 
-    private func bubble(_ m: FeedItemFfi) -> some View {
+    @ViewBuilder private func bubble(_ m: FeedItemFfi) -> some View {
         HStack {
             if m.isMe { Spacer(minLength: 50) }
             VStack(alignment: m.isMe ? .trailing : .leading, spacing: 2) {
-                Text(m.unsent ? "Message unsent" : m.body)
-                    .italic(m.unsent)
-                    .padding(.horizontal, 12).padding(.vertical, 8)
-                    .background(m.isMe ? AnyShapeStyle(KithTheme.brand) : AnyShapeStyle(Color(.secondarySystemBackground)),
-                                in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .foregroundStyle(m.isMe ? .white : .primary)
+                if !m.unsent && SecretMessages.isSecret(m.body) {
+                    SecretBubble(text: SecretMessages.text(m.body), isMe: m.isMe)
+                } else {
+                    Text(m.unsent ? "Message unsent" : m.body)
+                        .italic(m.unsent)
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(m.isMe ? AnyShapeStyle(KithTheme.brand) : AnyShapeStyle(Color(.secondarySystemBackground)),
+                                    in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .foregroundStyle(m.isMe ? .white : .primary)
+                }
                 Text(relativeTimeShort(m.createdAt)).font(.caption2).foregroundStyle(.tertiary)
             }
             if !m.isMe { Spacer(minLength: 50) }
@@ -138,11 +143,15 @@ struct DMThreadView: View {
 
     private var composer: some View {
         HStack(spacing: 10) {
-            TextField("Message…", text: $text, axis: .vertical)
+            Button { secret.toggle() } label: {
+                Image(systemName: secret ? "lock.fill" : "lock.open")
+                    .font(.title3).foregroundStyle(secret ? KithTheme.pink : .secondary)
+            }
+            TextField(secret ? "Secret message…" : "Message…", text: $text, axis: .vertical)
                 .focused($focused)
                 .padding(.horizontal, 14).padding(.vertical, 10)
                 .background(.background, in: Capsule())
-                .overlay(Capsule().strokeBorder(Color.white.opacity(0.08)))
+                .overlay(Capsule().strokeBorder(secret ? KithTheme.pink.opacity(0.6) : Color.white.opacity(0.08)))
             Button { send() } label: {
                 Image(systemName: "arrow.up.circle.fill").font(.title).foregroundStyle(KithTheme.pink)
             }
@@ -155,8 +164,8 @@ struct DMThreadView: View {
     private func send() {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !t.isEmpty else { return }
-        store.sendMessage(to: circleId, t)
-        text = ""; focused = false
+        store.sendMessage(to: circleId, secret ? SecretMessages.encode(t) : t)
+        text = ""; secret = false; focused = false
     }
 
     /// Oldest → newest, so the newest message sits at the bottom (standard chat order).
