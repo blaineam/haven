@@ -1257,6 +1257,7 @@ private struct PostCard: View {
 
     @ObservedObject private var audio = AudioCoordinator.shared
     @ObservedObject private var profile = ProfileStore.shared
+    @ObservedObject private var feed = FeedStore.shared
     @State private var commentText = ""
     @State private var commentMedia: [String] = []
     @State private var showCommentMediaPicker = false
@@ -1507,6 +1508,14 @@ private struct PostCard: View {
                 Text("edited").font(.caption2)
                     .padding(.horizontal, 6).padding(.vertical, 2)
                     .background(Color(.tertiarySystemFill), in: Capsule()).foregroundStyle(.secondary)
+            }
+            // Sync state for your own posts, only when a shared store is in play (else
+            // posts deliver peer-to-peer and there's no "backed up" notion to show).
+            if item.isMe && !item.unsent && SharedStore.isVolunteering {
+                Image(systemName: feed.relayReachable ? "cloud.fill" : "cloud")
+                    .font(.caption2)
+                    .foregroundStyle(feed.relayReachable ? AnyShapeStyle(KithTheme.pink) : AnyShapeStyle(Color.secondary))
+                    .help(feed.relayReachable ? "Backed up to your circle's store" : "Waiting to sync")
             }
             Spacer()
             if item.isMe && !item.unsent {
