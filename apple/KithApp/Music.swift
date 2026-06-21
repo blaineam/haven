@@ -16,50 +16,94 @@ func trackIds(_ catalogId: String) -> (store: String?, pid: UInt64?) {
     return q.items?.first
 }
 
-/// A real Apple Music song picker. Presents the system media picker so the user picks
-/// an actual song from their Apple Music / library; we keep only a `TrackRef`
-/// (catalog id + title + artist + duration) — never the audio. Each viewer plays it
-/// through their own Apple Music, so Kith shares the *reference*, not the file.
-struct SongPicker: UIViewControllerRepresentable {
+/// An in-app song picker that lets you **hear** a song before choosing it. Browses your
+/// music library, plays a preview through Apple Music, and keeps only a `TrackRef`
+/// (the ids + title/artist) — never the audio. Each viewer plays it through their own
+/// Apple Music, so Haven shares the *reference*, not the file.
+struct SongPicker: View {
     var onPick: (TrackRefFfi) -> Void
     @Environment(\.dismiss) private var dismiss
 
-    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    @State private var songs: [MPMediaItem] = []
+    @State private var query = ""
+    @State private var previewing: MPMediaEntityPersistentID?
+    @State private var denied = false
+    private let preview = MPMusicPlayerController.applicationMusicPlayer
 
-    func makeUIViewController(context: Context) -> MPMediaPickerController {
-        let picker = MPMediaPickerController(mediaTypes: .music)
-        picker.allowsPickingMultipleItems = false
-        picker.showsCloudItems = true
-        picker.prompt = "Pick a song to play on your post"
-        picker.delegate = context.coordinator
-        return picker
+    private var filtered: [MPMediaItem] {
+        guard !query.isEmpty else { return songs }
+        return songs.filter {
+            ($0.title ?? "").localizedCaseInsensitiveContains(query) ||
+            ($0.artist ?? "").localizedCaseInsensitiveContains(query)
+        }
     }
 
-    func updateUIViewController(_ vc: MPMediaPickerController, context: Context) {}
-
-    final class Coordinator: NSObject, MPMediaPickerControllerDelegate {
-        let parent: SongPicker
-        init(_ parent: SongPicker) { self.parent = parent }
-
-        func mediaPicker(_ picker: MPMediaPickerController, didPickMediaItems collection: MPMediaItemCollection) {
-            if let item = collection.items.first {
-                // Encode BOTH ids: the catalog store id (universal — lets the recipient
-                // play it from their own Apple Music) and the library persistent id (an
-                // exact local match for the sender). Format: "<storeID>~<persistentID>".
-                let cid = "\(item.playbackStoreID)~\(item.persistentID)"
-                parent.onPick(TrackRefFfi(
-                    catalogId: cid,
-                    title: item.title ?? "Unknown song",
-                    artist: item.artist ?? "",
-                    artworkUrl: "",
-                    durationMs: UInt64(max(0, item.playbackDuration) * 1000)
-                ))
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                KithBackground()
+                if denied {
+                    ContentUnavailableView("Music access off", systemImage: "music.note.list",
+                                           description: Text("Allow access to your music in Settings to pick a song."))
+                } else {
+                    List(filtered, id: \.persistentID) { item in
+                        HStack(spacing: 12) {
+                            Button { togglePreview(item) } label: {
+                                Image(systemName: previewing == item.persistentID ? "pause.circle.fill" : "play.circle.fill")
+                                    .font(.title2).foregroundStyle(KithTheme.pink)
+                            }
+                            .buttonStyle(.plain)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.title ?? "Unknown song").font(.subheadline.weight(.medium)).lineLimit(1)
+                                Text(item.artist ?? "").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            Spacer()
+                            Button("Use") { choose(item) }
+                                .font(.subheadline.weight(.semibold)).tint(KithTheme.pink).buttonStyle(.bordered)
+                        }
+                        .listRowBackground(Color.clear)
+                    }
+                    .scrollContentBackground(.hidden)
+                    .searchable(text: $query, prompt: "Search your music")
+                }
             }
-            parent.dismiss()
+            .navigationTitle("Pick a song")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Cancel") { stopPreview(); dismiss() } } }
+            .onAppear(perform: load)
+            .onDisappear(perform: stopPreview)
         }
+    }
 
-        func mediaPickerDidCancel(_ picker: MPMediaPickerController) {
-            parent.dismiss()
+    private func load() {
+        MPMediaLibrary.requestAuthorization { status in
+            DispatchQueue.main.async {
+                guard status == .authorized else { denied = true; return }
+                songs = (MPMediaQuery.songs().items ?? []).sorted { ($0.title ?? "") < ($1.title ?? "") }
+            }
         }
+    }
+    private func togglePreview(_ item: MPMediaItem) {
+        if previewing == item.persistentID { stopPreview() }
+        else {
+            preview.setQueue(with: MPMediaItemCollection(items: [item]))
+            preview.play()
+            previewing = item.persistentID
+        }
+    }
+    private func stopPreview() {
+        if previewing != nil { preview.stop() }
+        previewing = nil
+    }
+    private func choose(_ item: MPMediaItem) {
+        stopPreview()
+        onPick(TrackRefFfi(
+            catalogId: "\(item.playbackStoreID)~\(item.persistentID)",
+            title: item.title ?? "Unknown song",
+            artist: item.artist ?? "",
+            artworkUrl: "",
+            durationMs: UInt64(max(0, item.playbackDuration) * 1000)
+        ))
+        dismiss()
     }
 }
