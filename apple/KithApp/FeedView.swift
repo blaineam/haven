@@ -232,9 +232,16 @@ final class FeedStore: ObservableObject {
 
     /// Send a text message into a DM circle + broadcast it.
     func sendMessage(to circleId: String, _ body: String) {
-        guard let social, let env = try? social.post(circleId: circleId, body: body, media: [], music: nil, retentionSecs: nil, story: false, createdAt: now()) else { return }
+        sendMessage(to: circleId, body, media: [], music: nil)
+    }
+
+    /// Send a DM with optional media (photos/videos/audio) and a song.
+    func sendMessage(to circleId: String, _ body: String, media: [String], music: TrackRefFfi?) {
+        guard let social, let env = try? social.post(circleId: circleId, body: body, media: media, music: music, retentionSecs: nil, story: false, createdAt: now()) else { return }
         broadcastEvent(circleId, env)
         postTick += 1
+        let circle = circleId
+        for ref in media { Task { await SharedStore.backup(ref: ref, circleId: circle, social: social) } }
     }
 
     /// Node ids in a circle for whom we hold keys (handshake complete).

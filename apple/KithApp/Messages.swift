@@ -83,6 +83,11 @@ struct DMThreadView: View {
     @ObservedObject private var store = FeedStore.shared
     @State private var text = ""
     @State private var secret = false
+    @State private var attachedMedia: [String] = []
+    @State private var attachedTrack: TrackRefFfi?
+    @State private var showMedia = false
+    @State private var showSongs = false
+    @State private var zoom: ZoomTarget?
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -119,17 +124,52 @@ struct DMThreadView: View {
             }
         }
         .onAppear { store.forceSync() }
+        .fullScreenCover(item: $zoom) { t in MediaZoomViewer(refs: t.refs, index: t.index) }
+    }
+
+    @ViewBuilder private func dmMedia(_ m: FeedItemFfi) -> some View {
+        let refs = m.media
+        if refs.count == 1, let ref = refs.first, let img = MediaStore.shared.item(ref)?.image {
+            Image(uiImage: img).resizable().scaledToFill()
+                .frame(maxWidth: 220, maxHeight: 280).clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay(alignment: .center) {
+                    if MediaStore.shared.item(ref)?.kind == .video {
+                        Image(systemName: "play.circle.fill").font(.largeTitle).foregroundStyle(.white)
+                    }
+                }
+                .onTapGesture { zoom = ZoomTarget(refs: refs, index: 0) }
+        } else if !refs.isEmpty {
+            LazyVGrid(columns: [GridItem(.flexible(), spacing: 4), GridItem(.flexible())], spacing: 4) {
+                ForEach(Array(refs.enumerated()), id: \.offset) { i, ref in
+                    if let img = MediaStore.shared.item(ref)?.image {
+                        Image(uiImage: img).resizable().scaledToFill().frame(width: 104, height: 104)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .overlay(alignment: .center) {
+                                if MediaStore.shared.item(ref)?.kind == .video { Image(systemName: "play.circle.fill").foregroundStyle(.white) }
+                            }
+                            .onTapGesture { zoom = ZoomTarget(refs: refs, index: i) }
+                    }
+                }
+            }
+            .frame(width: 216)
+        }
     }
 
     @ViewBuilder private func bubble(_ m: FeedItemFfi) -> some View {
         HStack {
             if m.isMe { Spacer(minLength: 50) }
-            VStack(alignment: m.isMe ? .trailing : .leading, spacing: 2) {
-                if !m.unsent && SecretMessages.isSecret(m.body) {
+            VStack(alignment: m.isMe ? .trailing : .leading, spacing: 4) {
+                if !m.media.isEmpty { dmMedia(m) }
+                if let t = m.music { DMSongChip(track: t, isMe: m.isMe) }
+                if m.unsent {
+                    Text("Message unsent").italic()
+                        .padding(.horizontal, 12).padding(.vertical, 8)
+                        .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .foregroundStyle(.secondary)
+                } else if SecretMessages.isSecret(m.body) {
                     SecretBubble(text: SecretMessages.text(m.body), isMe: m.isMe)
-                } else {
-                    Text(m.unsent ? "Message unsent" : m.body)
-                        .italic(m.unsent)
+                } else if !m.body.isEmpty {
+                    Text(m.body)
                         .padding(.horizontal, 12).padding(.vertical, 8)
                         .background(m.isMe ? AnyShapeStyle(KithTheme.brand) : AnyShapeStyle(Color(.secondarySystemBackground)),
                                     in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -150,30 +190,64 @@ struct DMThreadView: View {
     }
 
     private var composer: some View {
-        HStack(spacing: 10) {
-            Button { secret.toggle() } label: {
-                Image(systemName: secret ? "lock.fill" : "lock.open")
-                    .font(.title3).foregroundStyle(secret ? KithTheme.pink : .secondary)
+        VStack(spacing: 8) {
+            if !attachedMedia.isEmpty || attachedTrack != nil {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(attachedMedia, id: \.self) { ref in
+                            if let img = MediaStore.shared.item(ref)?.image {
+                                ZStack(alignment: .topTrailing) {
+                                    Image(uiImage: img).resizable().scaledToFill().frame(width: 52, height: 52).clipShape(RoundedRectangle(cornerRadius: 10))
+                                    Button { attachedMedia.removeAll { $0 == ref } } label: {
+                                        Image(systemName: "xmark.circle.fill").foregroundStyle(.white).background(Circle().fill(.black.opacity(0.5)))
+                                    }.padding(2)
+                                }
+                            }
+                        }
+                        if let t = attachedTrack {
+                            HStack(spacing: 5) {
+                                Image(systemName: "music.note")
+                                Text(t.title).lineLimit(1)
+                                Button { attachedTrack = nil } label: { Image(systemName: "xmark.circle.fill") }
+                            }
+                            .font(.caption).padding(.horizontal, 8).padding(.vertical, 6)
+                            .background(KithTheme.pink.opacity(0.18), in: Capsule())
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                }
             }
-            TextField(secret ? "Secret message…" : "Message…", text: $text, axis: .vertical)
-                .focused($focused)
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .background(.background, in: Capsule())
-                .overlay(Capsule().strokeBorder(secret ? KithTheme.pink.opacity(0.6) : Color.white.opacity(0.08)))
-            Button { send() } label: {
-                Image(systemName: "arrow.up.circle.fill").font(.title).foregroundStyle(KithTheme.pink)
+            HStack(spacing: 10) {
+                Menu {
+                    Button { showMedia = true } label: { Label("Photo or video", systemImage: "photo") }
+                    Button { showSongs = true } label: { Label("Song", systemImage: "music.note") }
+                    Button { secret.toggle() } label: { Label(secret ? "Secret: on" : "Send secretly", systemImage: secret ? "lock.fill" : "lock") }
+                } label: {
+                    Image(systemName: "plus.circle.fill").font(.title2).foregroundStyle(KithTheme.pink)
+                }
+                TextField(secret ? "Secret message…" : "Message…", text: $text, axis: .vertical)
+                    .focused($focused)
+                    .padding(.horizontal, 14).padding(.vertical, 10)
+                    .background(.background, in: Capsule())
+                    .overlay(Capsule().strokeBorder(secret ? KithTheme.pink.opacity(0.6) : Color.white.opacity(0.08)))
+                Button { send() } label: {
+                    Image(systemName: "arrow.up.circle.fill").font(.title).foregroundStyle(KithTheme.pink)
+                }
+                .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty && attachedMedia.isEmpty && attachedTrack == nil)
             }
-            .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
         }
         .padding(.horizontal, 14).padding(.vertical, 10)
         .background(.ultraThinMaterial)
+        .sheet(isPresented: $showMedia) { MediaPicker { refs in attachedMedia.append(contentsOf: refs) } }
+        .sheet(isPresented: $showSongs) { SongPicker { t in attachedTrack = t } }
     }
 
     private func send() {
         let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return }
-        store.sendMessage(to: circleId, secret ? SecretMessages.encode(t) : t)
-        text = ""; secret = false; focused = false
+        guard !t.isEmpty || !attachedMedia.isEmpty || attachedTrack != nil else { return }
+        let body = secret ? SecretMessages.encode(t) : t
+        store.sendMessage(to: circleId, body, media: attachedMedia, music: attachedTrack)
+        text = ""; secret = false; attachedMedia = []; attachedTrack = nil; focused = false
     }
 
     /// Oldest → newest, so the newest message sits at the bottom (standard chat order).
@@ -185,5 +259,32 @@ struct DMThreadView: View {
         if let last = ordered.last {
             withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
         }
+    }
+}
+
+/// A play/pause song chip for DM messages.
+struct DMSongChip: View {
+    let track: TrackRefFfi
+    let isMe: Bool
+    @State private var playing = false
+    var body: some View {
+        Button {
+            if playing { MusicPlayback.shared.stop(); playing = false }
+            else { MusicPlayback.shared.play(track); playing = true }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: playing ? "pause.circle.fill" : "play.circle.fill").font(.title3)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(track.title).font(.caption.weight(.semibold)).lineLimit(1)
+                    Text(track.artist).font(.caption2).lineLimit(1).opacity(0.8)
+                }
+                EqualizerBars(animating: playing)
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .foregroundStyle(isMe ? .white : .primary)
+            .background(isMe ? AnyShapeStyle(KithTheme.brand) : AnyShapeStyle(Color(.secondarySystemBackground)),
+                        in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        }
+        .buttonStyle(.plain)
     }
 }
