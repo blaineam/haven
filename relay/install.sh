@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Kith Bridge — one-command setup to host your circle's always-on mailbox.
+# Haven Bridge — one-command setup to host your circle's always-on mailbox.
 #
 # A "bridge" is just an S3-compatible bucket your circle shares. Every post is stored
 # SEALED (the bridge can't read it) and re-served to anyone who's offline, so messages
@@ -45,7 +45,7 @@ else
   chmod 600 "$CREDFILE"
 fi
 
-echo "▸ Kith Bridge (rclone serve s3 — MIT)  OS=$OS ARCH=$ARCH mode=$MODE"
+echo "▸ Haven Bridge (rclone serve s3 — MIT)  OS=$OS ARCH=$ARCH mode=$MODE"
 echo "▸ Data dir: $DATADIR"
 
 start_docker() {
@@ -87,9 +87,9 @@ LANIP="$(ipconfig getifaddr en0 2>/dev/null || hostname -I 2>/dev/null | awk '{p
 cat <<EOF
 
 ═══════════════════════════════════════════════════════════════
-✓ Your Kith bridge is live (rclone serve s3 — MIT, fully open source).
+✓ Your Haven bridge is live (rclone serve s3 — MIT, fully open source).
 
-Paste these into Kith → You → Advanced → Storage → Custom S3 bucket,
+Paste these into Haven → You → Advanced → Storage → Custom S3 bucket,
 then turn on "Volunteer as tribute":
 
    Endpoint:    $LANIP:$PORT

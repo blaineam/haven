@@ -1,4 +1,4 @@
-# Kith Bridge — be the always-on home for your circle
+# Haven Bridge — be the always-on home for your circle
 
 A **bridge** keeps your circle's messages flowing even when people aren't online at the
 same time. It's a zero-knowledge store-and-forward **mailbox**: every post is uploaded
