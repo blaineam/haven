@@ -10,16 +10,53 @@ import CryptoKit
 /// the circle roster before it's opened. No credentials are ever shared between members
 /// — the volunteer simply acts as a durable, always-available media source over the
 /// existing P2P media protocol. Keys live only in the device Keychain.
+/// The circle's shared relay bucket, received (sealed) from whoever volunteered theirs.
+/// Distinct from StorageStore (your *own* bucket). Secret lives only in the Keychain.
+@MainActor
+final class SharedMailboxStore: ObservableObject {
+    static let shared = SharedMailboxStore()
+    @Published private(set) var config: S3Config?
+
+    private let d = UserDefaults.standard
+    private let key = "kith.sharedMailbox"
+
+    private init() {
+        if let data = d.data(forKey: key), var c = try? JSONDecoder().decode(S3Config.self, from: data) {
+            c.secret = Keychain.get("sharedMailboxSecret") ?? ""
+            config = c
+        }
+    }
+
+    func set(_ c: S3Config) {
+        var stored = c; stored.secret = ""   // keep the secret out of UserDefaults
+        d.set(try? JSONEncoder().encode(stored), forKey: key)
+        Keychain.set(c.secret, for: "sharedMailboxSecret")
+        config = c
+    }
+    func clear() {
+        d.removeObject(forKey: key)
+        Keychain.set("", for: "sharedMailboxSecret")
+        config = nil
+    }
+}
+
 @MainActor
 enum SharedStore {
-    static var isVolunteering: Bool { StorageStore.shared.shareCircleMedia && S3Client(StorageStore.shared) != nil }
+    /// The bucket to use for the circle's mailbox: the shared relay if one was set,
+    /// otherwise your own bucket *if* you've opted in as the volunteer.
+    static func mailboxClient() -> S3Client? {
+        if let c = SharedMailboxStore.shared.config, c.isComplete { return S3Client(config: c) }
+        if StorageStore.shared.shareCircleMedia { return S3Client(StorageStore.shared) }
+        return nil
+    }
+    /// True when this device participates in a shared mailbox (own volunteer or received relay).
+    static var isVolunteering: Bool { mailboxClient() != nil }
 
     private static func key(_ ref: String) -> String { "kith/media/\(ref)" }
 
     /// Seal a locally-held media blob to the circle and upload it (idempotent).
     static func backup(ref: String, circleId: String, social: KithSocial) async {
-        guard isVolunteering, let s3 = S3Client(StorageStore.shared),
-              let raw = MediaStore.shared.rawBytes(ref) else { return }
+        guard let s3 = mailboxClient(), let raw = MediaStore.shared.rawBytes(ref) else { return }
         if await s3.headObject(key: key(ref)) { return }   // already stored
         guard let sealed = try? social.sealCircleMedia(circleId: circleId, data: raw) else { return }
         try? await s3.putObject(key: key(ref), data: sealed)
@@ -27,7 +64,7 @@ enum SharedStore {
 
     /// Fetch a blob from the bucket and open it for whichever circle it belongs to.
     static func restore(ref: String, circleIds: [String], social: KithSocial) async -> Data? {
-        guard let s3 = S3Client(StorageStore.shared) else { return nil }
+        guard let s3 = mailboxClient() else { return nil }
         guard let sealed = try? await s3.getObject(key: key(ref)) else { return nil }
         for cid in circleIds {
             if let data = social.openCircleMedia(circleId: cid, sealed: sealed) { return data }
@@ -51,7 +88,7 @@ enum SharedStore {
 
     /// Drop a sealed event envelope into the circle's mailbox (idempotent).
     static func uploadEvent(circleId: String, env: Data) async {
-        guard isVolunteering, let s3 = S3Client(StorageStore.shared) else { return }
+        guard let s3 = mailboxClient() else { return }
         let key = mailboxKey(circleId, env)
         if seenMailbox.contains(key) { return }
         seenMailbox.insert(key)
@@ -61,7 +98,7 @@ enum SharedStore {
 
     /// Poll the mailbox for envelopes we haven't seen. Returns (circleId, envelope) pairs.
     static func pollMailbox(circleIds: [String]) async -> [(String, Data)] {
-        guard let s3 = S3Client(StorageStore.shared) else { return [] }
+        guard let s3 = mailboxClient() else { return [] }
         var out: [(String, Data)] = []
         for cid in circleIds {
             guard let keys = try? await s3.listKeys(prefix: "kith/mailbox/\(cid)/") else { continue }

@@ -8,6 +8,16 @@ import CryptoKit
 /// device Keychain (see StorageStore) — never on any Kith server.
 ///
 /// Works with AWS S3, Cloudflare R2, Backblaze B2, rclone serve s3, etc.
+/// A portable S3 connection config — your own bucket, or a circle's shared relay bucket.
+struct S3Config: Codable, Equatable {
+    var endpoint: String
+    var region: String
+    var bucket: String
+    var accessKey: String
+    var secret: String
+    var isComplete: Bool { !endpoint.isEmpty && !bucket.isEmpty && !accessKey.isEmpty && !secret.isEmpty }
+}
+
 struct S3Client {
     let endpoint: String
     let region: String
@@ -15,14 +25,19 @@ struct S3Client {
     let accessKey: String
     let secret: String
 
+    init(config c: S3Config) {
+        endpoint = c.endpoint.replacingOccurrences(of: "https://", with: "").replacingOccurrences(of: "http://", with: "")
+        region = c.region.isEmpty ? "us-east-1" : c.region
+        bucket = c.bucket
+        accessKey = c.accessKey
+        secret = c.secret
+    }
+
     @MainActor
     init?(_ s: StorageStore) {
         guard s.s3Configured else { return nil }
-        endpoint = s.s3Endpoint.replacingOccurrences(of: "https://", with: "").replacingOccurrences(of: "http://", with: "")
-        region = s.s3Region.isEmpty ? "us-east-1" : s.s3Region
-        bucket = s.s3Bucket
-        accessKey = s.s3AccessKey
-        secret = s.s3Secret
+        self.init(config: S3Config(endpoint: s.s3Endpoint, region: s.s3Region, bucket: s.s3Bucket,
+                                   accessKey: s.s3AccessKey, secret: s.s3Secret))
     }
 
     // MARK: - Public API

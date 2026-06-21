@@ -54,11 +54,24 @@ final class StorageStore: ObservableObject {
 
 struct StorageSettingsView: View {
     @ObservedObject private var store = StorageStore.shared
+    @ObservedObject private var mailbox = SharedMailboxStore.shared
+    @State private var shared = false
 
     var body: some View {
         ZStack {
             KithBackground()
             Form {
+                if let cfg = mailbox.config {
+                    Section {
+                        Label("Connected to your circle's relay", systemImage: "antenna.radiowaves.left.and.right")
+                            .foregroundStyle(.green).font(.subheadline.weight(.medium))
+                        Text("Bucket: \(cfg.bucket) @ \(cfg.endpoint)").font(.caption).foregroundStyle(.secondary)
+                        Button(role: .destructive) { SharedMailboxStore.shared.clear() } label: {
+                            Text("Stop using this relay")
+                        }
+                    } header: { Text("Circle relay") }
+                    footer: { Text("Your circle shares this bucket so posts arrive even when people are offline. Only sealed, unreadable blobs are stored there.") }
+                }
                 Section {
                     ForEach(StorageProvider.allCases) { p in
                         Button { store.provider = p } label: {
@@ -99,8 +112,15 @@ struct StorageSettingsView: View {
                     Label("Be the circle's backup", systemImage: "heart.circle.fill")
                 }
                 .tint(KithTheme.pink)
+                Button {
+                    FeedStore.shared.shareBucketWithCircle(); shared = true
+                } label: {
+                    Label(shared ? "Shared with your circle ✓" : "Share this bucket as my circle's relay",
+                          systemImage: "antenna.radiowaves.left.and.right")
+                }
+                .tint(KithTheme.pink)
             } header: { Text("Volunteer as tribute") }
-            footer: { Text("Your bucket becomes the circle's shared mailbox: every post is stored sealed and re-served to anyone who's missing it — so messages and memories arrive even when the sender is offline and you're never online at the same time. Everything is end-to-end encrypted to the circle; your storage provider only ever sees opaque blobs it cannot read.") }
+            footer: { Text("Your bucket becomes the circle's shared mailbox: every post is stored sealed and re-served to anyone who's missing it — so messages and memories arrive even when the sender is offline and you're never online at the same time. Tap “Share as my circle's relay” to send these credentials (sealed, only your circle can open them) so everyone uses the same bucket — rent one from any S3 provider, no server to run. Heads up: members you share with can read (still sealed) and write to the bucket, so only share with a circle you trust, and rotate the key if someone leaves.") }
         }
     }
 

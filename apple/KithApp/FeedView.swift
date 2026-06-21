@@ -483,8 +483,39 @@ final class FeedStore: ObservableObject {
         case 11: CallManager.shared.handleAccept(payload)
         case 12: CallManager.shared.handleHangup(payload)
         case 13: CallManager.shared.handleAudio(payload)
+        case 14: handleBucketConfig(payload)
         default: break
         }
+    }
+
+    /// Share my S3 bucket as the circle's shared relay: seal the config to the circle and
+    /// broadcast it. Members adopt it as the shared mailbox. (No Kith server sees it.)
+    func shareBucketWithCircle() {
+        guard let social, StorageStore.shared.s3Configured else { return }
+        let cfg = S3Config(endpoint: StorageStore.shared.s3Endpoint, region: StorageStore.shared.s3Region,
+                           bucket: StorageStore.shared.s3Bucket, accessKey: StorageStore.shared.s3AccessKey,
+                           secret: StorageStore.shared.s3Secret)
+        SharedMailboxStore.shared.set(cfg)   // I use it as the relay too
+        guard let data = try? JSONEncoder().encode(cfg),
+              let sealed = try? social.sealCircleMedia(circleId: activeCircleId, data: data) else { return }
+        var p = Data(); lpAppend(&p, Data(activeCircleId.utf8)); p.append(sealed)
+        let members = social.contactNodeIds(circleId: activeCircleId)
+        for nodeHex in members { sendIroh(14, p, to: nodeHex) }
+        nearbyBroadcast(14, p)
+        originateRelay(dests: members, inner: frame(14, p))
+    }
+
+    private func handleBucketConfig(_ payload: Data) {
+        guard let social else { return }
+        var off = 0
+        guard let cidData = lpRead(payload, &off) else { return }
+        let circleId = String(data: cidData, encoding: .utf8) ?? ""
+        let sealed = payload.subdata(in: (payload.startIndex + off)..<payload.endIndex)
+        guard !circleId.isEmpty, !sealed.isEmpty,
+              let data = social.openCircleMedia(circleId: circleId, sealed: sealed),
+              let cfg = try? JSONDecoder().decode(S3Config.self, from: data) else { return }
+        SharedMailboxStore.shared.set(cfg)
+        pollMailboxNow()   // immediately pull from the newly-shared bucket
     }
 
     /// Send a call signaling/audio frame to a peer (direct, over the internet transport).
