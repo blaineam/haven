@@ -689,6 +689,23 @@ final class FeedStore: ObservableObject {
     // MARK: - Media transfer  [3] request(ref) → [4] sealed media back
 
     /// Ask contacts for any media our feed references but we don't hold the bytes for.
+    /// Actively (re-)request one media ref from every contact, nearby, and the shared
+    /// store. Safe to call repeatedly — re-sent chunks just fill the gaps a lossy transfer
+    /// left, which is what large videos need (one dropped chunk otherwise hangs forever).
+    func requestMedia(_ ref: String) {
+        guard let social, !MediaStore.shared.has(ref) else { return }
+        let myHex = social.myNodeHex()
+        var payload = Data(myHex.utf8); payload.append(Data(ref.utf8))
+        for contact in ContactsStore.shared.contacts { sendIroh(3, payload, to: contact.idHex) }
+        nearbyBroadcast(3, payload)
+        let circleIds = circles.map { $0.id }
+        Task { @MainActor in   // also pull from the circle's shared store if one exists
+            if let data = await SharedStore.restore(ref: ref, circleIds: circleIds, social: social) {
+                MediaStore.shared.store(ref, data); refresh()
+            }
+        }
+    }
+
     private func requestMissingMedia() {
         guard let social, node != nil || nearby != nil else { return }
         let myHex = social.myNodeHex()

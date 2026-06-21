@@ -20,6 +20,12 @@ struct KithApp: App {
     }
 }
 
+/// An incoming invite link, wrapped so it can drive an item-based sheet.
+struct PendingInvite: Identifiable {
+    let id = UUID()
+    let link: String
+}
+
 struct RootView: View {
     @StateObject private var accountStore = AccountStore()
     @ObservedObject private var profile = ProfileStore.shared
@@ -30,7 +36,10 @@ struct RootView: View {
     @State private var tab = ProcessInfo.processInfo.environment["KITH_TAB"] ?? "circle"
     @State private var showConnect = false
     @State private var didPrompt = false
-    @State private var pendingInvite: String?
+    /// An incoming invite link. Driving the sheet from this *item* (not a separate bool)
+    /// guarantees the ConnectView gets the link on the first open — `.sheet(isPresented:)`
+    /// with a separate state captured a stale (nil) link, which is why it took two taps.
+    @State private var pendingInvite: PendingInvite?
 
     var body: some View {
         Group {
@@ -43,12 +52,11 @@ struct RootView: View {
         }
         .animation(KithTheme.smooth, value: profile.onboarded)
         .onOpenURL { url in
-            // Invite deep links: kith://u/<id>#<verify> (opened from wemiller.com/apps/kith).
+            // Invite deep links: kith://u/<id>#<verify> (opened from wemiller.com/apps/haven).
             let s = url.absoluteString
             guard s.contains("/u/") else { return }
-            pendingInvite = s
             tab = "you"
-            showConnect = true
+            pendingInvite = PendingInvite(link: s)   // item-driven sheet → correct on first open
         }
     }
 
@@ -84,8 +92,13 @@ struct RootView: View {
                 .animation(KithTheme.smooth, value: CallManager.shared.connecting)
                 .animation(KithTheme.smooth, value: CallManager.shared.inCall)
         }
-        .sheet(isPresented: $showConnect, onDismiss: { pendingInvite = nil }) {
-            ConnectView(account: accountStore.account, contacts: contacts, incomingLink: pendingInvite)
+        // Manual "add a friend" (onboarding / the + button) — no incoming link.
+        .sheet(isPresented: $showConnect) {
+            ConnectView(account: accountStore.account, contacts: contacts, incomingLink: nil)
+        }
+        // Invite deep link — the item carries the link, so ConnectView gets it immediately.
+        .sheet(item: $pendingInvite) { invite in
+            ConnectView(account: accountStore.account, contacts: contacts, incomingLink: invite.link)
         }
         .onAppear {
             FeedStore.shared.configure(seed: accountStore.account.secretSeed())

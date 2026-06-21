@@ -19,6 +19,8 @@ struct StoryViewer: View {
     @State private var dragOffset: CGFloat = 0      // swipe-down-to-dismiss
     @State private var replyText = ""
     @State private var replySent = false
+    @State private var waitingMedia: String?   // a story whose bytes are still downloading
+    @State private var retryCounter = 0
     @FocusState private var replyFocused: Bool
     private let tick = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
 
@@ -57,6 +59,12 @@ struct StoryViewer: View {
         .onAppear { loadCurrent() }
         .onDisappear { teardown() }
         .onReceive(tick) { _ in
+            // Waiting on media: re-check + re-request (~every 2s) until it arrives, then load.
+            if let ref = waitingMedia {
+                if MediaStore.shared.has(ref) { loadCurrent() }
+                else { retryCounter += 1; if retryCounter % 40 == 0 { FeedStore.shared.requestMedia(ref) } }
+                return
+            }
             guard !paused, !replyFocused else { return }
             progress += 0.05 / slideDuration
             if progress >= 1 { next() }
@@ -67,12 +75,21 @@ struct StoryViewer: View {
     }
 
     @ViewBuilder private func content(_ s: FeedItemFfi) -> some View {
-        if let player {
+        if waitingMedia != nil {
+            downloading
+        } else if let player {
             VideoPlayer(player: player)
         } else if let ref = s.media.first, let img = MediaStore.shared.item(ref)?.image {
             Image(uiImage: img).resizable().scaledToFit()
         } else {
             missing
+        }
+    }
+
+    private var downloading: some View {
+        VStack(spacing: 14) {
+            ProgressView().tint(.white).scaleEffect(1.3)
+            Text("Downloading story…").foregroundStyle(.white.opacity(0.85)).font(.subheadline)
         }
     }
 
@@ -226,6 +243,16 @@ struct StoryViewer: View {
         let s = stories[index]
         // The author's song plays while you watch; the video is muted under it.
         if let m = s.music { MusicPlayback.shared.play(m) } else { MusicPlayback.shared.stop() }
+        // If the bytes haven't arrived yet (a dropped chunk on a big video), wait and
+        // actively re-request instead of hanging forever on a stale "Loading…".
+        if let ref = s.media.first, !MediaStore.shared.has(ref) {
+            waitingMedia = ref
+            retryCounter = 0
+            FeedStore.shared.requestMedia(ref)
+            player = nil
+            return
+        }
+        waitingMedia = nil
         if let ref = s.media.first, let item = MediaStore.shared.item(ref),
            item.kind == .video, let url = item.videoURL {
             let p = AVPlayer(url: url)
