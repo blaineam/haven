@@ -79,7 +79,11 @@ struct RootView: View {
             if t == "circle" { feedStore.markCircleSeen() }
             if t == "messages" { feedStore.markMessagesSeen() }
         }
-        .overlay { CallOverlay().animation(KithTheme.smooth, value: CallManager.shared.inCall) }
+        .overlay {
+            CallOverlay()
+                .animation(KithTheme.smooth, value: CallManager.shared.connecting)
+                .animation(KithTheme.smooth, value: CallManager.shared.inCall)
+        }
         .sheet(isPresented: $showConnect, onDismiss: { pendingInvite = nil }) {
             ConnectView(account: accountStore.account, contacts: contacts, incomingLink: pendingInvite)
         }
