@@ -87,6 +87,7 @@ struct DMThreadView: View {
     @State private var attachedTrack: TrackRefFfi?
     @State private var showMedia = false
     @State private var showSongs = false
+    @State private var showAudio = false
     @State private var zoom: ZoomTarget?
     @FocusState private var focused: Bool
 
@@ -128,7 +129,17 @@ struct DMThreadView: View {
     }
 
     @ViewBuilder private func dmMedia(_ m: FeedItemFfi) -> some View {
-        let refs = m.media
+        let audio = m.media.filter { MediaKind(ref: $0) == .audio }
+        let visual = m.media.filter { MediaKind(ref: $0) != .audio }
+        VStack(alignment: m.isMe ? .trailing : .leading, spacing: 4) {
+            ForEach(audio, id: \.self) { ref in
+                if let url = MediaStore.shared.storagePath(for: ref) { AudioPlayerPill(url: url) }
+            }
+            if !visual.isEmpty { dmVisualMedia(visual) }
+        }
+    }
+
+    @ViewBuilder private func dmVisualMedia(_ refs: [String]) -> some View {
         if refs.count == 1, let ref = refs.first, let img = MediaStore.shared.item(ref)?.image {
             Image(uiImage: img).resizable().scaledToFill()
                 .frame(maxWidth: 220, maxHeight: 280).clipShape(RoundedRectangle(cornerRadius: 14))
@@ -195,7 +206,14 @@ struct DMThreadView: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(attachedMedia, id: \.self) { ref in
-                            if let img = MediaStore.shared.item(ref)?.image {
+                            if MediaKind(ref: ref) == .audio {
+                                HStack(spacing: 5) {
+                                    Image(systemName: "mic.fill"); Text("Voice").font(.caption)
+                                    Button { attachedMedia.removeAll { $0 == ref } } label: { Image(systemName: "xmark.circle.fill") }
+                                }
+                                .padding(.horizontal, 8).padding(.vertical, 8)
+                                .background(KithTheme.pink.opacity(0.18), in: Capsule())
+                            } else if let img = MediaStore.shared.item(ref)?.image {
                                 ZStack(alignment: .topTrailing) {
                                     Image(uiImage: img).resizable().scaledToFill().frame(width: 52, height: 52).clipShape(RoundedRectangle(cornerRadius: 10))
                                     Button { attachedMedia.removeAll { $0 == ref } } label: {
@@ -220,6 +238,7 @@ struct DMThreadView: View {
             HStack(spacing: 10) {
                 Menu {
                     Button { showMedia = true } label: { Label("Photo or video", systemImage: "photo") }
+                    Button { showAudio = true } label: { Label("Voice message", systemImage: "mic") }
                     Button { showSongs = true } label: { Label("Song", systemImage: "music.note") }
                     Button { secret.toggle() } label: { Label(secret ? "Secret: on" : "Send secretly", systemImage: secret ? "lock.fill" : "lock") }
                 } label: {
@@ -240,6 +259,7 @@ struct DMThreadView: View {
         .background(.ultraThinMaterial)
         .sheet(isPresented: $showMedia) { MediaPicker { refs in attachedMedia.append(contentsOf: refs) } }
         .sheet(isPresented: $showSongs) { SongPicker { t in attachedTrack = t } }
+        .sheet(isPresented: $showAudio) { AudioRecorderView { ref in attachedMedia.append(ref) } }
     }
 
     private func send() {
