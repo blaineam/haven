@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#0b0b10" />
-<title>Kith</title>
+<title>Haven</title>
 <style>
   :root{
     --violet:#7C3AED; --pink:#EC4899; --amber:#F59E0B;
@@ -129,7 +129,7 @@
 <body>
 <div id="app">
   <header class="bar" id="topbar">
-    <div class="logo">Kith</div>
+    <div class="logo">Haven</div>
     <div style="display:flex;gap:10px;align-items:center">
       <div class="circlepill" id="circlepill">✨ Family ▾</div>
       <button class="iconbtn" id="silentBtn" title="Silent">🔔</button>
@@ -157,19 +157,19 @@
 </div>
 
 <script type="module">
-// The REAL Kith engine, compiled from the same Rust core (p2pcore) the phone runs,
+// The REAL Haven engine, compiled from the same Rust core (p2pcore) the phone runs,
 // loaded here as WebAssembly. Identity, post-quantum sealing, and feed reduction all
 // happen in your browser — no mock data, no server. (Networking to your circle over
 // iroh-in-browser is the next layer; until then the feed shows your own real, sealed
 // posts + anything synced in.)
-import init, { KithEngine } from "./engine/kith_wasm.js";
+import init, { HavenEngine } from "./engine/kith_wasm.js";
 let engine = null;
 
 async function boot(){
   try{
     await init();
     const saved = localStorage.getItem("kith.seed") || undefined;
-    engine = new KithEngine(saved);
+    engine = new HavenEngine(saved);
     localStorage.setItem("kith.seed", engine.seed_hex());   // persist identity
   }catch(e){
     console.error("engine init failed", e);
@@ -213,7 +213,7 @@ let state = {
   posts:[
     {who:"Mom", initial:"M", time:"2m", body:"Made too much soup again. Come over? 🍲", media:img("kithsoup"), hearts:1, reacts:[["❤️",1],["😍",1]], hearted:false},
     {who:"Austin", initial:"A", time:"1h", body:"First hike of the season. The whole valley was green.", media:img("kithhike"), hearts:0, reacts:[["🔥",2]], hearted:false},
-    {who:"You", initial:"Y", time:"3h", body:"Trying the web version of Kith. Looks just like the phone 💜", media:"", hearts:0, reacts:[], hearted:false},
+    {who:"You", initial:"Y", time:"3h", body:"Trying the web version of Haven. Looks just like the phone 💜", media:"", hearts:0, reacts:[], hearted:false},
   ],
   dms:[
     {who:"Mom", initial:"M", msgs:[
@@ -256,7 +256,7 @@ function renderFeed(){
   const posts = feedPosts();
   if(posts.length===0){
     h += `<div class="card" style="text-align:center;color:var(--text2)">
-            Your real Kith identity is live in this browser 🔐<br>
+            Your real Haven identity is live in this browser 🔐<br>
             <span style="font-size:13px">Posts you write are sealed by the real engine. They'll sync to your circle once the web client connects (networking, next).</span></div>`;
   }
   posts.forEach((p,i)=> h += postCard(p,i));
@@ -308,7 +308,7 @@ function renderYou(){
     <div class="you-head"><div class="you-av">Y</div>
       <div class="you-name">You</div><div class="you-sub">This is just for the people you choose.</div></div>
     <div class="listcard" style="padding:14px">
-      <div style="font-weight:600;margin-bottom:6px">Your Kith id</div>
+      <div style="font-weight:600;margin-bottom:6px">Your Haven id</div>
       <div style="font-family:monospace;font-size:12px;color:var(--text2);word-break:break-all">${nodeId.slice(0,32)}…</div>
       <div style="font-weight:600;margin:12px 0 6px">Your invite link</div>
       <div style="font-size:12px;color:var(--text2);word-break:break-all">${esc(link)}</div>

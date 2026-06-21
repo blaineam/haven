@@ -83,7 +83,7 @@ struct StorageSettingsView: View {
                         }
                     }
                 } header: { Text("Where your media lives") }
-                footer: { Text("Your media is end-to-end encrypted before it's stored anywhere. Kith never holds your keys or any provider secrets.") }
+                footer: { Text("Your media is end-to-end encrypted before it's stored anywhere. Haven never holds your keys or any provider secrets.") }
 
                 if store.provider == .s3 { s3Section }
             }

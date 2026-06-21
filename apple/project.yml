@@ -29,7 +29,7 @@ targets:
     info:
       path: KithApp/Info.plist
       properties:
-        CFBundleDisplayName: Kith
+        CFBundleDisplayName: Haven
         # Track the build settings (a managed Info.plist won't do this automatically).
         CFBundleShortVersionString: "$(MARKETING_VERSION)"
         CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
@@ -43,13 +43,13 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
           - UIInterfaceOrientationLandscapeLeft
           - UIInterfaceOrientationLandscapeRight
-        NSCameraUsageDescription: "Kith uses the camera so you can capture photos and videos to share with your circle. Nothing is uploaded — media is encrypted on your device first."
-        NSMicrophoneUsageDescription: "Kith uses the microphone to record sound with your videos."
-        NSPhotoLibraryUsageDescription: "Kith lets you pick photos and videos from your library to share privately with your circle."
-        NSPhotoLibraryAddUsageDescription: "Kith can save photos and videos you share or receive to your Photos library, so they're ready when you open Photos."
-        NSAppleMusicUsageDescription: "Kith lets you add a song to a post; it plays through your own Apple Music."
-        NSLocalNetworkUsageDescription: "Kith finds people in your circle who are nearby so it can share posts directly over Wi-Fi and Bluetooth — even with no internet."
-        NSBluetoothAlwaysUsageDescription: "Kith uses Bluetooth to share posts directly with nearby people in your circle when you're offline."
+        NSCameraUsageDescription: "Haven uses the camera so you can capture photos and videos to share with your circle. Nothing is uploaded — media is encrypted on your device first."
+        NSMicrophoneUsageDescription: "Haven uses the microphone to record sound with your videos."
+        NSPhotoLibraryUsageDescription: "Haven lets you pick photos and videos from your library to share privately with your circle."
+        NSPhotoLibraryAddUsageDescription: "Haven can save photos and videos you share or receive to your Photos library, so they're ready when you open Photos."
+        NSAppleMusicUsageDescription: "Haven lets you add a song to a post; it plays through your own Apple Music."
+        NSLocalNetworkUsageDescription: "Haven finds people in your circle who are nearby so it can share posts directly over Wi-Fi and Bluetooth — even with no internet."
+        NSBluetoothAlwaysUsageDescription: "Haven uses Bluetooth to share posts directly with nearby people in your circle when you're offline."
         NSBonjourServices:
           - _kith-circle._tcp
           - _kith-circle._udp

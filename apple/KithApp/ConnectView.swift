@@ -218,7 +218,7 @@ struct ConnectView: View {
             let info = try parseLink(s: pasted.trimmingCharacters(in: .whitespacesAndNewlines))
             withAnimation(KithTheme.bouncy) { found = info }
         } catch {
-            problem = "That doesn't look like a Kith invite link. Double-check and try again."
+            problem = "That doesn't look like a Haven invite link. Double-check and try again."
         }
     }
 }

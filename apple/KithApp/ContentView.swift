@@ -250,7 +250,7 @@ struct AdvancedView: View {
             Text("Under the hood").font(.headline)
             row("Your id", String(account.nodeIdHex().prefix(24)) + "…")
             row("Safety words", SafetyWords.words(fromHex: account.verificationHex()).joined(separator: " · "))
-            Text("Kith uses hybrid post-quantum encryption (X25519 + ML-KEM-768, Ed25519 + ML-DSA). Your keys never leave this device.")
+            Text("Haven uses hybrid post-quantum encryption (X25519 + ML-KEM-768, Ed25519 + ML-DSA). Your keys never leave this device.")
                 .font(.caption2).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)

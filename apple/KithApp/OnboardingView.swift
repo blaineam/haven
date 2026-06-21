@@ -51,13 +51,13 @@ struct OnboardingView: View {
                 .frame(width: 112, height: 112)
                 .overlay(ConstellationMark().frame(width: 66, height: 66))
                 .shadow(color: KithTheme.pink.opacity(0.4), radius: 20, y: 10)
-            BrandText(text: "Welcome to Kith")
+            BrandText(text: "Welcome to Haven")
             Text("A private little place for the people you love.\nNo ads. No tracking. No strangers. Just your people.")
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
             Button { showRestore = true } label: {
-                Text("I already have Kith — restore my identity").font(.subheadline.weight(.medium))
+                Text("I already have Haven — restore my identity").font(.subheadline.weight(.medium))
             }
             .tint(KithTheme.pink)
             Spacer()
@@ -106,11 +106,11 @@ struct OnboardingView: View {
     private var howItWorks: some View {
         VStack(alignment: .leading, spacing: 22) {
             Spacer()
-            Text("How Kith works")
+            Text("How Haven works")
                 .font(.title.bold())
                 .frame(maxWidth: .infinity, alignment: .center)
             point("🔒", "Private by design", "Everything you share is locked so only the people in your circle can ever see it.")
-            point("🚫", "No ads, no tracking", "There's no algorithm and no company watching. Kith doesn't collect anything about you.")
+            point("🚫", "No ads, no tracking", "There's no algorithm and no company watching. Haven doesn't collect anything about you.")
             point("🤝", "You choose your circle", "Nothing happens with strangers. You invite the people you want, one at a time.")
             Spacer()
         }
@@ -129,7 +129,7 @@ struct OnboardingView: View {
     private var controls: some View {
         VStack(spacing: 14) {
             Button(action: advance) {
-                Text(step == 0 ? "Get started" : step == 1 ? "Continue" : "Enter Kith")
+                Text(step == 0 ? "Get started" : step == 1 ? "Continue" : "Enter Haven")
             }
             .buttonStyle(BrandButtonStyle())
             .disabled(step == 1 && name.trimmingCharacters(in: .whitespaces).isEmpty)
