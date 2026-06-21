@@ -92,8 +92,9 @@ enum SharedStore {
         let key = mailboxKey(circleId, env)
         if seenMailbox.contains(key) { return }
         seenMailbox.insert(key)
-        if await s3.headObject(key: key) { return }
-        try? await s3.putObject(key: key, data: env)
+        if await s3.headObject(key: key) { FeedStore.shared.markRelay(true); return }
+        do { try await s3.putObject(key: key, data: env); FeedStore.shared.markRelay(true) }
+        catch { FeedStore.shared.markRelay(false) }
     }
 
     /// Poll the mailbox for envelopes we haven't seen. Returns (circleId, envelope) pairs.

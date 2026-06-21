@@ -135,7 +135,15 @@ struct DMThreadView: View {
                                     in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                         .foregroundStyle(m.isMe ? .white : .primary)
                 }
-                Text(relativeTimeShort(m.createdAt)).font(.caption2).foregroundStyle(.tertiary)
+                HStack(spacing: 3) {
+                    Text(relativeTimeShort(m.createdAt)).font(.caption2).foregroundStyle(.tertiary)
+                    if m.isMe && !m.unsent {
+                        // sent → checkmark; on the circle's relay → filled (store-and-forward delivered)
+                        Image(systemName: store.relayReachable ? "checkmark.circle.fill" : "checkmark")
+                            .font(.system(size: 9))
+                            .foregroundStyle(store.relayReachable ? KithTheme.pink : Color.secondary)
+                    }
+                }
             }
             if !m.isMe { Spacer(minLength: 50) }
         }

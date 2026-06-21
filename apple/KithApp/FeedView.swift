@@ -33,6 +33,8 @@ final class FeedStore: ObservableObject {
     @Published private(set) var items: [FeedItemFfi] = []
     @Published private(set) var unseenCircle = 0      // new circle posts since last viewed
     @Published private(set) var unseenMessages = 0    // new DM messages since last viewed
+    @Published private(set) var relayReachable = false  // the circle's relay accepted our last upload
+    func markRelay(_ ok: Bool) { if relayReachable != ok { relayReachable = ok } }
     @Published private(set) var postTick = 0
     @Published private(set) var reactionTick = 0
     @Published private(set) var online = false
