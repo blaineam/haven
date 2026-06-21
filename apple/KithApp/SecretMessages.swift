@@ -22,14 +22,14 @@ struct SecretBubble: View {
     var body: some View {
         Group {
             if revealed {
-                ScreenshotProtected {
-                    Text(text)
-                        .font(.body)
-                        .foregroundStyle(isMe ? Color.white : Color.primary)
-                        .padding(.horizontal, 12).padding(.vertical, 8)
-                }
-                .fixedSize()
-                .transition(.scale(scale: 0.9).combined(with: .opacity))
+                // Show the actual message. We rely on screenshot *detection* (re-conceal on
+                // the notification below) rather than the secure-field layer hack, which on
+                // current iOS hides the content from normal rendering too — so it showed blank.
+                Text(text)
+                    .font(.body)
+                    .foregroundStyle(isMe ? Color.white : Color.primary)
+                    .padding(.horizontal, 12).padding(.vertical, 8)
+                    .transition(.scale(scale: 0.9).combined(with: .opacity))
             } else {
                 HStack(spacing: 6) {
                     Image(systemName: "lock.fill").font(.caption)

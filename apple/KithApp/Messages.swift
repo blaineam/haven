@@ -7,6 +7,8 @@ struct MessagesView: View {
     @ObservedObject private var store = FeedStore.shared
     @ObservedObject private var contacts = ContactsStore.shared
     @State private var showPicker = false
+    @State private var newDM: String?      // chosen in the picker, opened after it closes
+    @State private var pushedDM: String?   // pushed in THIS tab's stack → tab bar stays visible
 
     var body: some View {
         ZStack {
@@ -36,7 +38,13 @@ struct MessagesView: View {
                 Button { showPicker = true } label: { Image(systemName: "square.and.pencil") }
             }
         }
-        .sheet(isPresented: $showPicker) { DMContactPicker() }
+        // Open the new thread in the Messages tab's OWN stack (after the sheet closes) so
+        // the tab bar stays visible — you can hop straight back to Circle, and Back lands
+        // on the Messages list, not the picker.
+        .navigationDestination(item: $pushedDM) { id in DMThreadView(circleId: id) }
+        .sheet(isPresented: $showPicker, onDismiss: { if let id = newDM { newDM = nil; pushedDM = id } }) {
+            DMContactPicker { id in newDM = id; showPicker = false }
+        }
     }
 
     private func rowLabel(_ circleId: String) -> some View {
@@ -55,19 +63,20 @@ struct MessagesView: View {
     }
 }
 
-/// Pick a contact to start a DM with.
+/// Pick a contact to start a DM with. Hands the new circle id back to the caller so the
+/// thread opens in the Messages tab's own stack (tab bar visible), not inside this sheet.
 struct DMContactPicker: View {
+    var onPick: (String) -> Void
     @ObservedObject private var store = FeedStore.shared
     @ObservedObject private var contacts = ContactsStore.shared
     @Environment(\.dismiss) private var dismiss
-    @State private var openId: String?
 
     var body: some View {
         NavigationStack {
             ZStack {
                 KithBackground()
                 List(contacts.contacts) { c in
-                    Button { openId = store.startDM(with: c.idHex, name: c.displayName) } label: {
+                    Button { onPick(store.startDM(with: c.idHex, name: c.displayName)) } label: {
                         HStack(spacing: 12) {
                             Circle()
                                 .fill(LinearGradient(colors: [KithTheme.amber, KithTheme.pink], startPoint: .top, endPoint: .bottom))
@@ -85,7 +94,6 @@ struct DMContactPicker: View {
             }
             .navigationTitle("New message")
             .navigationBarTitleDisplayMode(.inline)
-            .navigationDestination(item: $openId) { id in DMThreadView(circleId: id) }
             .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Cancel") { dismiss() } } }
         }
     }
