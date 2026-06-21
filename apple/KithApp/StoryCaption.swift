@@ -1,81 +1,84 @@
 import SwiftUI
 
-/// A caption style for stories — some color the text, some put a colored highlight
-/// behind it (Instagram-style). The chosen style is encoded into the story body so the
-/// viewer renders it exactly as the author saw it (no engine change needed).
-struct StoryCaptionStyle: Identifiable {
-    let id: Int
-    let textColor: Color
-    let bgColor: Color?      // nil = plain colored text; otherwise a highlight behind the text
-    let font: Font
-    var swatchLabel: String { "Aa" }
-}
-
+/// Instagram-style story captions: pick a color, tap through typography styles, and
+/// toggle between "text color (with glow)" and "color as a highlight behind the text".
+/// The choice is encoded into the story body so the viewer renders it identically.
 enum StoryCaptions {
-    static let styles: [StoryCaptionStyle] = [
-        .init(id: 0, textColor: .white,           bgColor: nil,                 font: .title3.weight(.semibold)),
-        .init(id: 1, textColor: .black,           bgColor: .white,              font: .title3.weight(.bold)),
-        .init(id: 2, textColor: .white,           bgColor: KithTheme.pink,      font: .title3.weight(.bold)),
-        .init(id: 3, textColor: KithTheme.amber,  bgColor: nil,                 font: .system(.title2, design: .serif).weight(.bold)),
-        .init(id: 4, textColor: .white,           bgColor: .black.opacity(0.5), font: .system(.title3, design: .rounded).weight(.semibold)),
-        .init(id: 5, textColor: KithTheme.violet, bgColor: .white,              font: .system(.title2, design: .monospaced).weight(.bold)),
-        .init(id: 6, textColor: .white,           bgColor: KithTheme.violet,    font: .system(.title2, design: .rounded).weight(.heavy)),
+    static let colors: [Color] = [
+        .white, .black, KithTheme.pink, KithTheme.violet, KithTheme.amber,
+        .red, .orange, .green, .blue, .cyan, .yellow, .mint,
+    ]
+    static let fonts: [Font] = [
+        .title2.weight(.bold),
+        .system(.title2, design: .serif).weight(.bold),
+        .system(.title2, design: .rounded).weight(.heavy),
+        .system(.title2, design: .monospaced).weight(.bold),
+        .system(.title, design: .default).weight(.black),
     ]
 
-    static func style(_ id: Int) -> StoryCaptionStyle { styles.first { $0.id == id } ?? styles[0] }
-
-    /// Encode style id + caption into the story body (viewer decodes it). Uses a control
-    /// char so the marker never shows if the text is rendered raw somewhere.
-    static func encode(_ caption: String, styleId: Int) -> String {
-        let t = caption.trimmingCharacters(in: .whitespacesAndNewlines)
-        return t.isEmpty ? "" : "\u{1}\(styleId)\u{1}\(t)"
+    struct Spec: Equatable {
+        var color = 0
+        var font = 0
+        var highlight = false
+        mutating func cycleFont() { font = (font + 1) % fonts.count }
     }
-    /// Decode a story body into (clean caption text, style).
-    static func decode(_ body: String) -> (text: String, style: StoryCaptionStyle) {
+
+    static func textColor(_ s: Spec) -> Color { s.highlight ? contrast(s.color) : colors[idx(s.color)] }
+    static func bgColor(_ s: Spec) -> Color? { s.highlight ? colors[idx(s.color)] : nil }
+    static func font(_ s: Spec) -> Font { fonts[min(max(0, s.font), fonts.count - 1)] }
+
+    private static func idx(_ i: Int) -> Int { min(max(0, i), colors.count - 1) }
+    private static func contrast(_ i: Int) -> Color {
+        // Light highlight colors get dark text; everything else gets white.
+        [0, 9, 10, 11].contains(idx(i)) ? .black : .white   // white, cyan, yellow, mint
+    }
+
+    static func encode(_ caption: String, _ s: Spec) -> String {
+        let t = caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? "" : "\u{1}\(s.color),\(s.font),\(s.highlight ? 1 : 0)\u{1}\(t)"
+    }
+    static func decode(_ body: String) -> (text: String, spec: Spec) {
         if body.hasPrefix("\u{1}") {
             let parts = body.dropFirst().split(separator: "\u{1}", maxSplits: 1, omittingEmptySubsequences: false)
-            if parts.count == 2, let id = Int(parts[0]) { return (String(parts[1]), style(id)) }
-        }
-        return (body, styles[0])
-    }
-}
-
-/// Renders a caption with its style (colored text, or text on a colored highlight).
-struct StyledCaption: View {
-    let text: String
-    let style: StoryCaptionStyle
-    var body: some View {
-        Text(text)
-            .font(style.font)
-            .foregroundStyle(style.textColor)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, style.bgColor == nil ? 0 : 12)
-            .padding(.vertical, style.bgColor == nil ? 0 : 6)
-            .background {
-                if let bg = style.bgColor {
-                    RoundedRectangle(cornerRadius: 8, style: .continuous).fill(bg)
+            if parts.count == 2 {
+                let n = parts[0].split(separator: ",")
+                if n.count == 3, let c = Int(n[0]), let f = Int(n[1]), let h = Int(n[2]) {
+                    return (String(parts[1]), Spec(color: c, font: f, highlight: h == 1))
                 }
             }
-            .shadow(color: style.bgColor == nil ? .black.opacity(0.45) : .clear, radius: 6)
+        }
+        return (body, Spec())
     }
 }
 
-/// A horizontal row of style swatches for the composer.
-struct CaptionStyleRow: View {
-    @Binding var selectedId: Int
+/// Renders a caption in its chosen style.
+struct StyledCaption: View {
+    let text: String
+    let spec: StoryCaptions.Spec
+    var body: some View {
+        let bg = StoryCaptions.bgColor(spec)
+        Text(text.isEmpty ? " " : text)
+            .font(StoryCaptions.font(spec))
+            .foregroundStyle(StoryCaptions.textColor(spec))
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, bg == nil ? 0 : 14)
+            .padding(.vertical, bg == nil ? 0 : 8)
+            .background { if let bg { RoundedRectangle(cornerRadius: 10, style: .continuous).fill(bg) } }
+            .shadow(color: bg == nil ? .black.opacity(0.55) : .clear, radius: 8)   // glow on plain text
+    }
+}
+
+/// A row of color dots for the composer.
+struct CaptionColorRow: View {
+    @Binding var spec: StoryCaptions.Spec
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 10) {
-                ForEach(StoryCaptions.styles) { s in
-                    Button { selectedId = s.id } label: {
-                        Text(s.swatchLabel)
-                            .font(.subheadline.weight(.bold))
-                            .foregroundStyle(s.textColor)
-                            .frame(width: 38, height: 38)
-                            .background {
-                                Circle().fill(s.bgColor ?? Color.white.opacity(0.18))
-                            }
-                            .overlay(Circle().strokeBorder(.white, lineWidth: selectedId == s.id ? 2.5 : 0))
+            HStack(spacing: 12) {
+                ForEach(Array(StoryCaptions.colors.enumerated()), id: \.offset) { i, c in
+                    Button { spec.color = i } label: {
+                        Circle().fill(c).frame(width: 30, height: 30)
+                            .overlay(Circle().strokeBorder(.white, lineWidth: spec.color == i ? 3 : 1))
+                            .shadow(color: .black.opacity(0.3), radius: 2)
                     }
                     .buttonStyle(.plain)
                 }

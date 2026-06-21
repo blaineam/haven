@@ -92,7 +92,7 @@ struct StoryViewer: View {
             }
             if !s.body.isEmpty {
                 let decoded = StoryCaptions.decode(s.body)
-                StyledCaption(text: decoded.text, style: decoded.style)
+                StyledCaption(text: decoded.text, spec: decoded.spec)
                     .padding(.horizontal, 24).padding(.bottom, 36)
             }
         }
