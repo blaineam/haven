@@ -31,6 +31,8 @@ struct PostCenterKey: PreferenceKey {
 @MainActor
 final class FeedStore: ObservableObject {
     @Published private(set) var items: [FeedItemFfi] = []
+    @Published private(set) var unseenCircle = 0      // new circle posts since last viewed
+    @Published private(set) var unseenMessages = 0    // new DM messages since last viewed
     @Published private(set) var postTick = 0
     @Published private(set) var reactionTick = 0
     @Published private(set) var online = false
@@ -441,6 +443,7 @@ final class FeedStore: ObservableObject {
                 if (try? social.receive(circleId: cid, envelope: env)) == true {
                     changed = true
                     notifyNewest(in: cid)
+                    bumpUnseen(cid)
                 }
             }
             if changed { persist(); refresh(); requestMissingMedia() }
@@ -779,7 +782,14 @@ final class FeedStore: ObservableObject {
             return
         }
         // Ensure the circle exists on our side, then add the sender to it.
+        let isNewCircle = circleId != "default" && !circles.contains { $0.id == circleId }
         social.createCircle(id: circleId, name: circleName)
+        if isNewCircle {
+            let who = ContactsStore.shared.name(forNodePrefix: idHex) ?? "Someone"
+            NotificationManager.shared.notify(title: "Added to a circle",
+                                              body: "\(who) added you to “\(circleName)”",
+                                              dedupeKey: "circle-\(circleId)")
+        }
         guard (try? social.addContactBundle(circleId: circleId, bundle: bundle)) != nil else { return }
         lastHeard[idHex] = Date()
         persist(); refreshCircles()
@@ -811,7 +821,19 @@ final class FeedStore: ObservableObject {
             refresh()
             requestMissingMedia()   // pull any photos/videos it references
             notifyNewest(in: circleId)
+            bumpUnseen(circleId)
         }
+    }
+
+    func markCircleSeen() { unseenCircle = 0 }
+    func markMessagesSeen() { unseenMessages = 0 }
+
+    /// Count a fresh inbound item as "unseen" for the badge (ignores historical back-fill).
+    private func bumpUnseen(_ circleId: String) {
+        let inbound = messages(in: circleId).filter { !$0.isMe && !$0.unsent }
+        guard let newest = inbound.max(by: { $0.createdAt < $1.createdAt }) else { return }
+        guard now() &- newest.createdAt < 5 * 60 * 1000 else { return }   // recent only
+        if circleId.hasPrefix("dm:") { unseenMessages += 1 } else { unseenCircle += 1 }
     }
 
     /// Post a local notification for the newest inbound item in a circle (no server).
