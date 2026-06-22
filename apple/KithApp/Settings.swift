@@ -14,18 +14,28 @@ final class SettingsStore: ObservableObject {
     @Published var silent: Bool {
         didSet { d.set(silent, forKey: kSilent); AudioCoordinator.shared.setSilent(silent) }
     }
+    /// Index your circle's posts into Spotlight (on-device search). Default OFF — opt-in,
+    /// since it puts post text into the OS index (on-device only, never uploaded).
+    @Published var spotlightEnabled: Bool {
+        didSet {
+            d.set(spotlightEnabled, forKey: kSpot)
+            if spotlightEnabled { SpotlightIndex.reindexAll() } else { SpotlightIndex.clearAll() }
+        }
+    }
 
     private let d = UserDefaults.standard
     private let kSave = "kith.saveToPhotos"
     private let kOpt = "kith.autoOptimize"
     private let kRet = "kith.retentionDays"
     private let kSilent = "kith.silent"
+    private let kSpot = "kith.spotlight"
 
     private init() {
         saveToPhotos = d.object(forKey: kSave) as? Bool ?? true   // default ON
         autoOptimize = d.object(forKey: kOpt) as? Bool ?? true
         retentionDays = d.object(forKey: kRet) as? Int ?? 0       // default forever
         silent = d.object(forKey: kSilent) as? Bool ?? false
+        spotlightEnabled = d.object(forKey: kSpot) as? Bool ?? false   // default OFF
     }
 
     /// Viewer retention in seconds (nil = forever).
@@ -81,6 +91,12 @@ struct SettingsView: View {
                         .tint(KithTheme.pink)
                 } footer: {
                     Text("Share smaller, optimized photos and videos by default. Turn off to send pristine originals.")
+                }
+                Section {
+                    Toggle("Index posts in Spotlight", isOn: $settings.spotlightEnabled)
+                        .tint(KithTheme.pink)
+                } footer: {
+                    Text("Find your circle's posts from system search. Off by default — when on, post text is added to the on-device Spotlight index (never uploaded).")
                 }
                 Section {
                     Picker("Auto-delete old posts", selection: $settings.retentionDays) {

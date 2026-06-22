@@ -37,6 +37,10 @@ final class AccountStore: ObservableObject {
 
     static var iCloudSyncEnabled: Bool { UserDefaults.standard.bool(forKey: syncDefaultsKey) }
 
+    /// The existing master seed if the user already has an identity — never creates one.
+    /// Used by App Intents so they act as *this* account without spinning up a new one.
+    static func storedSeed() -> Data? { loadSeed() }
+
     /// Turn iCloud Keychain identity sync on/off and re-store the seed accordingly.
     func setICloudSync(_ on: Bool) {
         UserDefaults.standard.set(on, forKey: Self.syncDefaultsKey)

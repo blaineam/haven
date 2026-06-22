@@ -383,6 +383,7 @@ final class FeedStore: ObservableObject {
     private func now() -> UInt64 { UInt64(Date().timeIntervalSince1970 * 1000) }
     func refresh() {
         items = social?.feed(circleId: activeCircleId, nowMs: now(), viewerRetentionSecs: SettingsStore.shared.retentionSecs) ?? []
+        SpotlightIndex.reindexAll()   // no-op unless the user enabled Spotlight indexing
     }
 
     /// The current user's own posts — their personal archive.
