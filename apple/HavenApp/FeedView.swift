@@ -1016,6 +1016,7 @@ struct FeedView: View {
                 HavenBackground()
                     .contentShape(Rectangle())
                     .onTapGesture { composeFocused = false }
+                ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 16) {
                         banner
@@ -1028,7 +1029,13 @@ struct FeedView: View {
                             PostCard(
                                 item: item, friendName: friendName,
                                 onReact: { e in withAnimation(HavenTheme.bouncy) { store.react(item.id, e) } },
-                                onComment: { b, m in withAnimation(HavenTheme.smooth) { store.comment(item.id, b, m) } },
+                                onComment: { b, m in
+                                    withAnimation(HavenTheme.smooth) { store.comment(item.id, b, m) }
+                                    // Reveal the freshly added reply (it lands at the post's bottom).
+                                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                                        withAnimation(HavenTheme.smooth) { proxy.scrollTo(item.id, anchor: .bottom) }
+                                    }
+                                },
                                 onEdit: { b in withAnimation(HavenTheme.smooth) { store.edit(item.id, b) } },
                                 onUnsend: { withAnimation(HavenTheme.smooth) { store.unsend(item.id) } }
                             )
@@ -1052,6 +1059,7 @@ struct FeedView: View {
                     let nearest = centers.min { abs($0.value - target) < abs($1.value - target) }
                     AudioCoordinator.shared.center(nearest?.key)
                 }
+                }   // ScrollViewReader
                 composerBar
             }
             .navigationTitle(store.activeCircleName)
@@ -1475,7 +1483,10 @@ private struct PostCard: View {
                 mediaPage(ref)
                 if isVideo(ref) { muteButton }
             }
-            .frame(height: 340)
+            // Size to the media's own aspect (capped) so wide AND tall media show in full
+            // instead of being cropped to a fixed box.
+            .aspectRatio(singleAspect(ref), contentMode: .fit)
+            .frame(maxWidth: .infinity, maxHeight: 480)
             .clipShape(RoundedRectangle(cornerRadius: 16))
             .onTapGesture { zoomTarget = ZoomTarget(refs: item.media, index: 0) }
         } else if !item.media.isEmpty {
@@ -1534,12 +1545,19 @@ private struct PostCard: View {
     @ViewBuilder private func mediaPageContent(_ ref: String) -> some View {
         if let m = MediaStore.shared.item(ref) {
             if m.kind == .video, let url = m.videoURL {
-                VideoPlayer(player: playerFor(ref, url))
+                GestureVideoPlayer(player: playerFor(ref, url))   // hold-to-pause + drag-to-scrub, letterboxed
             } else if let img = m.image {
-                Image(uiImage: img).resizable().scaledToFill()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
+                Image(uiImage: img).resizable().scaledToFit()      // show the whole image (no crop)
             }
         }
+    }
+
+    /// The single-media tile's aspect ratio, taken from the image (or a video's thumbnail).
+    private func singleAspect(_ ref: String) -> CGFloat {
+        if let sz = MediaStore.shared.item(ref)?.image?.size, sz.width > 0, sz.height > 0 {
+            return sz.width / sz.height
+        }
+        return 4.0 / 3.0
     }
 
     private var muteButton: some View {
