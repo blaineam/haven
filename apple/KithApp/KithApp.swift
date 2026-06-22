@@ -1,8 +1,23 @@
 import SwiftUI
 
+/// Receives the APNs device token + remote-notification wakes (SwiftUI App needs a delegate
+/// for these callbacks).
+final class HavenAppDelegate: NSObject, UIApplicationDelegate {
+    func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        Task { @MainActor in PushManager.shared.registered(deviceToken: deviceToken) }
+    }
+    func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: Error) {}
+    func application(_ application: UIApplication,
+                     didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+                     fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+        Task { @MainActor in FeedStore.shared.forceSync(); completionHandler(.newData) }
+    }
+}
+
 @main
 struct KithApp: App {
     @Environment(\.scenePhase) private var scenePhase
+    @UIApplicationDelegateAdaptor(HavenAppDelegate.self) private var appDelegate
 
     init() {
         // Register the background-refresh task at launch (required before didFinishLaunching).
@@ -12,7 +27,10 @@ struct KithApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
-                .onAppear { NotificationManager.shared.requestAuthorization() }
+                .onAppear {
+                    NotificationManager.shared.requestAuthorization()
+                    PushManager.shared.start()   // register for real push via the relay
+                }
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {

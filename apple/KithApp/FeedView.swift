@@ -527,7 +527,10 @@ final class FeedStore: ObservableObject {
     private func broadcastEvent(_ circleId: String, _ env: Data) {
         let payload = eventPayload(circleId, env)
         let members = social?.contactNodeIds(circleId: circleId) ?? []
-        for nodeHex in members { sendIroh(1, payload, to: nodeHex) }
+        for nodeHex in members {
+            sendIroh(1, payload, to: nodeHex)
+            PushManager.shared.wake(nodeHex)   // push-wake offline members so notifications land
+        }
         if !circleId.hasPrefix("dm:") { nearbyBroadcast(1, payload) }   // never broadcast DMs to nearby
         originateRelay(dests: members, inner: frame(1, payload))   // reach members behind a relay
         Task { await SharedStore.uploadEvent(circleId: circleId, env: env) }   // store-and-forward mailbox
