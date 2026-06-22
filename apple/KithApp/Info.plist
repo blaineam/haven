@@ -29,6 +29,7 @@
 			<string>com.blaineam.kith</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
+				<string>haven</string>
 				<string>kith</string>
 			</array>
 		</dict>
@@ -43,8 +44,8 @@
 	<string>Haven uses Bluetooth to share posts directly with nearby people in your circle when you're offline.</string>
 	<key>NSBonjourServices</key>
 	<array>
-		<string>_kith-circle._tcp</string>
-		<string>_kith-circle._udp</string>
+		<string>_haven-circle._tcp</string>
+		<string>_haven-circle._udp</string>
 	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>Haven uses the camera so you can capture photos and videos to share with your circle. Nothing is uploaded — media is encrypted on your device first.</string>

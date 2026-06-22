@@ -7,7 +7,7 @@ import MultipeerConnectivity
 /// room sync even fully offline. The bytes are already E2E-encrypted by the core; the
 /// Multipeer link adds its own transport encryption on top.
 final class NearbyTransport: NSObject {
-    private let serviceType = "kith-circle"   // 1–15 chars, lowercase + hyphens
+    private let serviceType = "haven-circle"   // 1–15 chars, lowercase + hyphens (was kith-circle)
     private let peerID: MCPeerID
     private let session: MCSession
     private let advertiser: MCNearbyServiceAdvertiser

@@ -51,15 +51,15 @@ targets:
         NSLocalNetworkUsageDescription: "Haven finds people in your circle who are nearby so it can share posts directly over Wi-Fi and Bluetooth — even with no internet."
         NSBluetoothAlwaysUsageDescription: "Haven uses Bluetooth to share posts directly with nearby people in your circle when you're offline."
         NSBonjourServices:
-          - _kith-circle._tcp
-          - _kith-circle._udp
+          - _haven-circle._tcp
+          - _haven-circle._udp
         # EAR-exempt (standard mass-market crypto, not shipped to France) → NO. The app
         # still has full E2E post-quantum encryption; this is only the US export answer.
         ITSAppUsesNonExemptEncryption: false
-        # Deep link for invite links: kith://u/<id>#<verify> (from wemiller.com/apps/kith).
+        # Invite deep links: haven://u/<id>#<verify> (kith:// kept for older links).
         CFBundleURLTypes:
           - CFBundleURLName: com.blaineam.kith
-            CFBundleURLSchemes: [kith]
+            CFBundleURLSchemes: [haven, kith]
         # Local notifications only — no push server. A background-refresh wake briefly
         # brings up P2P networking, syncs, and posts LOCAL notifications for anything new.
         UIBackgroundModes:
