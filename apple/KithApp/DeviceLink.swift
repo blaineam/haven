@@ -81,7 +81,7 @@ struct RestoreIdentityView: View {
                     }
 
                     VStack(spacing: 8) {
-                        TextField("kith-seed:…", text: $pasted, axis: .vertical)
+                        TextField("Paste your recovery code", text: $pasted, axis: .vertical)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                             .padding(12).background(.background, in: RoundedRectangle(cornerRadius: 12))
                         Button { attempt(pasted) } label: { Label("Restore from code", systemImage: "arrow.down.circle.fill") }

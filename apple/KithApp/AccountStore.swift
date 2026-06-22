@@ -54,15 +54,16 @@ final class AccountStore: ObservableObject {
     /// A one-time transfer code that encodes the master seed. Anyone holding it can
     /// become this identity — show it only to your own other device.
     func transferCode() -> String {
-        "kith-seed:" + Self.base64url(account.secretSeed())
+        "haven-seed:" + Self.base64url(account.secretSeed())
     }
 
     /// Adopt an identity from a scanned/pasted transfer code. Returns false if invalid.
+    /// Accepts the new `haven-seed:` codes and the legacy `kith-seed:` ones.
     @discardableResult
     func restore(fromTransferCode code: String) -> Bool {
         let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.hasPrefix("kith-seed:") else { return false }
-        let body = String(trimmed.dropFirst("kith-seed:".count))
+        guard let prefix = ["haven-seed:", "kith-seed:"].first(where: { trimmed.hasPrefix($0) }) else { return false }
+        let body = String(trimmed.dropFirst(prefix.count))
         guard let seed = Self.base64urlDecode(body), seed.count == 32,
               let restored = try? Account.fromSeed(seed: seed) else { return false }
         Self.deleteSeed()
