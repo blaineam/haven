@@ -504,21 +504,29 @@ struct LoopingVideo: UIViewRepresentable {
 struct StoryMediaCanvas: View {
     let mediaRef: String
     var body: some View {
-        if let m = MediaStore.shared.item(mediaRef) {
+        GeometryReader { geo in
             ZStack {
-                // Blurred fill backdrop — the still works for both photo and video.
-                if let img = m.image {
-                    Image(uiImage: img).resizable().scaledToFill()
-                        .blur(radius: 28)
-                        .overlay(Color.black.opacity(0.28))
-                }
-                // Foreground: the media in full.
-                if m.kind == .video, let url = m.videoURL {
-                    LoopingVideo(url: url, fill: false)
-                } else if let img = m.image {
-                    Image(uiImage: img).resizable().scaledToFit()
+                Color.black   // base so there's never a transparent gap
+                if let m = MediaStore.shared.item(mediaRef) {
+                    // Blurred fill backdrop, sized to the WHOLE canvas (the still covers photo
+                    // + video). Explicit frame is what makes it fill instead of collapsing to
+                    // the fit-image's height.
+                    if let img = m.image {
+                        Image(uiImage: img).resizable().scaledToFill()
+                            .frame(width: geo.size.width, height: geo.size.height)
+                            .clipped()
+                            .blur(radius: 28)
+                            .overlay(Color.black.opacity(0.28))
+                    }
+                    // Foreground: the media in full (fit), centered in the canvas.
+                    if m.kind == .video, let url = m.videoURL {
+                        LoopingVideo(url: url, fill: false)
+                    } else if let img = m.image {
+                        Image(uiImage: img).resizable().scaledToFit()
+                    }
                 }
             }
+            .frame(width: geo.size.width, height: geo.size.height)
             .clipped()
         }
     }

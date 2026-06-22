@@ -107,7 +107,12 @@ struct RootView: View {
         }
         .tint(HavenTheme.pink)
         .onChange(of: tab) { _, t in
-            if t == "circle" { feedStore.markCircleSeen() }
+            if t == "circle" {
+                feedStore.markCircleSeen()
+                AudioCoordinator.shared.ensureMusicPlaying()    // back on the feed → resume the centered post's song
+            } else {
+                AudioCoordinator.shared.pauseForBackground()    // left the feed → silence post music + video
+            }
             if t == "messages" { feedStore.markMessagesSeen() }
         }
         .overlay {
