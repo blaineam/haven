@@ -3,12 +3,12 @@ import AVKit
 
 /// AVPlayerLayer-backed surface with no system chrome. `.resizeAspect` letterboxes — the whole
 /// frame is always visible, never cropped.
-private final class PlayerLayerView: UIView {
+final class PlayerLayerView: UIView {
     override class var layerClass: AnyClass { AVPlayerLayer.self }
     var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
 }
 
-private struct VideoSurface: UIViewRepresentable {
+struct VideoSurface: UIViewRepresentable {
     let player: AVPlayer
     func makeUIView(context: Context) -> PlayerLayerView {
         let v = PlayerLayerView()

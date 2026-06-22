@@ -77,12 +77,23 @@ struct StoryViewer: View {
     @ViewBuilder private func content(_ s: FeedItemFfi) -> some View {
         if waitingMedia != nil {
             downloading
-        } else if let player {
-            VideoPlayer(player: player)
-        } else if let ref = s.media.first, let img = MediaStore.shared.item(ref)?.image {
-            Image(uiImage: img).resizable().scaledToFit()
         } else {
-            missing
+            ZStack {
+                // Blurred fill backdrop so off-ratio media (landscape, etc.) sits in the standard
+                // story frame instead of leaving plain black bands. The still covers photo + video.
+                if let ref = s.media.first, let img = MediaStore.shared.item(ref)?.image {
+                    Image(uiImage: img).resizable().scaledToFill()
+                        .blur(radius: 28).overlay(Color.black.opacity(0.28))
+                }
+                if let player {
+                    VideoSurface(player: player)   // fit (letterbox) so the backdrop shows through
+                } else if let ref = s.media.first, let img = MediaStore.shared.item(ref)?.image {
+                    Image(uiImage: img).resizable().scaledToFit()
+                } else {
+                    missing
+                }
+            }
+            .clipped()
         }
     }
 

@@ -328,14 +328,8 @@ struct StoryComposerView: View {
         }
     }
 
-    @ViewBuilder private var media: some View {
-        if let m = MediaStore.shared.item(draft.mediaRef) {
-            if m.kind == .video, let url = m.videoURL {
-                LoopingVideo(url: url)
-            } else if let img = m.image {
-                Image(uiImage: img).resizable().scaledToFill()
-            }
-        }
+    private var media: some View {
+        StoryMediaCanvas(mediaRef: draft.mediaRef)
     }
 
     private var topControls: some View {
@@ -480,9 +474,10 @@ struct StoryComposerView: View {
 /// A muted, looping video for the composer preview.
 struct LoopingVideo: UIViewRepresentable {
     let url: URL
+    var fill: Bool = true   // false → fit (letterbox), e.g. show a landscape clip in full
     func makeUIView(context: Context) -> PlayerView {
         let v = PlayerView()
-        v.load(url)
+        v.load(url, fill: fill)
         return v
     }
     func updateUIView(_ uiView: PlayerView, context: Context) {}
@@ -491,14 +486,40 @@ struct LoopingVideo: UIViewRepresentable {
         override class var layerClass: AnyClass { AVPlayerLayer.self }
         private var looper: Any?
         var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
-        func load(_ url: URL) {
+        func load(_ url: URL, fill: Bool) {
             let item = AVPlayerItem(url: url)
             let queue = AVQueuePlayer(playerItem: item)
             queue.isMuted = true
             looper = AVPlayerLooper(player: queue, templateItem: item)
             playerLayer.player = queue
-            playerLayer.videoGravity = .resizeAspectFill
+            playerLayer.videoGravity = fill ? .resizeAspectFill : .resizeAspect
             queue.play()
+        }
+    }
+}
+
+/// Renders story media inside the standard 9:16 canvas: the media is shown in **full** (fit),
+/// centered, over a **blurred fill of itself** — so landscape (or any off-ratio) photos and
+/// videos sit cleanly within the frame instead of cropping or leaving dead bands.
+struct StoryMediaCanvas: View {
+    let mediaRef: String
+    var body: some View {
+        if let m = MediaStore.shared.item(mediaRef) {
+            ZStack {
+                // Blurred fill backdrop — the still works for both photo and video.
+                if let img = m.image {
+                    Image(uiImage: img).resizable().scaledToFill()
+                        .blur(radius: 28)
+                        .overlay(Color.black.opacity(0.28))
+                }
+                // Foreground: the media in full.
+                if m.kind == .video, let url = m.videoURL {
+                    LoopingVideo(url: url, fill: false)
+                } else if let img = m.image {
+                    Image(uiImage: img).resizable().scaledToFit()
+                }
+            }
+            .clipped()
         }
     }
 }
