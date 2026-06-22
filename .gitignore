@@ -23,3 +23,6 @@ core/p2pcore-ffi/generated/
 *.xcframework
 Scripts/export-compliance/
 HavenApp/Info.plist
+
+# agent worktrees (never commit)
+.claude/worktrees/
