@@ -193,15 +193,19 @@ function detectInvite(){
   return { id: m[1], verify, app: `haven://u/${m[1]}#${verify}`, full: location.href };
 }
 
-// Hand off to the native app via a hidden iframe — if no app is registered for haven://, this
-// fails SILENTLY instead of throwing Safari's "address is invalid" page (which a top-level
-// location change would).
+// Launch the native app via its haven:// scheme. A top-level navigation on the user's tap is
+// the reliable way to open a registered custom scheme (modern Safari blocks iframe launches).
+// If the app isn't installed we surface a gentle hint to use the browser option instead.
 function openInApp(appUrl){
-  const f = document.createElement("iframe");
-  f.style.display = "none";
-  f.src = appUrl;
-  document.body.appendChild(f);
-  setTimeout(() => f.remove(), 1500);
+  const status = document.getElementById("inv-status");
+  let left = false;
+  const onHide = () => { left = true; };
+  document.addEventListener("visibilitychange", onHide, { once:true });
+  setTimeout(() => {
+    document.removeEventListener("visibilitychange", onHide);
+    if(!left && status) status.textContent = "Don't have Haven installed? Continue in this browser below.";
+  }, 1500);
+  window.location.href = appUrl;   // opens the app if haven:// is registered
 }
 
 function renderInvite(inv){
