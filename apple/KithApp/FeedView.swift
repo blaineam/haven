@@ -431,6 +431,21 @@ final class FeedStore: ObservableObject {
         guard let social, let env = try? social.react(circleId: activeCircleId, target: id, emoji: emoji, createdAt: now()) else { return }
         broadcastEvent(activeCircleId, env); reactionTick += 1; refresh()
     }
+    /// React to a message in a specific (DM) circle.
+    func reactMessage(in circleId: String, _ id: String, _ emoji: String) {
+        guard let social, let env = try? social.react(circleId: circleId, target: id, emoji: emoji, createdAt: now()) else { return }
+        broadcastEvent(circleId, env); reactionTick += 1; refresh()
+    }
+    /// Auto-save freshly-received media to Photos when the user enabled "Save to Photos".
+    func autoSaveReceived(_ ref: String) {
+        if let item = MediaStore.shared.item(ref) { PhotoSaver.saveIfEnabled(item) }
+    }
+
+    /// Whether a DM's partner is currently reachable, and when we last heard from them.
+    func dmPresence(_ circleId: String) -> (online: Bool, lastSeen: Date?) {
+        guard let hex = dmPartnerHex(circleId) else { return (false, nil) }
+        return (isConnected(hex), lastHeard[hex])
+    }
     func edit(_ id: String, _ body: String, media: [String] = [], music: TrackRefFfi? = nil, muteVideo: Bool = false) {
         guard let social, let env = try? social.edit(circleId: activeCircleId, target: id, body: body, media: media, music: music, muteVideo: muteVideo, createdAt: now()) else { return }
         broadcastEvent(activeCircleId, env); refresh()
@@ -724,7 +739,7 @@ final class FeedStore: ObservableObject {
         let circleIds = circles.map { $0.id }
         Task { @MainActor in   // also pull from the circle's shared store if one exists
             if let data = await SharedStore.restore(ref: ref, circleIds: circleIds, social: social) {
-                MediaStore.shared.store(ref, data); refresh()
+                MediaStore.shared.store(ref, data); autoSaveReceived(ref); refresh()
             }
         }
     }
@@ -747,7 +762,7 @@ final class FeedStore: ObservableObject {
             if SharedStore.isVolunteering {
                 Task { @MainActor in
                     if let data = await SharedStore.restore(ref: ref, circleIds: circleIds, social: social) {
-                        MediaStore.shared.store(ref, data); refresh()
+                        MediaStore.shared.store(ref, data); autoSaveReceived(ref); refresh()
                     }
                 }
             }
@@ -834,6 +849,7 @@ final class FeedStore: ObservableObject {
         incoming[ref] = entry
         if entry.got.count >= entry.total {
             MediaStore.shared.adopt(ref, from: entry.tempURL)
+            autoSaveReceived(ref)
             incoming[ref] = nil
             refresh()   // re-render so the media appears
             // If I'm the circle's backup, cache this received media to my bucket too.
@@ -1492,7 +1508,16 @@ private struct PostCard: View {
         mediaPageContent(ref)
             .contextMenu {
                 Button { MediaSaver.save(ref) } label: { Label("Save to Photos", systemImage: "square.and.arrow.down") }
+                if let url = shareURL(ref) {
+                    ShareLink(item: url) { Label("Share…", systemImage: "square.and.arrow.up") }
+                }
             }
+    }
+
+    /// The on-disk file to hand to the system share sheet (video file, else the image).
+    private func shareURL(_ ref: String) -> URL? {
+        guard let m = MediaStore.shared.item(ref) else { return nil }
+        return m.kind == .video ? m.videoURL : MediaStore.shared.storagePath(for: ref)
     }
 
     @ViewBuilder private func mediaPageContent(_ ref: String) -> some View {

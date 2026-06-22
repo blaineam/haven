@@ -120,6 +120,9 @@ final class CallManager: NSObject, ObservableObject {
         teardown()
     }
 
+    /// Flip between front and back camera mid-call.
+    func flipCamera() { if videoOn { videoCapturer.flip() } }
+
     /// Route audio to the speaker (audio-only calls) or back to the earpiece.
     func toggleSpeaker() {
         speakerOn.toggle()
@@ -282,6 +285,7 @@ final class VideoCapturer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
     private let queue = DispatchQueue(label: "kith.call.video")
     private let ctx = CIContext(options: [.useSoftwareRenderer: false])
     private var lastSend: CFTimeInterval = 0
+    private var position: AVCaptureDevice.Position = .front
     var onFrame: ((Data) -> Void)?
 
     func start() {
@@ -289,19 +293,45 @@ final class VideoCapturer: NSObject, AVCaptureVideoDataOutputSampleBufferDelegat
             guard let self else { return }
             self.session.beginConfiguration()
             self.session.sessionPreset = .low
-            if self.session.inputs.isEmpty,
-               let cam = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front),
-               let input = try? AVCaptureDeviceInput(device: cam), self.session.canAddInput(input) {
-                self.session.addInput(input)
-            }
+            self.configureInput()
             if self.session.outputs.isEmpty {
                 self.output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA]
                 self.output.alwaysDiscardsLateVideoFrames = true
                 self.output.setSampleBufferDelegate(self, queue: self.queue)
                 if self.session.canAddOutput(self.output) { self.session.addOutput(self.output) }
             }
+            self.applyOrientation()
             self.session.commitConfiguration()
             self.session.startRunning()
+        }
+    }
+
+    /// Swap between the front and back camera.
+    func flip() {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.position = (self.position == .front) ? .back : .front
+            self.session.beginConfiguration()
+            self.session.inputs.forEach { self.session.removeInput($0) }
+            self.configureInput()
+            self.applyOrientation()
+            self.session.commitConfiguration()
+        }
+    }
+
+    private func configureInput() {
+        guard let cam = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position),
+              let input = try? AVCaptureDeviceInput(device: cam), session.canAddInput(input) else { return }
+        session.addInput(input)
+    }
+
+    /// Upright (portrait) frames + mirror the front camera so the preview reads naturally.
+    private func applyOrientation() {
+        guard let conn = output.connection(with: .video) else { return }
+        if conn.isVideoRotationAngleSupported(90) { conn.videoRotationAngle = 90 }
+        if conn.isVideoMirroringSupported {
+            conn.automaticallyAdjustsVideoMirroring = false
+            conn.isVideoMirrored = (position == .front)
         }
     }
 
@@ -396,6 +426,11 @@ struct CallOverlay: View {
                     }
                     Button { CallManager.shared.toggleVideo() } label: {
                         callButton(call.videoOn ? "video.fill" : "video.slash.fill", on: call.videoOn)
+                    }
+                    if call.videoOn {
+                        Button { CallManager.shared.flipCamera() } label: {
+                            callButton("arrow.triangle.2.circlepath.camera.fill", on: false)
+                        }
                     }
                     Button { CallManager.shared.endCall() } label: {
                         Image(systemName: "phone.down.fill").font(.title)

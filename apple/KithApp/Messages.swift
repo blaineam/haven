@@ -136,9 +136,17 @@ struct DMThreadView: View {
                 composer
             }
         }
-        .navigationTitle(store.dmPartnerName(circleId))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                let p = store.dmPresence(circleId)
+                VStack(spacing: 1) {
+                    Text(store.dmPartnerName(circleId)).font(.headline)
+                    Text(p.online ? "Online"
+                         : (p.lastSeen.map { "Last seen \(relativeTimeShort(UInt64($0.timeIntervalSince1970 * 1000))) ago" } ?? "Offline"))
+                        .font(.caption2).foregroundStyle(p.online ? Color.green : Color.secondary)
+                }
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Button {
                     if let hex = store.dmPartnerHex(circleId) {
@@ -210,6 +218,16 @@ struct DMThreadView: View {
                                     in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                         .foregroundStyle(m.isMe ? .white : .primary)
                 }
+                if !m.reactions.isEmpty {
+                    HStack(spacing: 4) {
+                        ForEach(m.reactions, id: \.emoji) { r in
+                            Text("\(r.emoji)\(r.count > 1 ? " \(r.count)" : "")")
+                                .font(.caption2)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(Color(.tertiarySystemFill), in: Capsule())
+                        }
+                    }
+                }
                 HStack(spacing: 3) {
                     Text(relativeTimeShort(m.createdAt)).font(.caption2).foregroundStyle(.tertiary)
                     if m.edited && !m.unsent { Text("edited").font(.caption2).foregroundStyle(.tertiary) }
@@ -222,6 +240,13 @@ struct DMThreadView: View {
                 }
             }
             .contextMenu {
+                if !m.unsent {
+                    ControlGroup {
+                        ForEach(["❤️", "👍", "😂", "😮", "😢", "🔥"], id: \.self) { e in
+                            Button(e) { store.reactMessage(in: circleId, m.id, e) }
+                        }
+                    }
+                }
                 if m.isMe && !m.unsent {
                     if !m.body.isEmpty && !SecretMessages.isSecret(m.body) {
                         Button { beginEdit(m) } label: { Label("Edit", systemImage: "pencil") }
