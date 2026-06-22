@@ -185,12 +185,14 @@ async function boot(){
   render();
 }
 
-// An invite link is /…/u/<base32-id>#<base32-verify>. Pull it off the current URL.
+// An invite payload "<id>.<verify>" rides in the URL fragment (works on any static host).
 function detectInvite(){
-  const m = location.pathname.match(/\/u\/([^/?#]+)/);
-  const verify = location.hash.replace(/^#/, "");
-  if(!m || !verify) return null;
-  return { id: m[1], verify, app: `haven://u/${m[1]}#${verify}`, full: location.href };
+  const h = location.hash.replace(/^#/, "");
+  const dot = h.indexOf(".");
+  if(dot < 1) return null;
+  const id = h.slice(0, dot), verify = h.slice(dot + 1);
+  if(!id || !verify) return null;
+  return { id, verify, app: `haven://invite#${id}.${verify}`, full: location.href };
 }
 
 // Launch the native app via its haven:// scheme. A top-level navigation on the user's tap is

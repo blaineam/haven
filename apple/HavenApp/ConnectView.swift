@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// Where Haven's web invite links live. The static landing page at
-/// `wemiller.com/apps/haven/` resolves `/u/<id>#<verify>` into an "open in Haven" page.
+/// `wemiller.com/apps/haven/` resolves `/#<id>.<verify>` into an "open in Haven" page.
 enum HavenSite {
     static let inviteDomain = "wemiller.com/apps/haven"
 }

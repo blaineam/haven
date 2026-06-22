@@ -74,9 +74,10 @@ struct RootView: View {
         }
         .animation(HavenTheme.smooth, value: profile.onboarded)
         .onOpenURL { url in
-            // Invite deep links: haven://u/<id>#<verify> (opened from wemiller.com/apps/haven).
+            // Invite links carry "<id>.<verify>" in the URL fragment (haven://invite#… or
+            // https://…/#…), so the web link loads on any static host.
             let s = url.absoluteString
-            guard s.contains("/u/") else { return }
+            guard let frag = url.fragment, frag.contains(".") else { return }
             tab = "you"
             pendingInvite = PendingInvite(link: s)   // item-driven sheet → correct on first open
         }

@@ -3,7 +3,7 @@ import SwiftUI
 import UIKit
 
 /// A live camera QR scanner. Calls `onFound` once with the decoded string, then the
-/// caller dismisses. Reads both `https://…/u/…#…` and `haven://u/…#…` invite links.
+/// caller dismisses. Reads both `https://…/#…` and `haven://invite#…` invite links.
 struct QRScannerView: UIViewControllerRepresentable {
     var onFound: (String) -> Void
 

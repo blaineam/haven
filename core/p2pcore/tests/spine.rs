@@ -106,13 +106,13 @@ fn link_roundtrips_and_detects_tampering() {
 
     // Deep-link form.
     let uri = link.to_uri();
-    assert!(uri.starts_with("haven://u/"));
+    assert!(uri.starts_with("haven://invite#"));
     assert!(uri.contains('#'));
     assert_eq!(HavenLink::parse(&uri).unwrap(), link);
 
     // Website form (with a subpath, as the app uses) parses to the same payload.
     let web = link.to_web("wemiller.com/apps/haven");
-    assert!(web.starts_with("https://wemiller.com/apps/haven/u/"));
+    assert!(web.starts_with("https://wemiller.com/apps/haven/#"));
     assert_eq!(HavenLink::parse(&web).unwrap(), link);
 
     // A link matches the genuine identity fetched from discovery...
@@ -122,7 +122,7 @@ fn link_roundtrips_and_detects_tampering() {
     assert!(!link.matches(&other));
 
     // A link with no verification fragment is rejected, not trusted blindly.
-    assert!(HavenLink::parse("haven://u/AAAA").is_err());
+    assert!(HavenLink::parse("haven://invite#AAAA").is_err());
 }
 
 #[test]
