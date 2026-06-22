@@ -40,13 +40,16 @@ export default {
           headers: {
             authorization: `bearer ${jwt}`,
             "apns-topic": env.APNS_TOPIC,
-            "apns-push-type": "alert",
-            "apns-priority": "10",
+            // Silent wake — no server-side alert text. That generic "New message" banner was
+            // stacking on top of the app's own locally-decrypted notification (the duplicate).
+            // The app wakes, decrypts locally, and posts the real content. When the NSE ships,
+            // switch back to "alert" + mutable-content so the NSE decrypts `e` and shows it.
+            "apns-push-type": "background",
+            "apns-priority": "5",
           },
-          // mutable-content lets the NSE intercept + decrypt before the banner shows.
           body: JSON.stringify({
-            aps: { "mutable-content": 1, alert: { title: "Haven", body: "New message" }, sound: "default" },
-            e: ciphertext,
+            aps: { "content-available": 1 },
+            e: ciphertext,   // encrypted content, ready for the on-device NSE
           }),
         });
         if (res.status === 410) await env.TOKENS.delete(nodeId);   // token no longer valid

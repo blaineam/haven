@@ -34,7 +34,7 @@ struct GestureVideoPlayer: View {
     @State private var interacting = false
     @State private var wasPlaying = false
     @State private var startProgress: Double = 0
-    @State private var observer: Any?
+    @State private var observed: (AVPlayer, Any)?
 
     var body: some View {
         GeometryReader { geo in
@@ -101,14 +101,19 @@ struct GestureVideoPlayer: View {
     }
 
     private func addObserver() {
+        removeObserver()   // never stack observers / leave a stale one
         if let d = player.currentItem?.duration.seconds, d.isFinite { duration = d }
-        observer = player.addPeriodicTimeObserver(
+        let token = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main) { time in
             if duration <= 0, let d = player.currentItem?.duration.seconds, d.isFinite { duration = d }
             if !scrubbing, duration > 0 { progress = time.seconds / duration }
         }
+        observed = (player, token)   // remember the EXACT player this token belongs to
     }
     private func removeObserver() {
-        if let o = observer { player.removeTimeObserver(o); observer = nil }
+        // Remove from the player the observer was actually added to — SwiftUI can recycle this
+        // view onto a different `player`, and removing a token from the wrong player throws
+        // (the iPad crash on tab-away). Only ever remove once.
+        if let (p, token) = observed { p.removeTimeObserver(token); observed = nil }
     }
 }
