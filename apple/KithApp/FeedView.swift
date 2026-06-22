@@ -465,10 +465,13 @@ final class FeedStore: ObservableObject {
                     for env in envs { sendIroh(1, eventPayload(circle.id, env), to: nodeHex) }
                 }
             }
-            // DMs are point-to-point — never broadcast their handshake/events to nearby
-            // non-members (that's what let a third party join someone else's DM).
+            // Only the OPEN default circle broadcasts its handshake to nearby. Custom + DM
+            // circles must NOT — a broadcast Hello let any nearby contact handshake their way
+            // into a circle they were never added to (membership contamination).
+            if circle.id == "default" { nearbyBroadcast(0, hello) }
+            // Sealed events are safe to fan out (non-members can't open them; receive() also
+            // gates on membership), so keep nearby delivery for posts — just not DMs.
             if !circle.id.hasPrefix("dm:") {
-                nearbyBroadcast(0, hello)
                 for env in envs { nearbyBroadcast(1, eventPayload(circle.id, env)) }
             }
             // Mesh: let a relay carry our handshake to members we can't reach directly.
@@ -481,9 +484,10 @@ final class FeedStore: ObservableObject {
     private func nearbyPeerConnected() {
         guard let social else { return }
         nearbyActive = true
-        for circle in circles where !circle.id.hasPrefix("dm:") {   // never broadcast DMs to nearby
+        for circle in circles {
             guard let hello = helloPayload(circleId: circle.id, circleName: circle.name) else { continue }
-            nearbyBroadcast(0, hello)
+            if circle.id == "default" { nearbyBroadcast(0, hello) }   // only the open circle broadcasts handshake
+            guard !circle.id.hasPrefix("dm:") else { continue }       // DM events stay point-to-point
             for env in social.syncEnvelopes(circleId: circle.id) { nearbyBroadcast(1, eventPayload(circle.id, env)) }
         }
         refresh()
@@ -901,12 +905,13 @@ final class FeedStore: ObservableObject {
            let authName = social.verifyProfile(bundle: bundle, blob: profileBlob), !authName.isEmpty {
             ContactsStore.shared.setAuthoritativeName(idHex: idHex, authName)
         }
-        // Reply so the circle is mutual + back-fill its posts to them. Direct-send always;
-        // only fan out to nearby for non-DM circles (DMs stay strictly point-to-point).
+        // Reply so the circle is mutual + back-fill its posts to them. Direct-send to the
+        // sender always; only the open default circle's handshake fans out to nearby (a
+        // broadcast reply for a custom/DM circle is what contaminated their membership).
         let isDM = circleId.hasPrefix("dm:")
         if let hello = helloPayload(circleId: circleId, circleName: circleName) {
             sendIroh(0, hello, to: idHex)
-            if !isDM { nearbyBroadcast(0, hello) }
+            if circleId == "default" { nearbyBroadcast(0, hello) }
         }
         for env in social.syncEnvelopes(circleId: circleId) {
             sendIroh(1, eventPayload(circleId, env), to: idHex)

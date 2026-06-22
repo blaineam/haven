@@ -80,6 +80,12 @@ final class AudioCoordinator: ObservableObject {
         videoUnmuted = false
     }
 
+    /// Pause all feed playback when the app backgrounds (a call's own audio is separate).
+    func pauseForBackground() {
+        MusicPlayback.shared.duck()
+        videoPlayer?.pause()
+    }
+
     /// Make sure the active post's song is playing — unless the viewer is intentionally
     /// listening to a video's audio. Called when a post stays active (e.g. after a video
     /// paused it) so the music resumes as long as you haven't scrolled past the post.

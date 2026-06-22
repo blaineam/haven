@@ -9,6 +9,8 @@ struct CircleView: View {
     @ObservedObject private var contacts = ContactsStore.shared
     @ObservedObject private var store = FeedStore.shared
     @State private var showInvite = false
+    @State private var nicknameTarget: Contact?
+    @State private var nicknameDraft = ""
 
     private var isDefault: Bool { store.activeCircleId == "default" }
     private var memberIds: Set<String> { Set(store.handshaked(in: store.activeCircleId)) }
@@ -31,6 +33,11 @@ struct CircleView: View {
                     ForEach(membersInCircle) { c in
                         row(c)
                             .listRowBackground(Color.clear)
+                            .contextMenu {
+                                Button { nicknameDraft = c.nickname ?? ""; nicknameTarget = c } label: {
+                                    Label("Set nickname", systemImage: "pencil")
+                                }
+                            }
                             .swipeActions(edge: .leading) {
                                 Button { store.forceSync() } label: {
                                     Label("Reconnect", systemImage: "arrow.clockwise")
@@ -91,6 +98,12 @@ struct CircleView: View {
             }
         }
         .sheet(isPresented: $showInvite) { ConnectView(account: account, contacts: contacts) }
+        .alert("Nickname", isPresented: Binding(get: { nicknameTarget != nil }, set: { if !$0 { nicknameTarget = nil } })) {
+            TextField("Nickname", text: $nicknameDraft)
+            Button("Save") { if let c = nicknameTarget { ContactsStore.shared.setNickname(idHex: c.idHex, nicknameDraft) }; nicknameTarget = nil }
+            Button("Clear", role: .destructive) { if let c = nicknameTarget { ContactsStore.shared.setNickname(idHex: c.idHex, "") }; nicknameTarget = nil }
+            Button("Cancel", role: .cancel) { nicknameTarget = nil }
+        } message: { Text("How this person shows up for you — long-press anyone in your circle to set it.") }
     }
 
     private func row(_ c: Contact) -> some View {

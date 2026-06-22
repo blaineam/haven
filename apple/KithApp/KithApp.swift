@@ -15,7 +15,10 @@ struct KithApp: App {
                 .onAppear { NotificationManager.shared.requestAuthorization() }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .background { NotificationManager.shared.scheduleRefresh() }
+            if phase == .background {
+                NotificationManager.shared.scheduleRefresh()
+                AudioCoordinator.shared.pauseForBackground()   // don't keep playing audio in the background
+            }
         }
     }
 }
