@@ -234,39 +234,9 @@ fun CircleScreen(onAddFriend: () -> Unit) {
     }
 
     if (showMusicDialog) {
-        var link by remember { mutableStateOf("") }
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { showMusicDialog = false },
-            containerColor = HavenTheme.card,
-            title = { Text("Add a song", color = Color.White) },
-            text = {
-                Column {
-                    Text("Paste a YouTube, Spotify, or Apple Music link. It rides along with your post.",
-                        color = HavenTheme.textSecondary, fontSize = 13.sp)
-                    Spacer(Modifier.height(10.dp))
-                    OutlinedTextField(
-                        value = link, onValueChange = { link = it }, singleLine = true,
-                        placeholder = { Text("https://…") }, modifier = Modifier.fillMaxWidth(),
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedBorderColor = HavenTheme.pink, cursorColor = HavenTheme.pink),
-                    )
-                }
-            },
-            confirmButton = {
-                androidx.compose.material3.TextButton(
-                    enabled = link.isNotBlank(),
-                    onClick = {
-                        val domain = runCatching { java.net.URL(link.trim()).host.removePrefix("www.") }.getOrDefault("link")
-                        pendingMusic = HavenNet.trackFromLink(link.trim(), "Song", domain)
-                        showMusicDialog = false
-                    },
-                ) { Text("Attach", color = HavenTheme.pink) }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { showMusicDialog = false }) {
-                    Text("Cancel", color = HavenTheme.textSecondary)
-                }
-            },
+        MusicSearchSheet(
+            onPick = { track -> pendingMusic = track; showMusicDialog = false },
+            onDismiss = { showMusicDialog = false },
         )
     }
 }
@@ -393,23 +363,10 @@ fun PostCard(item: FeedItemFfi, circleId: String = DEFAULT_CIRCLE) {
             }
         }
 
-        // Attached song.
+        // Attached song — artwork + 30s preview playback, resolved via iTunes Search.
         item.music?.let { m ->
-            val ctx = LocalContext.current
             Spacer(Modifier.height(10.dp))
-            Row(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(HavenTheme.background)
-                    .clickable { if (m.catalogId.isNotBlank()) openInApp(ctx, m.catalogId) }.padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Filled.MusicNote, null, tint = HavenTheme.pink, modifier = Modifier.size(22.dp))
-                Spacer(Modifier.size(10.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(m.title, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
-                    if (m.artist.isNotBlank()) Text(m.artist, color = HavenTheme.textSecondary, fontSize = 12.sp, maxLines = 1)
-                }
-                Text("Play", color = HavenTheme.pink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-            }
+            MusicChip(m)
         }
 
         // Existing reactions.

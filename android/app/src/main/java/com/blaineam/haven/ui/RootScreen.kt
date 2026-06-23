@@ -69,6 +69,7 @@ private fun MainScaffold() {
         HavenNet.init(context)
         HavenNet.start()
         com.blaineam.haven.core.CallManager.init(context, HavenNet.nodeIdHex)
+        com.blaineam.haven.core.ConnectionService.restoreIfEnabled(context)
     }
     // Notification permission on Android 13+ (no-op below).
     val notifPermission = androidx.activity.compose.rememberLauncherForActivityResult(

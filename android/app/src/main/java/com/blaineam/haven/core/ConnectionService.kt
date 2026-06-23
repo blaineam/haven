@@ -1,0 +1,88 @@
+package com.blaineam.haven.core
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Service
+import android.content.Context
+import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
+import android.os.IBinder
+import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
+
+/**
+ * The serverless equivalent of iOS's APNs relay: a foreground service that keeps the Haven process
+ * (and its iroh node) alive so inbound posts/DMs/calls arrive in REAL TIME and fire local
+ * notifications — no FCM, no Google, no push server. Opt-in ("Stay connected" in Settings); when
+ * off, the WorkManager periodic sync still catches up every ~15 min.
+ */
+class ConnectionService : Service() {
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        ensureChannel(this)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(NOTIF_ID, notification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            startForeground(NOTIF_ID, notification())
+        }
+        HavenNet.init(applicationContext)
+        HavenNet.start()
+        return START_STICKY
+    }
+
+    private fun notification(): Notification {
+        val open = packageManager.getLaunchIntentForPackage(packageName)
+        val pi = PendingIntent.getActivity(this, 0, open ?: Intent(),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+        return NotificationCompat.Builder(this, CHANNEL)
+            .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
+            .setContentTitle("Haven is connected")
+            .setContentText("Receiving posts, messages and calls in real time")
+            .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
+            .setContentIntent(pi)
+            .build()
+    }
+
+    companion object {
+        private const val CHANNEL = "haven.connection"
+        private const val NOTIF_ID = 42
+        private const val PREF = "haven.fg"
+        private const val KEY = "enabled"
+
+        private fun ensureChannel(ctx: Context) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val ch = NotificationChannel(CHANNEL, "Connection", NotificationManager.IMPORTANCE_LOW).apply {
+                    description = "Shown while Haven stays connected in the background"
+                    setShowBadge(false)
+                }
+                ctx.getSystemService(NotificationManager::class.java)?.createNotificationChannel(ch)
+            }
+        }
+
+        fun isEnabled(ctx: Context): Boolean =
+            ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).getBoolean(KEY, false)
+
+        fun setEnabled(ctx: Context, on: Boolean) {
+            ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putBoolean(KEY, on).apply()
+            if (on) start(ctx) else stop(ctx)
+        }
+
+        fun start(ctx: Context) {
+            ContextCompat.startForegroundService(ctx, Intent(ctx, ConnectionService::class.java))
+        }
+
+        fun stop(ctx: Context) {
+            ctx.stopService(Intent(ctx, ConnectionService::class.java))
+        }
+
+        /** Called on app launch — restore the service if the user left it on. */
+        fun restoreIfEnabled(ctx: Context) {
+            if (isEnabled(ctx)) start(ctx)
+        }
+    }
+}

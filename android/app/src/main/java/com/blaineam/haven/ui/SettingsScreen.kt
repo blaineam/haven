@@ -134,6 +134,25 @@ fun SettingsScreen(onBack: () -> Unit) {
 
             Spacer(Modifier.height(16.dp))
             Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
+                Text("Stay connected", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                Spacer(Modifier.height(4.dp))
+                Text("Keep Haven connected in the background for instant posts, messages and calls — no server, no Google. Uses a little battery and shows an ongoing notification.",
+                    color = HavenTheme.textSecondary, fontSize = 12.sp)
+                Spacer(Modifier.height(8.dp))
+                var stayOn by remember { mutableStateOf(com.blaineam.haven.core.ConnectionService.isEnabled(context)) }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Real-time connection", color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    androidx.compose.material3.Switch(
+                        checked = stayOn,
+                        onCheckedChange = { on -> com.blaineam.haven.core.ConnectionService.setEnabled(context, on); stayOn = on },
+                        colors = androidx.compose.material3.SwitchDefaults.colors(
+                            checkedThumbColor = Color.White, checkedTrackColor = HavenTheme.pink),
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+            Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
                 Text("Nearby (offline)", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                 Spacer(Modifier.height(4.dp))
                 Text("Share with people right next to you over Bluetooth/Wi-Fi — no internet needed.",
