@@ -6,9 +6,10 @@
 ┌─────────────────────────────────────────────────────────────┐
 │  UI                                                           │
 │   • Apple: SwiftUI app (iOS / macOS)  ── UniFFI ─┐            │
-│   • Android: Jetpack Compose          ── UniFFI ─┤  (Kotlin)  │
+│   • Android: Jetpack Compose          ── UniFFI ─┤            │
+│   • Win/Linux: Tauri WebView2 ── Rust backend ───┤ (direct)   │
 ├──────────────────────────────────────────────────┼───────────┤
-│  p2pcore  (Rust — ONE implementation for both)   ▼           │
+│  p2pcore  (Rust — ONE implementation for all)    ▼           │
 │   identity   hybrid-PQ crypto   links   social engine   media │
 │                         │                                     │
 │   transport seam  ──►  path-selector: nearby → iroh → relay   │
@@ -19,10 +20,11 @@
 └──────────────────────────────────────────────────────────────┘
 ```
 
-> Both native clients link the *same* Rust core through UniFFI (Swift on Apple, Kotlin
-> on Android). The web client was abandoned (a browser can't be an iroh peer — no raw
-> UDP / NAT hole-punch), so there is no WASM UI; `web/` is now just an invite-landing
-> page.
+> Every client links the *same* Rust core: Apple and Android through UniFFI (Swift /
+> Kotlin), and the Windows/Linux Tauri app links it **directly** as a Rust crate (its
+> backend is Rust, so no FFI hop). All run a real native iroh peer. The web client was
+> abandoned (a browser can't be an iroh peer — no raw UDP / NAT hole-punch), so there is
+> no WASM UI; `web/` is now just an invite-landing page.
 
 **Invariant:** everything above the transport seam deals only in hybrid-PQ
 encrypted bytes. The transport is interchangeable; the crypto is transport-blind.
@@ -82,6 +84,12 @@ Because there's no central store, large content for an offline peer falls throug
   Kotlin bindings — a real iroh peer, not a browser. Android Keystore for keys. The web
   client was abandoned (browsers can't be iroh peers); `web/` is now an invite-landing
   page only.
+- **Windows / Linux (Tauri 2, in progress):** a WebView2/WebKit frontend over a **Rust**
+  backend that links the core **directly** (`haven_ffi` as a crate — no UniFFI hop, since
+  the process is itself Rust). The iroh peer runs natively, so this is a real peer, not a
+  thin web client. Keys live in the OS secure store (Credential Manager / Secret Service)
+  via `keyring`. The *same binary* runs headless as the circle relay/mailbox
+  (`--headless`), like the invisible Mac relay. See [`WINDOWS-PORT.md`](WINDOWS-PORT.md).
 
 ## Relays (`relay/`)
 

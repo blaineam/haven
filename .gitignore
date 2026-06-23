@@ -1,5 +1,7 @@
 # Rust
 core/target/
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
 **/*.rs.bk
 
 # Demo run artifacts

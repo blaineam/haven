@@ -1,0 +1,428 @@
+//! Tauri command surface — the bridge the WebView2 frontend calls via `invoke()`. Each
+//! command maps the shared engine's FFI records into JSON-friendly DTOs.
+
+use std::sync::Arc;
+
+use base64::Engine as _;
+use haven_ffi::{FeedItemFfi, TrackRefFfi};
+use serde::{Deserialize, Serialize};
+use tauri::State;
+
+use crate::engine::{Engine, DEFAULT_CIRCLE};
+use crate::store::Profile;
+
+type Eng<'a> = State<'a, Arc<Engine>>;
+type R<T> = Result<T, String>;
+
+#[derive(Serialize)]
+pub struct ReactionDto {
+    pub emoji: String,
+    pub count: u32,
+    pub mine: bool,
+    pub authors: Vec<String>,
+}
+
+#[derive(Serialize)]
+pub struct TrackDto {
+    pub catalog_id: String,
+    pub title: String,
+    pub artist: String,
+    pub artwork_url: String,
+    pub duration_ms: u64,
+}
+
+#[derive(Serialize)]
+pub struct CommentDto {
+    pub id: String,
+    pub author_short: String,
+    pub author_name: String,
+    pub is_me: bool,
+    pub created_at: u64,
+    pub body: String,
+    pub media: Vec<String>,
+    pub edited: bool,
+    pub unsent: bool,
+    pub reactions: Vec<ReactionDto>,
+}
+
+#[derive(Serialize)]
+pub struct FeedItemDto {
+    pub id: String,
+    pub author_short: String,
+    pub author_name: String,
+    pub is_me: bool,
+    pub created_at: u64,
+    pub body: String,
+    pub media: Vec<String>,
+    pub music: Option<TrackDto>,
+    pub edited: bool,
+    pub unsent: bool,
+    pub story: bool,
+    pub mute_video: bool,
+    pub comments: Vec<CommentDto>,
+    pub reactions: Vec<ReactionDto>,
+}
+
+#[derive(Serialize)]
+pub struct CircleDto {
+    pub id: String,
+    pub name: String,
+    pub member_count: u32,
+}
+
+#[derive(Serialize)]
+pub struct ContactDto {
+    pub id_hex: String,
+    pub name: String,
+    pub verify_hex: String,
+}
+
+#[derive(Serialize)]
+pub struct PendingDto {
+    pub id_hex: String,
+    pub name: String,
+    pub verify_hex: String,
+}
+
+#[derive(Serialize)]
+pub struct BootstrapDto {
+    pub node_id_hex: String,
+    pub invite_uri: String,
+    pub invite_link: String,
+    pub profile: Profile,
+    pub started: bool,
+}
+
+#[derive(Serialize)]
+pub struct RelayStatusDto {
+    pub hosting: bool,
+    pub has_relay: bool,
+    pub relay_active: bool,
+    pub internet_active: bool,
+    pub started: bool,
+    pub relay_link: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct DmThreadDto {
+    pub circle_id: String,
+    pub name: String,
+    pub last_body: String,
+    pub last_at: u64,
+}
+
+#[derive(Deserialize)]
+pub struct TrackInput {
+    pub catalog_id: String,
+    pub title: String,
+    pub artist: String,
+    #[serde(default)]
+    pub artwork_url: String,
+    #[serde(default)]
+    pub duration_ms: u64,
+}
+
+impl TrackInput {
+    fn into_ffi(self) -> TrackRefFfi {
+        TrackRefFfi {
+            catalog_id: self.catalog_id,
+            title: self.title,
+            artist: self.artist,
+            artwork_url: self.artwork_url,
+            duration_ms: self.duration_ms,
+        }
+    }
+}
+
+fn track_dto(t: TrackRefFfi) -> TrackDto {
+    TrackDto {
+        catalog_id: t.catalog_id,
+        title: t.title,
+        artist: t.artist,
+        artwork_url: t.artwork_url,
+        duration_ms: t.duration_ms,
+    }
+}
+
+fn reaction_dto(r: haven_ffi::ReactionFfi) -> ReactionDto {
+    ReactionDto { emoji: r.emoji, count: r.count, mine: r.mine, authors: r.authors }
+}
+
+fn feed_item_dto(engine: &Engine, it: FeedItemFfi) -> FeedItemDto {
+    FeedItemDto {
+        author_name: if it.is_me { "You".to_string() } else { engine.display_name(&it.author_short) },
+        id: it.id,
+        author_short: it.author_short,
+        is_me: it.is_me,
+        created_at: it.created_at,
+        body: it.body,
+        media: it.media,
+        music: it.music.map(track_dto),
+        edited: it.edited,
+        unsent: it.unsent,
+        story: it.story,
+        mute_video: it.mute_video,
+        comments: it
+            .comments
+            .into_iter()
+            .map(|c| CommentDto {
+                author_name: if c.is_me { "You".to_string() } else { engine.display_name(&c.author_short) },
+                id: c.id,
+                author_short: c.author_short,
+                is_me: c.is_me,
+                created_at: c.created_at,
+                body: c.body,
+                media: c.media,
+                edited: c.edited,
+                unsent: c.unsent,
+                reactions: c.reactions.into_iter().map(reaction_dto).collect(),
+            })
+            .collect(),
+        reactions: it.reactions.into_iter().map(reaction_dto).collect(),
+    }
+}
+
+// ---- identity / lifecycle ----------------------------------------------------------------
+
+#[tauri::command]
+pub fn bootstrap(engine: Eng) -> BootstrapDto {
+    BootstrapDto {
+        node_id_hex: engine.node_id_hex(),
+        invite_uri: engine.invite_uri(),
+        invite_link: engine.invite_link("haven.is"),
+        profile: engine.get_profile(),
+        started: engine.started(),
+    }
+}
+
+#[tauri::command]
+pub fn self_test() -> serde_json::Value {
+    let r = haven_ffi::self_test();
+    serde_json::json!({
+        "identity_ok": r.identity_ok,
+        "hybrid_kem_ok": r.hybrid_kem_ok,
+        "signature_ok": r.signature_ok,
+        "link_ok": r.link_ok,
+        "all_ok": r.all_ok,
+        "node_id_hex": r.node_id_hex,
+        "summary": r.summary,
+    })
+}
+
+#[tauri::command]
+pub fn get_profile(engine: Eng) -> Profile {
+    engine.get_profile()
+}
+
+#[tauri::command]
+pub fn set_profile(engine: Eng, name: String, bio: String, link: String, emoji: String, avatar: String) {
+    engine.set_profile(Profile { name, bio, link, emoji, avatar });
+}
+
+// ---- circles -----------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn circles(engine: Eng) -> Vec<CircleDto> {
+    engine
+        .feed_circles()
+        .into_iter()
+        .map(|c| CircleDto { id: c.id, name: c.name, member_count: c.member_count })
+        .collect()
+}
+
+#[tauri::command]
+pub fn create_circle(engine: Eng, name: String) -> String {
+    engine.create_circle(name)
+}
+
+#[tauri::command]
+pub fn rename_circle(engine: Eng, id: String, name: String) {
+    engine.rename_circle(id, name);
+}
+
+#[tauri::command]
+pub fn leave_circle(engine: Eng, id: String) {
+    engine.leave_circle(id);
+}
+
+#[tauri::command]
+pub fn add_to_circle(engine: Eng, circle_id: String, contact_id_hex: String) {
+    engine.add_to_circle(circle_id, contact_id_hex);
+}
+
+// ---- feed / authoring --------------------------------------------------------------------
+
+#[tauri::command]
+pub fn feed(engine: Eng, circle_id: String) -> Vec<FeedItemDto> {
+    let cid = if circle_id.is_empty() { DEFAULT_CIRCLE.to_string() } else { circle_id };
+    engine.feed(&cid).into_iter().map(|it| feed_item_dto(&engine, it)).collect()
+}
+
+#[tauri::command]
+pub fn post(engine: Eng, circle_id: String, body: String, media: Vec<String>, music: Option<TrackInput>) {
+    let cid = if circle_id.is_empty() { DEFAULT_CIRCLE.to_string() } else { circle_id };
+    engine.post(cid, body, media, music.map(|m| m.into_ffi()));
+}
+
+#[tauri::command]
+pub fn post_story(engine: Eng, body: String, media: Option<String>, music: Option<TrackInput>) {
+    engine.post_story(body, media, music.map(|m| m.into_ffi()));
+}
+
+#[tauri::command]
+pub fn comment(engine: Eng, circle_id: String, target: String, body: String) {
+    engine.comment(circle_id, target, body);
+}
+
+#[tauri::command]
+pub fn react(engine: Eng, circle_id: String, target: String, emoji: String) {
+    engine.react(circle_id, target, emoji);
+}
+
+#[tauri::command]
+pub fn unreact(engine: Eng, circle_id: String, target: String, emoji: String) {
+    engine.unreact(circle_id, target, emoji);
+}
+
+#[tauri::command]
+pub fn edit_post(engine: Eng, circle_id: String, target: String, body: String) {
+    engine.edit_post(circle_id, target, body);
+}
+
+#[tauri::command]
+pub fn unsend_post(engine: Eng, circle_id: String, target: String) {
+    engine.unsend_post(circle_id, target);
+}
+
+// ---- DMs ---------------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn dm_threads(engine: Eng) -> Vec<DmThreadDto> {
+    engine
+        .dm_threads()
+        .into_iter()
+        .map(|(circle_id, name, last_body, last_at)| DmThreadDto { circle_id, name, last_body, last_at })
+        .collect()
+}
+
+#[tauri::command]
+pub fn start_dm(engine: Eng, contact_id_hex: String, contact_name: String) -> String {
+    engine.start_dm(contact_id_hex, contact_name)
+}
+
+#[tauri::command]
+pub fn messages(engine: Eng, circle_id: String) -> Vec<FeedItemDto> {
+    engine.messages(&circle_id).into_iter().map(|it| feed_item_dto(&engine, it)).collect()
+}
+
+#[tauri::command]
+pub fn send_dm(engine: Eng, circle_id: String, body: String, media: Vec<String>) {
+    engine.send_dm(circle_id, body, media);
+}
+
+// ---- connect / contacts ------------------------------------------------------------------
+
+#[tauri::command]
+pub fn connect_by_link(engine: Eng, uri: String) -> bool {
+    engine.connect_by_link(uri)
+}
+
+#[tauri::command]
+pub fn pending(engine: Eng) -> Vec<PendingDto> {
+    engine
+        .pending()
+        .into_iter()
+        .map(|p| PendingDto { id_hex: p.id_hex, name: p.name, verify_hex: p.verify_hex })
+        .collect()
+}
+
+#[tauri::command]
+pub fn approve(engine: Eng, id_hex: String) {
+    engine.approve(id_hex);
+}
+
+#[tauri::command]
+pub fn dismiss(engine: Eng, id_hex: String) {
+    engine.dismiss(id_hex);
+}
+
+#[tauri::command]
+pub fn contacts(engine: Eng) -> Vec<ContactDto> {
+    engine
+        .contacts()
+        .into_iter()
+        .map(|c| ContactDto { id_hex: c.id_hex, name: c.name, verify_hex: c.verify_hex })
+        .collect()
+}
+
+#[tauri::command]
+pub fn blocked(engine: Eng) -> Vec<String> {
+    engine.blocked()
+}
+
+#[tauri::command]
+pub fn block(engine: Eng, id_hex: String) {
+    engine.block(id_hex);
+}
+
+#[tauri::command]
+pub fn unblock(engine: Eng, id_hex: String) {
+    engine.unblock(id_hex);
+}
+
+// ---- relay / mailbox ---------------------------------------------------------------------
+
+#[tauri::command]
+pub fn relay_status(engine: Eng) -> RelayStatusDto {
+    let (hosting, has_relay, relay_active, internet_active, started) = engine.relay_status();
+    RelayStatusDto { hosting, has_relay, relay_active, internet_active, started, relay_link: engine.relay_link() }
+}
+
+#[tauri::command]
+pub async fn start_hosting(engine: Eng<'_>) -> R<String> {
+    engine.start_hosting().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn stop_hosting(engine: Eng) {
+    engine.stop_hosting();
+}
+
+#[tauri::command]
+pub async fn adopt_relay(engine: Eng<'_>, node_hex: String) -> R<()> {
+    engine.adopt_relay(node_hex).await;
+    Ok(())
+}
+
+// ---- media -------------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn add_media(engine: Eng, circle_id: String, data_base64: String, is_video: bool) -> R<String> {
+    let cid = if circle_id.is_empty() { DEFAULT_CIRCLE.to_string() } else { circle_id };
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64.trim())
+        .map_err(|e| format!("bad base64: {e}"))?;
+    Ok(engine.add_local_media(&cid, &bytes, is_video))
+}
+
+/// Return a `data:` URL for a stored media ref so the WebView can render it inline.
+#[tauri::command]
+pub fn media_data_url(engine: Eng, circle_id: String, reference: String) -> Option<String> {
+    let cid = if circle_id.is_empty() { DEFAULT_CIRCLE.to_string() } else { circle_id };
+    let bytes = engine.media_bytes(&cid, &reference)?;
+    let mime = if reference.starts_with("v:") { "video/mp4" } else { "image/jpeg" };
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    Some(format!("data:{mime};base64,{b64}"))
+}
+
+// ---- misc --------------------------------------------------------------------------------
+
+#[tauri::command]
+pub fn set_foreground(engine: Eng, fg: bool) {
+    engine.set_foreground(fg);
+}
+
+#[tauri::command]
+pub fn reset(engine: Eng) {
+    engine.reset();
+}

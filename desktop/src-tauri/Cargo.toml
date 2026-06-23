@@ -1,0 +1,64 @@
+# Haven for Windows (and Linux) — a Tauri 2 desktop client.
+#
+# The backend links the SAME Rust core the iPhone and Android apps use (`haven_ffi`,
+# which re-exports `p2pcore` + `haven-net`) DIRECTLY as a Rust crate — no UniFFI hop,
+# because this process is itself Rust. The WebView2 frontend (ui/) is the GUI; the same
+# binary runs headless as the circle relay/mailbox with `--headless`.
+[package]
+name = "haven-desktop"
+version = "0.1.0"
+description = "Haven — private, post-quantum, peer-to-peer social. Desktop client + relay."
+authors = ["Blaine Miller"]
+edition = "2021"
+rust-version = "1.77"
+
+# Detach from any parent workspace; build as our own root.
+[workspace]
+
+[lib]
+name = "haven_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "haven-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# The shared engine (identity, circles, feed, sealing, iroh node, relay/mailbox).
+haven_ffi = { path = "../../core/p2pcore-ffi" }
+
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "1"
+
+# Key storage: OS-native secure store (Windows Credential Manager / macOS Keychain /
+# Linux Secret Service) — keys never leave the device, same rule as iOS/Android.
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+
+sha2 = "0.10"
+hex = "0.4"
+data-encoding = "2"
+dirs = "5"
+base64 = "0.22"
+log = "0.4"
+
+[features]
+# Default to a custom binary protocol for the heavier media payloads later.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

@@ -24,6 +24,12 @@ Updated continuously. (Times in your local day.)
 - **Native-macOS port started**: native-macOS FFI slice (`aarch64-apple-darwin`) added to
   the xcframework and a `HavenMac` target stood up (Phase 0; Catalyst still ships) — see
   `docs/MACOS-NATIVE-PORT.md`. A **native Android** client is also underway in `android/`.
+- **Windows/Linux desktop started** (`desktop/`): a **Tauri 2** client — the Rust backend
+  links the core *directly* (no UniFFI), the WebView2 UI is the GUI, and the **same binary
+  runs headless as the circle relay** (`--headless`), like the invisible Mac relay. Backend
+  compiles + unit tests pass; the headless relay is verified end-to-end (identity in the OS
+  keychain → iroh node → relay link). GUI covers identity/profile/circles/feed/stories/DMs/
+  QR-handshake/media-attach/relay-host. See `docs/WINDOWS-PORT.md`.
 
 ## 🚦 Shipping status
 

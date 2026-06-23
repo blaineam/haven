@@ -4,7 +4,7 @@
 
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
 [![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](docs/ROADMAP.md)
-[![Platforms](https://img.shields.io/badge/platforms-iOS%20%7C%20macOS-lightgrey.svg)](#platforms)
+[![Platforms](https://img.shields.io/badge/platforms-iOS%20%7C%20macOS%20%7C%20Android%20%7C%20Windows%20%7C%20Linux-lightgrey.svg)](#platforms)
 [![Crypto](https://img.shields.io/badge/crypto-hybrid%20post--quantum-success.svg)](docs/DECISIONS.md)
 
 A peer-to-peer, end-to-end encrypted social network for the people you actually
@@ -52,10 +52,13 @@ device-to-device over the real internet and a nearby Bluetooth/Wi-Fi mesh. Done 
   store-and-forward relay.
 
 In progress: a **native AppKit/SwiftUI macOS port** (replacing Mac Catalyst — see
-[`docs/MACOS-NATIVE-PORT.md`](docs/MACOS-NATIVE-PORT.md)) and a **native Android client**
-(`android/`, Jetpack Compose + the same Rust core via UniFFI/Kotlin). The web client was
-abandoned (a browser can't be an iroh peer); `web/` is now just an invite-landing page.
-See [`docs/ROADMAP.md`](docs/ROADMAP.md) and [`apple/README.md`](apple/README.md).
+[`docs/MACOS-NATIVE-PORT.md`](docs/MACOS-NATIVE-PORT.md)), a **native Android client**
+(`android/`, Jetpack Compose + the same Rust core via UniFFI/Kotlin), and a **Windows /
+Linux desktop client** (`desktop/`, Tauri 2 — the Rust backend links the core *directly*
+and the same binary runs headless as your circle's relay; see
+[`docs/WINDOWS-PORT.md`](docs/WINDOWS-PORT.md)). The web client was abandoned (a browser
+can't be an iroh peer); `web/` is now just an invite-landing page. See
+[`docs/ROADMAP.md`](docs/ROADMAP.md) and [`apple/README.md`](apple/README.md).
 
 ## Repository layout
 
@@ -67,6 +70,7 @@ core/        Rust workspace — the portable, security-critical core
   p2pcore-ffi/ UniFFI crate (`haven_ffi`) — Swift/Kotlin bindings
 apple/       SwiftUI app (iOS/macOS) — consumes the core via an XCFramework
 android/     Native Android app (Jetpack Compose) — same core via UniFFI/Kotlin
+desktop/     Windows/Linux Tauri 2 app — Rust backend links the core directly; GUI + relay
 relay/       Self-hostable relay packaging (launchd / systemd / Docker)
 web/         Invite-landing / app-promo page (the web client was abandoned)
 docs/        Architecture, decisions, threat model, link spec, roadmap
@@ -86,7 +90,9 @@ One Rust core (`p2pcore`) powers every client, so new platforms are mostly UI:
 - **iOS / macOS** — SwiftUI + UniFFI (primary; macOS ships today via Mac Catalyst, with
   a native AppKit/SwiftUI port in progress)
 - **Android** — native Jetpack Compose + the same core via UniFFI→Kotlin (in progress)
-- **Windows / Linux** — planned native client reusing the Rust core
+- **Windows / Linux** — Tauri 2 (Rust backend links the core directly; WebView2 UI). GUI
+  client *and* a headless circle-relay in one binary (in progress — see
+  [`docs/WINDOWS-PORT.md`](docs/WINDOWS-PORT.md))
 - **Apple Watch** — glanceable companion (messages/photos/reactions/quick replies;
   not bulk video)
 
@@ -115,5 +121,6 @@ noncommercial restriction is the difference). Contributions require a CLA/DCO.
 - [`docs/EXPORT-COMPLIANCE.md`](docs/EXPORT-COMPLIANCE.md) — US export-compliance (automated)
 - [`docs/MACOS-NATIVE-PORT.md`](docs/MACOS-NATIVE-PORT.md) — Mac Catalyst → native AppKit/SwiftUI port
 - [`docs/ANDROID-PARITY.md`](docs/ANDROID-PARITY.md) — the native Android client plan + status
+- [`docs/WINDOWS-PORT.md`](docs/WINDOWS-PORT.md) — the Windows/Linux Tauri desktop client plan + status
 - [`docs/WEB-PARITY.md`](docs/WEB-PARITY.md) — why the web client was abandoned
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — milestones and prerequisites

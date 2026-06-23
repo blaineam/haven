@@ -1,0 +1,51 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Haven",
+  "version": "0.1.0",
+  "identifier": "com.blaineam.haven",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Haven",
+        "width": 1180,
+        "height": 820,
+        "minWidth": 880,
+        "minHeight": 600,
+        "resizable": true,
+        "fullscreen": false,
+        "center": true,
+        "theme": "Dark"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: blob: https:; media-src 'self' data: blob: mediastream:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' ipc: http://ipc.localhost https:"
+    },
+    "trayIcon": {
+      "id": "haven-tray",
+      "iconPath": "icons/32x32.png",
+      "tooltip": "Haven"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["msi", "nsis"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "windows": {
+      "webviewInstallMode": { "type": "embedBootstrapper" }
+    },
+    "category": "SocialNetworking",
+    "shortDescription": "Private post-quantum P2P social.",
+    "longDescription": "Haven is a serverless, end-to-end encrypted, post-quantum peer-to-peer social network. No accounts, no servers you don't own. This desktop client also runs as your circle's relay/mailbox so posts reach friends even when you're both offline."
+  },
+  "plugins": {}
+}

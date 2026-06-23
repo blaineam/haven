@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Haven</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="vendor/qrcode.js" defer></script>
+    <script src="vendor/jsQR.js" defer></script>
+    <script src="app.js" type="module" defer></script>
+  </head>
+  <body>
+    <div id="app">
+      <aside class="nav">
+        <div class="brand">
+          <div class="brand-mark"></div>
+          <div class="brand-text">
+            <strong>Haven</strong>
+            <span id="nav-node" class="muted small"></span>
+          </div>
+        </div>
+        <nav class="nav-items">
+          <button class="nav-btn active" data-view="feed"><span>🏠</span> Feed</button>
+          <button class="nav-btn" data-view="stories"><span>✨</span> Stories</button>
+          <button class="nav-btn" data-view="messages"><span>💬</span> Messages <i class="badge" id="badge-messages"></i></button>
+          <button class="nav-btn" data-view="connect"><span>🔗</span> Connect <i class="badge" id="badge-pending"></i></button>
+          <button class="nav-btn" data-view="relay"><span>📡</span> Relay</button>
+          <button class="nav-btn" data-view="you"><span>👤</span> You</button>
+        </nav>
+        <div class="nav-footer">
+          <span class="dot" id="status-dot"></span>
+          <span id="status-text" class="muted small">starting…</span>
+        </div>
+      </aside>
+
+      <main class="content">
+        <section id="view-feed" class="view active"></section>
+        <section id="view-stories" class="view"></section>
+        <section id="view-messages" class="view"></section>
+        <section id="view-connect" class="view"></section>
+        <section id="view-relay" class="view"></section>
+        <section id="view-you" class="view"></section>
+      </main>
+    </div>
+
+    <div id="toast" class="toast"></div>
+    <div id="modal-root"></div>
+  </body>
+</html>
