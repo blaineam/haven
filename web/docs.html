@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0b0b10" />
+<title>Documentation — Haven</title>
+<meta name="description" content="How Haven works, in friendly terms with links to the deep technical docs: architecture, threat model, relays & storage, notifications, multi-device, operating costs, and the roadmap." />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="index.html">Haven</a>
+    <button class="nav-toggle" aria-label="Open menu" aria-expanded="false" aria-controls="nav-links">☰</button>
+    <nav class="nav-links" id="nav-links" aria-label="Primary">
+      <a href="index.html">Home</a>
+      <a href="features.html">Features</a>
+      <a href="relay.html">Relays</a>
+      <a href="index.html#privacy">Privacy</a>
+      <a href="docs.html" class="active">Docs</a>
+      <a href="https://github.com/blaineam/haven" rel="noopener">GitHub</a>
+      <a href="index.html" class="cta">Home</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <section class="hero" style="padding:64px 0 26px">
+    <div class="container">
+      <span class="eyebrow reveal">Under the hood</span>
+      <h1 class="reveal" style="font-size:clamp(34px,6vw,56px)">How Haven works,<br /><span class="h-grad">in human terms.</span></h1>
+      <p class="lead reveal">
+        Haven is open about exactly how it's built. Below is a friendly overview of the big ideas, each
+        linking out to the full technical document in the repository. Read as deep as you like.
+      </p>
+    </div>
+  </section>
+
+  <!-- Big ideas -->
+  <section class="section" style="padding-top:34px">
+    <div class="container">
+
+      <!-- Architecture -->
+      <div class="card reveal" id="architecture" style="margin-bottom:18px;padding:30px 26px">
+        <span class="eyebrow">The big picture</span>
+        <h2 style="font-size:clamp(22px,4vw,30px)">One shared core, every platform.</h2>
+        <p class="muted" style="margin-top:12px;max-width:78ch">
+          At Haven's heart is a single piece of trusted code — a Rust core that handles your identity,
+          the encryption, your circles, and the social engine (posts, stories, messages, reactions). Every
+          app, on every platform, runs the <em>same</em> core, so the security never depends on which
+          device you're holding. The user interface on top is native to each platform (SwiftUI on Apple,
+          Jetpack Compose on Android, a lightweight web view on Windows/Linux), but the trust layer is one
+          and the same everywhere.
+        </p>
+        <p class="muted" style="margin-top:12px;max-width:78ch">
+          When you share something, Haven automatically picks the best route to your friend:
+          <b>nearby</b> first (Bluetooth/Wi-Fi, even with no internet), then a <b>direct</b> peer-to-peer
+          connection, and only a <b>relay</b> if nothing else reaches them. Above that transport,
+          everything is just opaque encrypted bytes.
+        </p>
+        <div class="btn-row" style="justify-content:flex-start;margin-top:18px">
+          <a class="btn sm" href="https://github.com/blaineam/haven/blob/main/docs/ARCHITECTURE.md" rel="noopener">Read ARCHITECTURE.md ↗</a>
+        </div>
+      </div>
+
+      <!-- Doc cards grid -->
+      <div class="grid cols-2 reveal" style="gap:16px">
+
+        <a class="card flat doclink" id="threat" href="https://github.com/blaineam/haven/blob/main/docs/THREAT-MODEL.md" rel="noopener">
+          <h4>🛡️ Threat model <span class="arrow">↗</span></h4>
+          <p>Who Haven protects, against whom, and the honest non-goals. Includes the real story on IP
+            addresses, post-quantum encryption, abuse resistance, and lost-device protection.</p>
+        </a>
+
+        <a class="card flat doclink" href="https://github.com/blaineam/haven/blob/main/docs/RELAY-AND-DEPLOY.md" rel="noopener">
+          <h4>🛰️ Relays &amp; deployment <span class="arrow">↗</span></h4>
+          <p>The two relay roles (switchboard and mailbox), the zero-operator-cost storage model, the
+            IP-privacy guarantees, and the one-command deployment tool.</p>
+        </a>
+
+        <a class="card flat doclink" href="https://github.com/blaineam/haven/blob/main/docs/HAVEN-NET-RELAY.md" rel="noopener">
+          <h4>🔌 Relay over Haven Net <span class="arrow">↗</span></h4>
+          <p>How a volunteer's storage runs with no public host at all — the encrypted tunnel that lets a
+            relay live on a phone or laptop behind a normal home router.</p>
+        </a>
+
+        <a class="card flat doclink" id="byo" href="https://github.com/blaineam/haven/blob/main/docs/BYO-STORAGE.md" rel="noopener">
+          <h4>🗄️ Bring your own storage <span class="arrow">↗</span></h4>
+          <p>iCloud, S3, Google Drive, Dropbox or a NAS — with no secrets we host. How PKCE lets the app
+            sign you in without ever holding a client secret.</p>
+        </a>
+
+        <a class="card flat doclink" href="https://github.com/blaineam/haven/blob/main/docs/MEDIA-AND-MUSIC.md" rel="noopener">
+          <h4>🎞️ Media &amp; music <span class="arrow">↗</span></h4>
+          <p>The in-app camera, film filters, Apple Music on posts (references only, never audio), and the
+            music ↔ video crossfade — each with its security audit.</p>
+        </a>
+
+        <a class="card flat doclink" href="https://github.com/blaineam/haven/blob/main/docs/MULTI-DEVICE.md" rel="noopener">
+          <h4>🔗 Multi-device <span class="arrow">↗</span></h4>
+          <p>One identity, many authorized devices, each with its own key that never leaves it. Linking,
+            receiving everywhere, and instant revocation of a lost device.</p>
+        </a>
+
+        <a class="card flat doclink" href="https://github.com/blaineam/haven/blob/main/docs/NOTIFICATIONS.md" rel="noopener">
+          <h4>🔔 Notifications <span class="arrow">↗</span></h4>
+          <p>Why reliable push needs <em>some</em> server, and how Haven keeps it zero-knowledge: a blind
+            relay that forwards an encrypted blob your device decrypts on its own.</p>
+        </a>
+
+        <a class="card flat doclink" href="https://github.com/blaineam/haven/blob/main/docs/LINK-SYSTEM.md" rel="noopener">
+          <h4>🔗 The link &amp; QR system <span class="arrow">↗</span></h4>
+          <p>Why your public key is your permanent address, how a reach-me link works with no backend, and
+            why every connection is approved, never automatic.</p>
+        </a>
+
+        <a class="card flat doclink" id="cost" href="https://github.com/blaineam/haven/blob/main/docs/OPERATING-COSTS.md" rel="noopener">
+          <h4>💸 Operating costs <span class="arrow">↗</span></h4>
+          <p>Why Haven is a one-time price with no subscription and <b>no monthly operator cost, ever</b> —
+            and the honest trade-offs that make that possible.</p>
+        </a>
+
+        <a class="card flat doclink" href="https://github.com/blaineam/haven/blob/main/docs/ANDROID-PARITY.md" rel="noopener">
+          <h4>🤖 Android parity <span class="arrow">↗</span></h4>
+          <p>How each feature reaches Android by sharing the same Rust core — what's full-parity, what's
+            redesigned (and healthier for it), and what's parked.</p>
+        </a>
+
+        <a class="card flat doclink" id="roadmap" href="https://github.com/blaineam/haven/blob/main/docs/ROADMAP.md" rel="noopener">
+          <h4>🗺️ Roadmap <span class="arrow">↗</span></h4>
+          <p>What's done, what's in progress, and what's next — milestone by milestone, including the
+            features still being wired up.</p>
+        </a>
+
+        <a class="card flat doclink" href="https://github.com/blaineam/haven/blob/main/docs/LINUX.md" rel="noopener">
+          <h4>🐧 Linux <span class="arrow">↗</span></h4>
+          <p>First-class desktop app and relay daemon across Ubuntu, Debian, Raspbian, Arch and SteamOS —
+            packages, services, and a Pi relay path.</p>
+        </a>
+
+      </div>
+
+      <!-- Glossary -->
+      <div class="card reveal" style="margin-top:26px;padding:30px 26px">
+        <span class="eyebrow">Plain-language glossary</span>
+        <h2 style="font-size:clamp(22px,4vw,28px)">A few words, demystified.</h2>
+        <ul class="points" style="margin-top:14px">
+          <li><span class="dot"></span><span><b>End-to-end encrypted</b> — locked on your device and only unlockable by the people you're sharing with. No one in the middle has a key.</span></li>
+          <li><span class="dot"></span><span><b>Peer-to-peer</b> — your devices talk directly to each other instead of through a company's servers.</span></li>
+          <li><span class="dot"></span><span><b>Post-quantum</b> — extra-future-proof encryption that even a future quantum computer can't crack, defending against "save it now, decrypt it later" attacks.</span></li>
+          <li><span class="dot"></span><span><b>Relay</b> — an optional always-on helper that holds your circle's <em>encrypted</em> messages for offline friends and forwards calls. It can never read your content.</span></li>
+          <li><span class="dot"></span><span><b>Circle</b> — one of your private groups. Everything in a circle is sealed to exactly the people in it.</span></li>
+          <li><span class="dot"></span><span><b>Seed / key</b> — the secret that proves you're you and unlocks your content. It lives only on your devices, wrapped by the hardware Secure Enclave.</span></li>
+        </ul>
+      </div>
+
+      <div class="callout reveal" style="margin-top:22px">
+        Want the whole library at once? Browse the full
+        <a class="inline" href="https://github.com/blaineam/haven/tree/main/docs" rel="noopener">docs folder on GitHub ↗</a>,
+        or read the source for the relay tooling in
+        <a class="inline" href="https://github.com/blaineam/haven/tree/main/relay" rel="noopener">relay/ ↗</a>.
+      </div>
+
+      <div class="center" style="margin-top:32px">
+        <div class="btn-row">
+          <a class="btn" href="features.html">Back to features</a>
+          <a class="btn ghost" href="relay.html">Set up a relay</a>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="container">
+    <div class="foot-grid">
+      <div>
+        <a class="brand" href="index.html">Haven</a>
+        <p class="blurb">A private, peer-to-peer, end-to-end-encrypted social app for your close circle. No servers, no ads, no tracking.</p>
+        <div class="platforms" style="justify-content:flex-start">
+          <span class="pill">iOS</span><span class="pill">macOS</span><span class="pill">Android</span>
+          <span class="pill">Windows</span><span class="pill">Linux</span>
+        </div>
+      </div>
+      <div>
+        <h5>Product</h5>
+        <a href="features.html">Features</a>
+        <a href="relay.html">Relays</a>
+        <a href="index.html#privacy">Privacy</a>
+        <a href="docs.html">Documentation</a>
+      </div>
+      <div>
+        <h5>Learn more</h5>
+        <a href="docs.html#architecture">How it works</a>
+        <a href="docs.html#threat">Threat model</a>
+        <a href="docs.html#cost">Operating costs</a>
+        <a href="relay.html#byo">Bring your own storage</a>
+      </div>
+      <div>
+        <h5>Project</h5>
+        <a href="https://github.com/blaineam/haven" rel="noopener">GitHub repo ↗</a>
+        <a href="https://github.com/blaineam/haven/tree/main/docs" rel="noopener">Technical docs ↗</a>
+        <a href="https://github.com/blaineam/haven/tree/main/relay" rel="noopener">Relay tooling ↗</a>
+      </div>
+    </div>
+    <p class="legal">Made with care for the people you love. Haven holds no keys and runs no servers — your circle is yours alone.</p>
+  </div>
+</footer>
+
+<script src="app.js" defer></script>
+</body>
+</html>

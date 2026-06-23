@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0b0b10" />
+<title>Relays — Haven</title>
+<meta name="description" content="What a Haven relay is, why you'd want one, and how to set one up — from a single install command to self-hosting on a Raspberry Pi, VPS, or Docker. A relay holds your circle's encrypted messages for offline friends and can never read them." />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="nav">
+  <div class="nav-inner">
+    <a class="brand" href="index.html">Haven</a>
+    <button class="nav-toggle" aria-label="Open menu" aria-expanded="false" aria-controls="nav-links">☰</button>
+    <nav class="nav-links" id="nav-links" aria-label="Primary">
+      <a href="index.html">Home</a>
+      <a href="features.html">Features</a>
+      <a href="relay.html" class="active">Relays</a>
+      <a href="index.html#privacy">Privacy</a>
+      <a href="docs.html">Docs</a>
+      <a href="https://github.com/blaineam/haven" rel="noopener">GitHub</a>
+      <a href="#setup" class="cta">Set up a relay</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+
+  <!-- Hero -->
+  <section class="hero" style="padding:64px 0 30px">
+    <div class="container">
+      <span class="eyebrow reveal">Relays</span>
+      <h1 class="reveal" style="font-size:clamp(34px,6vw,58px)">A little always-on helper<br /><span class="h-grad">that can never read a thing.</span></h1>
+      <p class="lead reveal">
+        Haven works beautifully with nothing extra. But a relay makes it even more reliable — a small,
+        always-on program that holds your circle's <em>encrypted</em> messages for friends who are
+        offline, and hands them over later. It only ever sees scrambled bytes. It's optional, and it's
+        free to run on hardware you already own.
+      </p>
+      <div class="btn-row reveal">
+        <a class="btn" href="#setup">Set up a relay</a>
+        <a class="btn ghost" href="#what">What is a relay, really?</a>
+      </div>
+    </div>
+  </section>
+
+  <!-- Plain-language explainer -->
+  <section class="section" id="what" style="padding-top:36px">
+    <div class="container">
+      <div class="grid cols-2 reveal">
+        <div class="card">
+          <div class="ficon" aria-hidden="true" style="margin-bottom:14px">📬</div>
+          <h3 style="font-size:21px">Think of it as a mailbox</h3>
+          <p class="muted" style="margin-top:8px">
+            When you post something and a friend is offline, their copy has to wait somewhere until they
+            come back online. A relay is that waiting room: a sealed mailbox that holds the encrypted
+            envelope and delivers it the moment your friend reappears — even if you've gone offline by then.
+          </p>
+          <p class="muted" style="margin-top:10px">
+            Every envelope in the mailbox is locked end-to-end to your circle. The relay holds the
+            envelopes; it has no key to open them.
+          </p>
+        </div>
+        <div class="card">
+          <div class="ficon" aria-hidden="true" style="margin-bottom:14px">🔀</div>
+          <h3 style="font-size:21px">And a switchboard</h3>
+          <p class="muted" style="margin-top:8px">
+            Sometimes two phones <em>are</em> both online but can't reach each other directly because of
+            how home routers work. A relay can act as a switchboard, passing the encrypted traffic between
+            them — perfect for live calls and big file transfers.
+          </p>
+          <p class="muted" style="margin-top:10px">
+            Same rule applies: it forwards sealed bytes it cannot decrypt. It's a pipe, not a reader.
+          </p>
+        </div>
+      </div>
+
+      <div class="callout reveal" style="margin-top:18px">
+        <b>Important and true:</b> a relay can never read your posts, messages, photos, or calls.
+        Everything is end-to-end encrypted before it ever reaches the relay. The relay only sees opaque,
+        circle-sealed blobs — which is exactly the point.
+      </div>
+    </div>
+  </section>
+
+  <!-- Why you'd want one -->
+  <section class="section tight">
+    <div class="container">
+      <div class="center reveal">
+        <span class="eyebrow">Do you even need one?</span>
+        <h2 style="font-size:clamp(24px,4.5vw,36px)">Optional — but lovely to have.</h2>
+        <p class="lead">Haven runs fine without any relay. Here's when running one is worth it.</p>
+      </div>
+      <div class="grid cols-3 reveal" style="margin-top:30px">
+        <div class="card feature">
+          <div class="ficon" aria-hidden="true">⏳</div>
+          <h3>Offline delivery</h3>
+          <p>You and your friend are rarely online at the same time. A relay holds your post until they're back, so nothing's missed.</p>
+        </div>
+        <div class="card feature">
+          <div class="ficon" aria-hidden="true">📶</div>
+          <h3>Better reliability</h3>
+          <p>Behind a stubborn home router, or on a flaky connection? A relay smooths over the rough spots for calls and large files.</p>
+        </div>
+        <div class="card feature">
+          <div class="ficon" aria-hidden="true">🏠</div>
+          <h3>Your infrastructure</h3>
+          <p>Run it on an old laptop or a $35 Raspberry Pi and your circle depends on no outside company at all. Fully yours.</p>
+        </div>
+      </div>
+      <div class="callout reveal" style="margin-top:20px">
+        <b>Cost:</b> running your own relay is typically <b>$0</b> — it needs no inbound ports, no domain,
+        and no cloud. An old laptop, a Pi, a NAS, or a free-tier cloud VM is plenty. If you ever want a
+        dedicated box, a ~$5/month VPS is the most you'd ever spend. There is no Haven subscription and
+        no operator fee — ever.
+      </div>
+    </div>
+  </section>
+
+  <!-- The simple setup -->
+  <section class="section" id="setup">
+    <div class="container">
+      <div class="center reveal">
+        <span class="eyebrow">The easy way</span>
+        <h2 style="font-size:clamp(26px,4.5vw,40px)">Set up your own relay in two commands.</h2>
+        <p class="lead">
+          The <code>haven-relay</code> binary does everything: it links to your circle and serves both
+          jobs — the live switchboard and the sealed mailbox — straight off your machine's disk, over
+          Haven's own encrypted network. No cloud, no S3, no ports, no domain, no config.
+        </p>
+      </div>
+
+      <div class="card reveal" style="margin-top:30px;padding:30px 26px">
+        <div class="steps">
+          <div class="step">
+            <div class="sn" aria-hidden="true"></div>
+            <div style="min-width:0">
+              <h4>Install it (one line)</h4>
+              <p>On any always-on machine you own — old laptop, Raspberry Pi, home server, free cloud VM:</p>
+              <div class="copywrap" style="margin-top:10px">
+                <button class="copybtn" type="button">Copy</button>
+                <pre><code>curl -fsSL https://wemiller.com/apps/haven/relay/install.sh | sh</code></pre>
+              </div>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="sn" aria-hidden="true"></div>
+            <div style="min-width:0">
+              <h4>Grab a relay link from the app</h4>
+              <p>In Haven, go to <b>You → Advanced → Relay → “Add a relay.”</b> It shows you a relay link
+                for your circle (it starts with <code>haven-relay://circle#…</code>). Copy it.</p>
+            </div>
+          </div>
+
+          <div class="step">
+            <div class="sn" aria-hidden="true"></div>
+            <div style="min-width:0">
+              <h4>Go live (paste the link)</h4>
+              <p>On the relay machine, paste your link in:</p>
+              <div class="copywrap" style="margin-top:10px">
+                <button class="copybtn" type="button">Copy</button>
+                <pre><code>haven-relay run --link "haven-relay://circle#…"</code></pre>
+              </div>
+              <p style="margin-top:10px">
+                That's it. It prints a QR + the link (so you can re-add it in the app any time), creates
+                its own identity, makes a <code>~/.haven-relay/store</code> folder, and starts serving
+                your circle's sealed mailbox over Haven Net. Leave it running.
+              </p>
+              <p class="dim" style="margin-top:8px;font-size:13.5px">
+                Restarting later? Just <code>haven-relay run</code> with no arguments — it remembers your link.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div class="callout" style="margin-top:24px">
+          The relay only ever moves ciphertext. It cannot read your circle's content — that guarantee is
+          proven by a test in the codebase where a relay stores a sealed blob and is shown to be unable to
+          decrypt it.
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Deep dives -->
+  <section class="section tight">
+    <div class="container">
+      <div class="center reveal">
+        <span class="eyebrow">For the brave</span>
+        <h2 style="font-size:clamp(24px,4.5vw,36px)">Deep dives, one click away.</h2>
+        <p class="lead">Want it always-on, on specific hardware, or hosted in the cloud? Open whichever fits you.</p>
+      </div>
+
+      <div class="reveal" style="margin-top:26px;display:flex;flex-direction:column;gap:14px">
+
+        <!-- Always-on -->
+        <details class="tech">
+          <summary><span class="tag-tech">Keep it always-on (a real background daemon)</span><span class="chev">›</span></summary>
+          <div class="tbody">
+            <p><b>macOS — one command</b> (installs a launchd agent, starts at login, auto-restarts):</p>
+            <div class="copywrap"><button class="copybtn" type="button">Copy</button><pre><code>sh setup-macos.sh                  # daemonize a relay already on your PATH
+sh setup-macos.sh --link "haven-relay://circle#…"   # attach to your circle, then daemonize
+# stop:
+launchctl bootout gui/$(id -u)/com.haven.relay
+rm ~/Library/LaunchAgents/com.haven.relay.plist</code></pre></div>
+
+            <p style="margin-top:14px"><b>Linux — systemd user service</b> (<code>haven-relay.service</code> ships in the <code>relay/</code> folder):</p>
+            <div class="copywrap"><button class="copybtn" type="button">Copy</button><pre><code>mkdir -p ~/.config/systemd/user
+cp haven-relay.service ~/.config/systemd/user/
+loginctl enable-linger "$USER"          # keep running after logout
+systemctl --user enable --now haven-relay
+systemctl --user status haven-relay     # the relay's node id is in the log</code></pre></div>
+
+            <p style="margin-top:14px"><b>Dead-simplest (cron at reboot):</b></p>
+            <div class="copywrap"><button class="copybtn" type="button">Copy</button><pre><code>( crontab -l 2>/dev/null; echo "@reboot $HOME/.local/bin/haven-relay run >/dev/null 2>&1" ) | crontab -</code></pre></div>
+          </div>
+        </details>
+
+        <!-- Raspberry Pi -->
+        <details class="tech">
+          <summary><span class="tag-tech">Self-host on a Raspberry Pi</span><span class="chev">›</span></summary>
+          <div class="tbody">
+            <p>A Pi is the perfect always-on relay: tiny, silent, and yours. The install script
+              auto-detects your Pi and downloads the right static binary:</p>
+            <ul>
+              <li><b>64-bit Raspberry Pi OS</b> (Pi 3/4/5) → <code>aarch64-unknown-linux-musl</code></li>
+              <li><b>32-bit Raspbian</b> (Pi 2/3/4) → <code>armv7-unknown-linux-musleabihf</code></li>
+              <li><b>Pi Zero / Pi 1</b> → <code>arm-unknown-linux-musleabihf</code></li>
+            </ul>
+            <div class="copywrap"><button class="copybtn" type="button">Copy</button><pre><code>curl -fsSL https://wemiller.com/apps/haven/relay/install.sh | sh
+haven-relay run --link "haven-relay://circle#…"</code></pre></div>
+            <p style="margin-top:12px">Then keep it alive with the systemd-user or <code>@reboot</code> cron
+              recipe above. Because the relay needs <b>no inbound ports</b>, your Pi works behind a normal
+              home router with zero port-forwarding or firewall fiddling.</p>
+          </div>
+        </details>
+
+        <!-- VPS / free cloud -->
+        <details class="tech">
+          <summary><span class="tag-tech">Run it on a VPS or a free cloud tier</span><span class="chev">›</span></summary>
+          <div class="tbody">
+            <p>Don't want to leave a machine on at home? Any always-on box works, and several are free
+              forever — the relay needs no public endpoint, so even free tiers behind NAT are fine:</p>
+            <ul>
+              <li><b>Oracle Cloud Always-Free</b> — $0 forever, a generous Arm VM (use the <code>aarch64</code> binary).</li>
+              <li><b>Fly.io</b> — ~$0 on the free allowance; outbound-only, no public service needed.</li>
+              <li><b>Google Cloud <code>e2-micro</code></b> — free in one region; small but plenty for a relay.</li>
+              <li><b>A $5/mo VPS</b> (Hetzner, RackNerd, etc.) — if you want a dedicated box. Still no public host required.</li>
+            </ul>
+            <p style="margin-top:10px">Install + run is identical to the easy path. To automate it, drop the
+              two commands into the host's own provisioning — a cloud-init <code>runcmd:</code>, a Docker
+              <code>CMD ["haven-relay","run"]</code>, or an Ansible play that templates the systemd unit.</p>
+          </div>
+        </details>
+
+        <!-- Storage backends -->
+        <details class="tech">
+          <summary><span class="tag-tech">Storage backends — local disk, rclone, or S3</span><span class="chev">›</span></summary>
+          <div class="tbody">
+            <p>Local disk is the default and needs nothing. If you'd rather park the sealed blobs elsewhere,
+              the relay can use any of rclone's ~70 backends or a plain S3 endpoint:</p>
+            <div class="copywrap"><button class="copybtn" type="button">Copy</button><pre><code>haven-relay run --link "…"                                  # local disk (default)
+haven-relay run --link "…" --rclone-remote mydrive:haven    # any rclone backend
+haven-relay run --link "…" --s3 --s3-port 8333              # rclone serve s3 of a local dir
+haven-relay run --link "…" --no-storage                     # connection relay only
+haven-relay run --config relay.json                         # everything from a file</code></pre></div>
+            <p style="margin-top:10px"><b>Important:</b> rclone owns the provider auth (it reads its own
+              <code>rclone.conf</code>). Neither the relay nor the Haven app ever holds a provider OAuth or
+              refresh token. The sealed blobs are encrypted regardless of where they land.</p>
+          </div>
+        </details>
+
+        <!-- Classic S3 bucket -->
+        <details class="tech">
+          <summary><span class="tag-tech">The classic way — self-host or rent an S3 bucket</span><span class="chev">›</span></summary>
+          <div class="tbody">
+            <p>The original model: point Haven at any S3-compatible bucket. Spin one up locally with
+              <code>rclone serve s3</code> (rclone is MIT-licensed, one cross-platform binary):</p>
+            <div class="copywrap"><button class="copybtn" type="button">Copy</button><pre><code>curl -fsSL https://wemiller.com/apps/haven/relay/install.sh | sh -s -- --bucket          # Docker (any OS)
+# or, from the relay/ folder:
+sh install.sh --bucket            # Docker
+sh install.sh --bucket --native   # native rclone binary (no Docker)</code></pre></div>
+            <p style="margin-top:10px">Or rent a managed bucket — you still hold the keys, the provider only
+              ever sees sealed blobs:</p>
+            <ul>
+              <li><b>Cloudflare R2</b> — no egress fees, generous free tier</li>
+              <li><b>Backblaze B2</b> — very cheap storage</li>
+              <li><b>AWS S3</b> — the original</li>
+            </ul>
+            <p style="margin-top:10px">Then in the app: <b>You → Advanced → Storage → Custom S3 bucket</b>,
+              paste the endpoint / bucket / keys, and turn on <b>“Volunteer as tribute.”</b> To reach it
+              from outside your home network, expose the port via a router port-forward, Tailscale, or a
+              small VPS — the traffic is already sealed, so plain HTTP is fine (HTTPS is nicer).</p>
+          </div>
+        </details>
+
+        <!-- Build from source -->
+        <details class="tech">
+          <summary><span class="tag-tech">Build from source</span><span class="chev">›</span></summary>
+          <div class="tbody">
+            <p>The binary lives in the monorepo at <code>core/haven-relay</code>. It composes the existing
+              <code>haven-net</code> (iroh transport, the local-disk blob mailbox, the S3-over-iroh tunnel)
+              and <code>p2pcore</code> (crypto/identity) crates — it reinvents nothing.</p>
+            <div class="copywrap"><button class="copybtn" type="button">Copy</button><pre><code>cd core
+cargo build --release -p haven-relay     # single static binary at target/release/haven-relay
+cargo test  -p haven-net -p haven-relay   # forwarding + blob-store + tunnel + link tests
+
+# cross-compile, e.g. a fully static Linux binary or Windows:
+cargo build --release -p haven-relay --target x86_64-unknown-linux-musl
+cargo build --release -p haven-relay --target x86_64-pc-windows-gnu</code></pre></div>
+          </div>
+        </details>
+
+      </div>
+    </div>
+  </section>
+
+  <!-- What it can / cannot see -->
+  <section class="section">
+    <div class="container">
+      <div class="center reveal">
+        <span class="eyebrow">No surprises</span>
+        <h2 style="font-size:clamp(24px,4.5vw,36px)">Exactly what a relay can and cannot see.</h2>
+        <p class="lead">Total honesty — because trust is the whole product.</p>
+      </div>
+
+      <div class="cc reveal" style="margin-top:30px">
+        <div class="col can">
+          <h4><span aria-hidden="true">👁️</span> What it <em>can</em> see</h4>
+          <ul>
+            <li><span class="mk">+</span> The public <b>node ids</b> of frames it forwards (routing data that's already public)</li>
+            <li><span class="mk">+</span> A random <b>message id</b> and hop count, used only to prevent loops and replays</li>
+            <li><span class="mk">+</span> That a connection or upload happened, and the <b>IP</b> that made it (briefly, to move bytes)</li>
+            <li><span class="mk">+</span> The opaque <b>byte size</b> of a sealed frame or blob</li>
+          </ul>
+        </div>
+        <div class="col cant">
+          <h4><span aria-hidden="true">🚫</span> What it <em>cannot</em> see</h4>
+          <ul>
+            <li><span class="mk">×</span> The <b>content</b> of any post, comment, message, or media — all sealed end-to-end</li>
+            <li><span class="mk">×</span> Any <b>content key</b> or circle secret — relay links carry zero keys, by design</li>
+            <li><span class="mk">×</span> Which sealed blob is which post, or who's in a circle by name</li>
+            <li><span class="mk">×</span> Anything that would let it <b>impersonate a member</b> or read history</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="callout reveal" style="margin-top:18px">
+        <b>On your IP address, honestly:</b> a relay <em>does</em> briefly handle your IP — that's
+        physically how bytes reach you. Haven's hardened defaults mean it's <b>never logged, never
+        persisted, and never linked to your identity</b> (peers authenticate to each other, never to the
+        relay). For total IP hiding there's an opt-in onion / Tor mode. The relay link itself carries
+        <b>no content key, no roster secret</b> — so adding a relay can never turn it into a content reader.
+        Read the full <a class="inline" href="docs.html#threat">threat model</a>.
+      </div>
+    </div>
+  </section>
+
+  <!-- BYO storage -->
+  <section class="section tight" id="byo">
+    <div class="container">
+      <div class="card reveal" style="padding:30px 26px">
+        <div class="grid cols-2" style="align-items:center;gap:24px">
+          <div>
+            <span class="eyebrow">Bring your own storage</span>
+            <h2 style="font-size:clamp(22px,4vw,30px)">Your media, on your storage.</h2>
+            <p class="muted" style="margin-top:12px">
+              Prefer to keep your media on storage you already trust? Point Haven at your own iCloud, an
+              S3 bucket (AWS, Cloudflare R2, Backblaze B2), Google Drive, Dropbox, or a NAS. Whatever you
+              pick, your media is <b>encrypted before it's stored</b>, so the provider only ever holds
+              ciphertext — and Haven never holds a single one of your credentials.
+            </p>
+          </div>
+          <div>
+            <ul class="points" style="margin-top:0">
+              <li><span class="dot"></span><span><b>Your iCloud</b> (default) — billed to your own quota; we host nothing.</span></li>
+              <li><span class="dot"></span><span><b>Custom S3 bucket</b> — endpoint + keys stored only in your device Keychain.</span></li>
+              <li><span class="dot"></span><span><b>Google Drive / Dropbox</b> — you sign in on the provider's own page (OAuth + PKCE); Haven keeps only a token, no client secret anywhere.</span></li>
+              <li><span class="dot"></span><span><b>We can't read, list, or revoke it</b> — we hold no credentials, by design.</span></li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA -->
+  <section class="section center">
+    <div class="container reveal">
+      <h2 style="font-size:clamp(26px,5vw,42px)">Be the always-on home<br /><span class="h-grad">for your circle.</span></h2>
+      <p class="lead">One old laptop. Two commands. A more reliable Haven for everyone you love.</p>
+      <div class="btn-row">
+        <a class="btn" href="#setup">Set up a relay</a>
+        <a class="btn ghost" href="https://github.com/blaineam/haven/tree/main/relay" rel="noopener">Relay tooling on GitHub</a>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="foot">
+  <div class="container">
+    <div class="foot-grid">
+      <div>
+        <a class="brand" href="index.html">Haven</a>
+        <p class="blurb">A private, peer-to-peer, end-to-end-encrypted social app for your close circle. No servers, no ads, no tracking.</p>
+        <div class="platforms" style="justify-content:flex-start">
+          <span class="pill">iOS</span><span class="pill">macOS</span><span class="pill">Android</span>
+          <span class="pill">Windows</span><span class="pill">Linux</span>
+        </div>
+      </div>
+      <div>
+        <h5>Product</h5>
+        <a href="features.html">Features</a>
+        <a href="relay.html">Relays</a>
+        <a href="index.html#privacy">Privacy</a>
+        <a href="docs.html">Documentation</a>
+      </div>
+      <div>
+        <h5>Learn more</h5>
+        <a href="docs.html#architecture">How it works</a>
+        <a href="docs.html#threat">Threat model</a>
+        <a href="docs.html#cost">Operating costs</a>
+        <a href="relay.html#byo">Bring your own storage</a>
+      </div>
+      <div>
+        <h5>Project</h5>
+        <a href="https://github.com/blaineam/haven" rel="noopener">GitHub repo ↗</a>
+        <a href="https://github.com/blaineam/haven/tree/main/docs" rel="noopener">Technical docs ↗</a>
+        <a href="https://github.com/blaineam/haven/tree/main/relay" rel="noopener">Relay tooling ↗</a>
+      </div>
+    </div>
+    <p class="legal">Made with care for the people you love. Haven holds no keys and runs no servers — your circle is yours alone.</p>
+  </div>
+</footer>
+
+<script src="app.js" defer></script>
+</body>
+</html>
