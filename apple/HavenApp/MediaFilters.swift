@@ -54,6 +54,19 @@ enum HavenFilter: String, CaseIterable, Identifiable {
         }
     }
 
+    /// Next/previous filter in `allCases`, wrapping around — drives swipe-to-change on the live
+    /// camera (swipe left = next, right = previous).
+    var next: HavenFilter {
+        let all = Self.allCases
+        let i = all.firstIndex(of: self) ?? 0
+        return all[(i + 1) % all.count]
+    }
+    var prev: HavenFilter {
+        let all = Self.allCases
+        let i = all.firstIndex(of: self) ?? 0
+        return all[(i - 1 + all.count) % all.count]
+    }
+
     var spec: FilterSpec {
         switch self {
         case .original:

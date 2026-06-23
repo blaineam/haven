@@ -26,6 +26,11 @@ final class HavenAppDelegate: NSObject, UIApplicationDelegate {
         if let seed = AccountStore.storedSeed() {
             Task { @MainActor in FeedStore.shared.configure(seed: seed) }
         }
+        #if os(iOS)
+        // Bring up the Apple Watch companion bridge (thin client over WCSession). No-op if
+        // there's no paired Watch; it just vends recent threads + accepts quick replies.
+        WatchSessionManager.shared.start()
+        #endif
         #if targetEnvironment(macCatalyst)
         // Let the Mac app run as an invisible background relay (hide the dock icon when the window
         // is closed while serving as a relay; restore it on relaunch).

@@ -2,7 +2,7 @@ import Foundation
 import CoreVideo
 import WebRTC
 
-#if targetEnvironment(macCatalyst)
+#if targetEnvironment(macCatalyst) || os(macOS)
 import ScreenCaptureKit
 import CoreMedia
 #endif
@@ -39,7 +39,7 @@ final class ScreenShareManager: NSObject {
 
     private(set) var isSharing = false
 
-    #if targetEnvironment(macCatalyst)
+    #if targetEnvironment(macCatalyst) || os(macOS)
     // The SCStream + its delegate live in a separately-gated object (SCStream is Catalyst 18.2+),
     // stored as `AnyObject?` so this property declaration carries no availability floor.
     private var capture: AnyObject?
@@ -47,9 +47,9 @@ final class ScreenShareManager: NSObject {
 
     // MARK: - macOS: enumerate displays + windows
 
-    #if targetEnvironment(macCatalyst)
+    #if targetEnvironment(macCatalyst) || os(macOS)
     /// All shareable displays and windows (title + owning app). Empty if permission is denied.
-    @available(macCatalyst 18.2, *)
+    @available(macCatalyst 18.2, macOS 13, *)
     func availableSources() async -> [ScreenSource] {
         do {
             let content = try await SCShareableContent.excludingDesktopWindows(false,
@@ -75,7 +75,7 @@ final class ScreenShareManager: NSObject {
     }
 
     /// Start an SCStream for the picked source.
-    @available(macCatalyst 18.2, *)
+    @available(macCatalyst 18.2, macOS 13, *)
     func start(source: ScreenSource) async {
         guard !isSharing else { return }
         let capturer = SCCapturer()
@@ -96,21 +96,11 @@ final class ScreenShareManager: NSObject {
         isSharing = false
         let c = capture
         capture = nil
-        if #available(macCatalyst 18.2, *), let capturer = c as? SCCapturer {
+        if #available(macCatalyst 18.2, macOS 13, *), let capturer = c as? SCCapturer {
             Task { await capturer.stop(); self.onStop?() }
         } else {
             onStop?()
         }
-    }
-    #endif
-
-    // MARK: - Native macOS: screen share via ScreenCaptureKit is Phase 2 (stub for now)
-
-    #if os(macOS)
-    func stop() {
-        guard isSharing else { return }
-        isSharing = false
-        onStop?()
     }
     #endif
 
@@ -145,10 +135,10 @@ final class ScreenShareManager: NSObject {
     #endif
 }
 
-#if targetEnvironment(macCatalyst)
+#if targetEnvironment(macCatalyst) || os(macOS)
 /// Owns one `SCStream` + its delegate, fully gated to Catalyst 18.2 (the floor for ScreenCaptureKit
 /// on Catalyst). Forwards complete frames as `CVPixelBuffer`s via `onFrame`.
-@available(macCatalyst 18.2, *)
+@available(macCatalyst 18.2, macOS 13, *)
 final class SCCapturer: NSObject, SCStreamDelegate, SCStreamOutput {
     var onFrame: ((CVPixelBuffer, Int64) -> Void)?
     var onStop: (() -> Void)?

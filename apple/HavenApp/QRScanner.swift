@@ -94,27 +94,107 @@ final class ScannerVC: UIViewController, AVCaptureMetadataOutputObjectsDelegate 
 #endif
 
 #if os(macOS)
-/// macOS placeholder. The live camera QR scanner is Phase-2 native work; this stub
-/// keeps the public surface identical to the iOS version but renders a notice instead
-/// of scanning. It never invokes `onFound`.
-struct QRScannerView: View {
+/// Native macOS live camera QR scanner. Mirrors the iOS `QRScannerView` public surface
+/// (a single `onFound: (String) -> Void`) using an `NSViewRepresentable` that hosts an
+/// `AVCaptureVideoPreviewLayer` over an `AVCaptureSession` with an `AVCaptureMetadataOutput`
+/// configured for `.qr`. `onFound` fires exactly once, on the main actor, with the decoded value.
+struct QRScannerView: NSViewRepresentable {
     var onFound: (String) -> Void
 
-    var body: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color.black)
-            VStack(spacing: 16) {
-                Image(systemName: "qrcode.viewfinder")
-                    .font(.system(size: 64))
-                    .foregroundStyle(.white)
-                Text("Scanning isn't available on Mac yet")
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .multilineTextAlignment(.center)
-            }
-            .padding()
+    func makeCoordinator() -> Coordinator { Coordinator(onFound: onFound) }
+
+    func makeNSView(context: Context) -> ScannerNSView {
+        let v = ScannerNSView()
+        v.start(coordinator: context.coordinator)
+        return v
+    }
+
+    func updateNSView(_ nsView: ScannerNSView, context: Context) {}
+
+    static func dismantleNSView(_ nsView: ScannerNSView, coordinator: Coordinator) {
+        nsView.stop()
+    }
+
+    final class Coordinator: NSObject, AVCaptureMetadataOutputObjectsDelegate {
+        private let onFound: (String) -> Void
+        private var fired = false
+        weak var view: ScannerNSView?
+        init(onFound: @escaping (String) -> Void) { self.onFound = onFound }
+
+        func metadataOutput(_ output: AVCaptureMetadataOutput,
+                            didOutput metadataObjects: [AVMetadataObject],
+                            from connection: AVCaptureConnection) {
+            guard !fired,
+                  let obj = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
+                  let value = obj.stringValue, !value.isEmpty else { return }
+            fired = true
+            view?.stop()
+            Task { @MainActor in self.onFound(value) }
         }
+    }
+}
+
+/// A layer-backed NSView that owns the capture session + preview layer for the QR scanner.
+final class ScannerNSView: NSView {
+    private let session = AVCaptureSession()
+    private var preview: AVCaptureVideoPreviewLayer?
+    private let sessionQueue = DispatchQueue(label: "haven.qrscanner.session")
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.cgColor
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func start(coordinator: QRScannerView.Coordinator) {
+        coordinator.view = self
+        AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+            guard granted, let self else { return }
+            self.sessionQueue.async { self.configure(coordinator: coordinator) }
+        }
+    }
+
+    private func configure(coordinator: QRScannerView.Coordinator) {
+        session.beginConfiguration()
+        guard let device = AVCaptureDevice.default(for: .video),
+              let input = try? AVCaptureDeviceInput(device: device),
+              session.canAddInput(input) else {
+            session.commitConfiguration()
+            return
+        }
+        session.addInput(input)
+
+        let output = AVCaptureMetadataOutput()
+        guard session.canAddOutput(output) else {
+            session.commitConfiguration()
+            return
+        }
+        session.addOutput(output)
+        output.setMetadataObjectsDelegate(coordinator, queue: .main)
+        output.metadataObjectTypes = [.qr]
+        session.commitConfiguration()
+
+        Task { @MainActor in
+            let layer = AVCaptureVideoPreviewLayer(session: self.session)
+            layer.videoGravity = .resizeAspectFill
+            layer.frame = self.bounds
+            self.layer?.addSublayer(layer)
+            self.preview = layer
+        }
+
+        if !session.isRunning { session.startRunning() }
+    }
+
+    func stop() {
+        sessionQueue.async { [session] in
+            if session.isRunning { session.stopRunning() }
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        preview?.frame = bounds
     }
 }
 #endif

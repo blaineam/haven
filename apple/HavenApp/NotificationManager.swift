@@ -76,5 +76,10 @@ final class NotificationManager {
         content.sound = .default
         let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(req)
+        #if os(iOS)
+        // Mirror to the Apple Watch so the same alert surfaces there (and refresh its threads).
+        WatchSessionManager.shared.mirrorNotification(title: title, body: body, dedupeKey: dedupeKey)
+        WatchSessionManager.shared.pushSnapshot()
+        #endif
     }
 }

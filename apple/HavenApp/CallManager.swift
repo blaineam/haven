@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import AVKit
+import CoreImage
 import SwiftUI
 #if canImport(UIKit)
 import UIKit
@@ -728,13 +729,13 @@ final class CallManager: NSObject, ObservableObject {
     // MARK: - Screen sharing (a SECOND video track, coexists with the camera)
 
     /// macOS: the list of pickable displays + windows for the share sheet.
-    #if targetEnvironment(macCatalyst)
+    #if targetEnvironment(macCatalyst) || os(macOS)
     @Published private(set) var screenSources: [ScreenSource] = []
     @Published var showScreenPicker = false
 
     /// Populate `screenSources` and present the picker.
     func presentScreenPicker() {
-        guard #available(macCatalyst 18.2, *) else { return }
+        guard #available(macCatalyst 18.2, macOS 13, *) else { return }
         Task { @MainActor in
             self.screenSources = await ScreenShareManager.shared.availableSources()
             self.showScreenPicker = true
@@ -743,7 +744,7 @@ final class CallManager: NSObject, ObservableObject {
 
     /// Begin sharing the chosen display/window to the whole mesh.
     func startScreenShare(_ source: ScreenSource) {
-        guard #available(macCatalyst 18.2, *), !screenShareOn else { return }
+        guard #available(macCatalyst 18.2, macOS 13, *), !screenShareOn else { return }
         showScreenPicker = false
         wireScreenFrameSink()
         Task { @MainActor in
@@ -752,10 +753,6 @@ final class CallManager: NSObject, ObservableObject {
             self.beginScreenTracks()
         }
     }
-    #elseif os(macOS)
-    /// Native macOS: screen sharing (ScreenCaptureKit) is Phase 2. The control is a placeholder, so
-    /// this entry point is a no-op for now.
-    func startScreenShareListening() {}
     #else
     /// iOS: start listening for frames from the broadcast extension. The user kicks off the actual
     /// system broadcast via `RPSystemBroadcastPickerView` in the UI. Once frames flow we add the
@@ -781,7 +778,7 @@ final class CallManager: NSObject, ObservableObject {
     /// Toggle entry point used by the UI button (macOS opens the picker; iOS toggles the listener).
     func toggleScreenShare() {
         if screenShareOn { stopScreenShare(); return }
-        #if targetEnvironment(macCatalyst)
+        #if targetEnvironment(macCatalyst) || os(macOS)
         presentScreenPicker()
         #else
         startScreenShareListening()
@@ -982,20 +979,98 @@ struct RTCVideoView: UIViewRepresentable {
     }
 }
 #else
-/// Native-macOS placeholder for the in-call video tile. The stasel/WebRTC macOS slice ships the
-/// `RTCMTLNSVideoView` header but NOT its implementation (the class isn't in the binary), so we
-/// can't link a Metal renderer here. Wiring live WebRTC video on macOS (a custom
-/// `RTCVideoRenderer` NSView, or an updated WebRTC build) is Phase-2 work. Same public surface
-/// (`track`, `fit`) as the iOS view so call sites are unchanged.
-struct RTCVideoView: View {
+/// Native-macOS WebRTC video renderer. The stasel/WebRTC macOS slice ships the `RTCMTLNSVideoView`
+/// header but NOT its implementation (the class isn't in the binary), so we render frames ourselves
+/// via a layer-backed `NSView` conforming to `RTCVideoRenderer`: pull the `CVPixelBuffer` out of each
+/// `RTCVideoFrame`, turn it into a `CGImage` with a cached `CIContext`, and set it as `layer.contents`.
+final class RTCNSVideoRenderer: NSView, RTCVideoRenderer {
+    /// Aspect-FILL (crop to fill) when `fit == false`; aspect-FIT (letterbox) when `fit == true`.
+    var fit: Bool = false {
+        didSet { applyGravity() }
+    }
+    /// Reused across frames — creating a `CIContext` per frame is very expensive.
+    private let ciContext = CIContext(options: [.useSoftwareRenderer: false])
+    /// Last reported frame size from `setSize`, kept for layout/debug (no-op layout is fine).
+    private var frameSize: CGSize = .zero
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        commonInit()
+    }
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        commonInit()
+    }
+    private func commonInit() {
+        wantsLayer = true
+        layer?.backgroundColor = NSColor.black.cgColor
+        applyGravity()
+    }
+
+    private func applyGravity() {
+        layer?.contentsGravity = fit ? .resizeAspect : .resizeAspectFill
+    }
+
+    // MARK: RTCVideoRenderer
+
+    func setSize(_ size: CGSize) {
+        // Store it; layout is driven by the SwiftUI frame + layer gravity, so this is a no-op.
+        frameSize = size
+    }
+
+    func renderFrame(_ frame: RTCVideoFrame?) {
+        // `renderFrame` is invoked off the main thread by WebRTC; CVPixelBuffer → CGImage conversion
+        // is fine to do here, but all layer mutation must happen on the main queue.
+        guard let frame else { return }
+
+        // Only the CVPixelBuffer-backed path is supported. The I420 path would require allocating a
+        // CVPixelBuffer and copying planes — skip those frames rather than risk a bad conversion.
+        guard let pixelBuffer = (frame.buffer as? RTCCVPixelBuffer)?.pixelBuffer else { return }
+
+        var ciImage = CIImage(cvPixelBuffer: pixelBuffer)
+
+        // Respect rotation if present (the easy cases). RTCVideoFrame.rotation is in degrees.
+        switch frame.rotation {
+        case ._90:  ciImage = ciImage.oriented(.right)
+        case ._180: ciImage = ciImage.oriented(.down)
+        case ._270: ciImage = ciImage.oriented(.left)
+        default: break   // ._0 — no rotation
+        }
+
+        guard let cgImage = ciContext.createCGImage(ciImage, from: ciImage.extent) else { return }
+
+        DispatchQueue.main.async { [weak self] in
+            self?.layer?.contents = cgImage
+        }
+    }
+}
+
+/// Renders a WebRTC video track on native macOS via the custom `RTCNSVideoRenderer`. Same public
+/// surface (`track`, `fit`) as the iOS `RTCVideoView` so call sites are unchanged.
+struct RTCVideoView: NSViewRepresentable {
     let track: RTCVideoTrack?
+    /// Aspect-FIT (letterbox, no crop) — used for shared screens so nothing is cut off. Camera
+    /// tiles default to aspect-FILL so faces fill the frame.
     var fit: Bool = false
-    var body: some View {
-        ZStack {
-            Color.black
-            Image(systemName: "video.fill")
-                .font(.largeTitle)
-                .foregroundStyle(.white.opacity(0.4))
+    func makeNSView(context: Context) -> RTCNSVideoRenderer {
+        let v = RTCNSVideoRenderer()
+        v.wantsLayer = true
+        v.layer?.backgroundColor = NSColor.black.cgColor
+        v.fit = fit
+        return v
+    }
+    func updateNSView(_ nsView: RTCNSVideoRenderer, context: Context) {
+        nsView.fit = fit
+        context.coordinator.bind(track, to: nsView)
+    }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+    final class Coordinator {
+        private weak var bound: RTCVideoTrack?
+        func bind(_ track: RTCVideoTrack?, to view: RTCNSVideoRenderer) {
+            guard bound !== track else { return }
+            bound?.remove(view)
+            bound = track
+            track?.add(view)
         }
     }
 }
@@ -1078,7 +1153,7 @@ struct CallOverlay: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity).ignoresSafeArea()
         .transition(.move(edge: .bottom))
-        #if targetEnvironment(macCatalyst)
+        #if targetEnvironment(macCatalyst) || os(macOS)
         .sheet(isPresented: Binding(get: { call.showScreenPicker },
                                     set: { call.showScreenPicker = $0 })) {
             ScreenPickerSheet()
@@ -1346,13 +1421,17 @@ private extension RPSystemBroadcastPickerView {
 #endif
 
 #if os(macOS)
-/// Native macOS placeholder for the screen-share control. `RPSystemBroadcastPickerView` (ReplayKit)
-/// is iOS-only; macOS screen share (ScreenCaptureKit) is Phase 2. Same public surface (`onTap`) as
-/// the iOS `BroadcastPickerButton`; renders a do-nothing icon button.
+/// Native macOS screen-share control. `RPSystemBroadcastPickerView` (ReplayKit) is iOS-only; on
+/// macOS we route through `CallManager`'s ScreenCaptureKit picker flow. Same public surface (`onTap`)
+/// as the iOS `BroadcastPickerButton` — but the button also opens the display/window picker so it's
+/// functional even if a call site wires it directly instead of going through `screenShareButton`.
 struct BroadcastPickerButton: View {
     let onTap: () -> Void
     var body: some View {
-        Button(action: onTap) {
+        Button {
+            onTap()
+            CallManager.shared.presentScreenPicker()
+        } label: {
             Image(systemName: "rectangle.on.rectangle").foregroundStyle(.white)
         }
         .buttonStyle(.plain)
@@ -1376,7 +1455,7 @@ struct AudioRoutePicker: UIViewRepresentable {
 }
 #endif
 
-#if targetEnvironment(macCatalyst)
+#if targetEnvironment(macCatalyst) || os(macOS)
 /// macOS screen-share picker: lists every display and open window (title + app). Selecting one
 /// starts an `SCStream` and adds the screen track to the mesh.
 struct ScreenPickerSheet: View {

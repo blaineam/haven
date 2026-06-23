@@ -1,6 +1,7 @@
 import SwiftUI
 import AVFoundation
 import MediaPlayer
+import MusicKit
 
 /// Coordinates a post's audio: the attached song plays while its video stays muted.
 /// When the viewer unmutes the video, the music fades down as the video fades up — a
@@ -119,19 +120,74 @@ final class AudioCoordinator: ObservableObject {
 }
 
 #if os(macOS)
-/// Native macOS stub: `MPMusicPlayerController` is iOS/Catalyst-only. Real catalog playback on
-/// macOS needs MusicKit's `ApplicationMusicPlayer` (Phase 2). We still track `current` so the
-/// now-playing UI reflects the shared song reference; playback itself is a no-op for now.
+/// Native macOS Apple Music playback via MusicKit's `ApplicationMusicPlayer` (macOS 14+).
+/// `MPMusicPlayerController`/`MPMediaItem` don't exist on macOS, so we can only play CATALOG
+/// songs (a store id) — there's no local-library item lookup. A shared song carries only its
+/// catalog id; we queue that id so it plays through the viewer's own Apple Music subscription.
+/// When the viewer unmutes a post's video the song pauses (duck) and resumes (unduck) on re-mute.
 @MainActor
 final class MusicPlayback {
     static let shared = MusicPlayback()
     private(set) var current: TrackRefFfi?
-    var isPlaying: Bool { false }
-    func play(_ track: TrackRefFfi) { current = track }
-    func duck() {}
-    func unduck() {}
-    func resume() {}
-    func stop() { current = nil }
+    private let player = ApplicationMusicPlayer.shared
+    private var authed = false
+
+    var isPlaying: Bool { player.state.playbackStatus == .playing }
+
+    func play(_ track: TrackRefFfi) {
+        current = track
+        guard !SettingsStore.shared.silent else { return }   // app is muted
+        let ids = trackIds(track.catalogId)
+        // macOS can only play catalog songs — a store id is required (no MPMediaItem library).
+        guard let store = ids.store, !store.isEmpty else { return }
+        // Stories can pick a section of the song (start offset encoded as "start:<ms>").
+        let startSeconds: Double? = {
+            guard track.artworkUrl.hasPrefix("start:"),
+                  let ms = Double(track.artworkUrl.dropFirst(6)), ms > 0 else { return nil }
+            return ms / 1000
+        }()
+        Task { @MainActor in
+            // Catalog playback needs MusicKit authorization (requested once).
+            if !authed {
+                _ = await MusicAuthorization.request()
+                authed = true
+            }
+            // Bail if the track was swapped out or the app muted while we awaited auth.
+            guard current?.catalogId == track.catalogId, !SettingsStore.shared.silent else { return }
+            do {
+                let id = MusicItemID(store)
+                var request = MusicCatalogResourceRequest<Song>(matching: \.id, equalTo: id)
+                request.limit = 1
+                let response = try await request.response()
+                guard let song = response.items.first else { return }
+                // Re-check after the network fetch; user may have scrolled / muted.
+                guard current?.catalogId == track.catalogId, !SettingsStore.shared.silent else { return }
+                player.queue = [song]
+                try await player.play()
+                if let startSeconds {
+                    player.playbackTime = startSeconds
+                }
+            } catch {
+                // Never crash on playback failure (no subscription, offline, etc.).
+            }
+        }
+    }
+    func duck() {
+        if player.state.playbackStatus == .playing { player.pause() }
+    }
+    func unduck() {
+        guard current != nil else { return }
+        Task { @MainActor in try? await player.play() }
+    }
+    /// Resume the queued song if it's paused (e.g. a video had ducked it).
+    func resume() {
+        guard current != nil, player.state.playbackStatus != .playing else { return }
+        Task { @MainActor in try? await player.play() }
+    }
+    func stop() {
+        current = nil
+        if player.state.playbackStatus == .playing { player.pause() }
+    }
 }
 #else
 /// Real Apple Music playback via the system music player. A shared song carries only

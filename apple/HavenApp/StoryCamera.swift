@@ -60,6 +60,11 @@ final class CameraModel: NSObject, ObservableObject {
     private let photoOutput = AVCapturePhotoOutput()
     private let movieOutput = AVCaptureMovieFileOutput()
     private let queue = DispatchQueue(label: "haven.camera")
+    // Live filtered preview: frames are tapped here and rendered through FilterEngine by the
+    // FilteredCameraPreview/MetalCameraPreview. The story camera is portrait-locked, so the
+    // preview connection is always 90° (portrait), mirrored on the front camera.
+    let frameTap = LiveFrameTap()
+    private let videoDataOutput = AVCaptureVideoDataOutput()
 
     @Published var isRecording = false
     @Published var position: AVCaptureDevice.Position = .back
@@ -89,7 +94,12 @@ final class CameraModel: NSObject, ObservableObject {
             self.configureInputs(position: .back)
             if self.session.canAddOutput(self.photoOutput) { self.session.addOutput(self.photoOutput) }
             if self.session.canAddOutput(self.movieOutput) { self.session.addOutput(self.movieOutput) }
+            if self.session.canAddOutput(self.videoDataOutput) {
+                self.videoDataOutput.wireLivePreview(tap: self.frameTap, queue: self.queue)
+                self.session.addOutput(self.videoDataOutput)
+            }
             self.session.commitConfiguration()
+            self.configurePreviewConnection()
             if !self.session.isRunning { self.session.startRunning() }
             Task { @MainActor in self.ready = true }
         }
@@ -120,7 +130,16 @@ final class CameraModel: NSObject, ObservableObject {
            session.canAddInput(micInput) {
             session.addInput(micInput)
         }
+        configurePreviewConnection(position: position)
         Task { @MainActor in self.refreshLensPresets(position: position) }
+    }
+
+    /// Orient (portrait) + mirror (front) the live-preview data-output connection. Safe to call
+    /// before the output is added (no connection yet → no-op).
+    private func configurePreviewConnection(position: AVCaptureDevice.Position? = nil) {
+        guard let conn = videoDataOutput.connection(with: .video) else { return }
+        let pos = position ?? self.position
+        conn.applyPreviewOrientation(angle: 90, mirroredFront: pos == .front)
     }
 
     private func hasUltraWide(_ position: AVCaptureDevice.Position) -> Bool {
@@ -231,24 +250,149 @@ extension CameraModel: AVCaptureFileOutputRecordingDelegate {
     }
 }
 #else
-/// macOS placeholder capture engine — live camera capture is Phase-2 native work. Exposes the
-/// same published members the capture UI reads, as inert defaults, so call sites compile.
+/// Native macOS capture engine. Mirrors the iOS `CameraModel` public surface (same `@Published`
+/// members + methods) backed by a real `AVCaptureSession`: stills via `AVCapturePhotoOutput`,
+/// video via `AVCaptureMovieFileOutput`. `flip()` swaps the device when a Mac has more than one
+/// camera (else no-op). `setZoom` is best-effort and no-ops on Macs without ramp-able zoom.
 @MainActor
 final class CameraModel: NSObject, ObservableObject {
+    let session = AVCaptureSession()
+    private let photoOutput = AVCapturePhotoOutput()
+    private let movieOutput = AVCaptureMovieFileOutput()
+    private let queue = DispatchQueue(label: "haven.camera.mac")
+
     @Published var isRecording = false
     @Published var position: AVCaptureDevice.Position = .back
     @Published var ready = false
     @Published var recordingSeconds = 0.0
     @Published var zoom = 1.0
-    @Published var lensPresets: [Double] = [1, 2]
+    // Macs typically have a single fixed-zoom FaceTime camera, so there are no lens presets.
+    @Published var lensPresets: [Double] = []
 
-    func start() {}
-    func stop() {}
-    func setZoom(_ factor: Double) {}
-    func flip() {}
-    func capturePhoto(_ completion: @escaping (PlatformImage) -> Void) {}
-    func startRecording(maxSeconds: Double = StoryCaptureModel.maxTotal, _ completion: @escaping (URL) -> Void) {}
-    func stopRecording() {}
+    private var device: AVCaptureDevice?
+    /// All video-capable devices on this Mac, in discovery order. `flip()` cycles through these.
+    private var availableDevices: [AVCaptureDevice] = []
+    private var deviceIndex = 0
+    private var onPhoto: ((PlatformImage) -> Void)?
+    private var onVideo: ((URL) -> Void)?
+    private var recordTimer: Timer?
+    private var capSeconds = StoryCaptureModel.maxTotal
+
+    func start() {
+        AVCaptureDevice.requestAccess(for: .video) { _ in }
+        AVCaptureDevice.requestAccess(for: .audio) { _ in }
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.discoverDevices()
+            self.session.beginConfiguration()
+            self.session.sessionPreset = .high
+            self.configureInputs()
+            if self.session.canAddOutput(self.photoOutput) { self.session.addOutput(self.photoOutput) }
+            if self.session.canAddOutput(self.movieOutput) { self.session.addOutput(self.movieOutput) }
+            self.session.commitConfiguration()
+            if !self.session.isRunning { self.session.startRunning() }
+            Task { @MainActor in self.ready = true }
+        }
+    }
+
+    func stop() {
+        queue.async { [weak self] in
+            if self?.session.isRunning == true { self?.session.stopRunning() }
+        }
+    }
+
+    private func discoverDevices() {
+        let session = AVCaptureDevice.DiscoverySession(
+            deviceTypes: [.builtInWideAngleCamera, .external],
+            mediaType: .video, position: .unspecified)
+        availableDevices = session.devices
+        if availableDevices.isEmpty, let def = AVCaptureDevice.default(for: .video) {
+            availableDevices = [def]
+        }
+    }
+
+    private func configureInputs() {
+        for input in session.inputs { session.removeInput(input) }
+        let cam = availableDevices.indices.contains(deviceIndex)
+            ? availableDevices[deviceIndex]
+            : AVCaptureDevice.default(for: .video)
+        if let cam, let input = try? AVCaptureDeviceInput(device: cam), session.canAddInput(input) {
+            session.addInput(input)
+            device = cam
+        }
+        if let mic = AVCaptureDevice.default(for: .audio),
+           let micInput = try? AVCaptureDeviceInput(device: mic), session.canAddInput(micInput) {
+            session.addInput(micInput)
+        }
+    }
+
+    /// Mac cameras expose no ramp-able zoom factor (`videoZoomFactor` and the
+    /// min/max-available-zoom APIs are iOS-only), so zoom is a no-op on macOS — we just keep the
+    /// published value in sync for the UI.
+    func setZoom(_ factor: Double) {
+        Task { @MainActor in self.zoom = factor }
+    }
+
+    /// Switch to the next video device when the Mac has more than one; otherwise a no-op.
+    func flip() {
+        guard availableDevices.count > 1 else { return }
+        deviceIndex = (deviceIndex + 1) % availableDevices.count
+        // `position` is largely cosmetic on macOS, but keep it toggling so the UI mirroring logic
+        // that reads it stays sensible.
+        position = (position == .back) ? .front : .back
+        zoom = 1.0
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.session.beginConfiguration()
+            self.configureInputs()
+            self.session.commitConfiguration()
+        }
+    }
+
+    func capturePhoto(_ completion: @escaping (PlatformImage) -> Void) {
+        onPhoto = completion
+        let settings = AVCapturePhotoSettings()
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.photoOutput.capturePhoto(with: settings, delegate: self)
+        }
+    }
+
+    func startRecording(maxSeconds: Double = StoryCaptureModel.maxTotal, _ completion: @escaping (URL) -> Void) {
+        guard !movieOutput.isRecording, maxSeconds > 0.3 else { return }
+        onVideo = completion
+        capSeconds = maxSeconds
+        recordingSeconds = 0
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("story_\(UUID().uuidString).mov")
+        movieOutput.startRecording(to: url, recordingDelegate: self)
+        isRecording = true
+        recordTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
+            guard let self else { return }
+            self.recordingSeconds += 0.1
+            if self.recordingSeconds >= self.capSeconds { self.stopRecording() }
+        }
+    }
+
+    func stopRecording() {
+        recordTimer?.invalidate(); recordTimer = nil
+        guard movieOutput.isRecording else { return }
+        movieOutput.stopRecording()
+        isRecording = false
+    }
+}
+
+extension CameraModel: AVCapturePhotoCaptureDelegate {
+    nonisolated func photoOutput(_ output: AVCapturePhotoOutput, didFinishProcessingPhoto photo: AVCapturePhoto, error: Error?) {
+        guard let data = photo.fileDataRepresentation(), let img = PlatformImage(data: data) else { return }
+        Task { @MainActor in self.onPhoto?(img) }
+    }
+}
+
+extension CameraModel: AVCaptureFileOutputRecordingDelegate {
+    nonisolated func fileOutput(_ output: AVCaptureFileOutput, didFinishRecordingTo outputFileURL: URL,
+                                from connections: [AVCaptureConnection], error: Error?) {
+        Task { @MainActor in self.onVideo?(outputFileURL) }
+    }
 }
 #endif
 
@@ -271,10 +415,37 @@ struct CameraPreview: UIViewRepresentable {
     }
 }
 #else
-/// macOS placeholder for the live camera preview.
-struct CameraPreview: View {
+/// Native macOS live camera preview: a layer-backed NSView hosting an
+/// `AVCaptureVideoPreviewLayer` for the model's session.
+struct CameraPreview: NSViewRepresentable {
     let session: AVCaptureSession
-    var body: some View { CameraUnavailablePlaceholder() }
+    func makeNSView(context: Context) -> PreviewNSView {
+        let v = PreviewNSView()
+        v.attach(session: session)
+        return v
+    }
+    func updateNSView(_ nsView: PreviewNSView, context: Context) {}
+
+    final class PreviewNSView: NSView {
+        private var preview: AVCaptureVideoPreviewLayer?
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            wantsLayer = true
+            layer?.backgroundColor = NSColor.black.cgColor
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        func attach(session: AVCaptureSession) {
+            let layer = AVCaptureVideoPreviewLayer(session: session)
+            layer.videoGravity = .resizeAspectFill
+            layer.frame = bounds
+            self.layer?.addSublayer(layer)
+            preview = layer
+        }
+        override func layout() {
+            super.layout()
+            preview?.frame = bounds
+        }
+    }
 }
 #endif
 
@@ -335,6 +506,11 @@ struct StoryCameraView: View {
     @State private var pipCorner: PiPCorner = .bottomRight
     @State private var pinchBaseZoom = 1.0     // zoom at the start of a pinch
     @State private var recordStartZoom = 1.0   // zoom when a hold-to-record drag began
+    // Live filter applied to the camera feed, carried into the composer as the default look.
+    @State private var liveFilter: HavenFilter = .original
+    @State private var liveThumb: PlatformImage?
+    @State private var showLiveFilters = false
+    @State private var filterNameShown = false
 
     private let minZoom = 0.5, maxZoom = 8.0
     private var isRec: Bool { dualMode ? dual.isRecording : cam.isRecording }
@@ -346,11 +522,19 @@ struct StoryCameraView: View {
             if dualMode {
                 DualCameraPreview(recorder: dual, corner: pipCorner).ignoresSafeArea()
             } else {
-                CameraPreview(session: cam.session).ignoresSafeArea()
+                FilteredCameraPreview(tap: cam.frameTap, filter: liveFilter,
+                                      onThumbnail: { liveThumb = $0 }).ignoresSafeArea()
                     // Pinch anywhere on the preview to zoom.
-                    .gesture(MagnificationGesture()
+                    .simultaneousGesture(MagnificationGesture()
                         .onChanged { v in cam.setZoom(min(maxZoom, max(minZoom, pinchBaseZoom * v))) }
                         .onEnded { _ in pinchBaseZoom = cam.zoom })
+                    // Swipe left/right to flip through filters at full frame rate.
+                    .simultaneousGesture(DragGesture(minimumDistance: 24)
+                        .onEnded { v in
+                            guard abs(v.translation.width) > abs(v.translation.height) * 1.5,
+                                  abs(v.translation.width) > 44 else { return }
+                            cycleLiveFilter(v.translation.width < 0 ? liveFilter.next : liveFilter.prev)
+                        })
             }
 
             VStack {
@@ -379,6 +563,11 @@ struct StoryCameraView: View {
                             }
                         }
                         if !dualMode {
+                            Button { withAnimation(HavenTheme.smooth) { showLiveFilters.toggle() } } label: {
+                                Image(systemName: "camera.filters").font(.title3.weight(.semibold))
+                                    .foregroundStyle(liveFilter != .original ? HavenTheme.pink : .white)
+                                    .padding(10).background(.black.opacity(0.35), in: Circle())
+                            }
                             Button { cam.flip() } label: {
                                 Image(systemName: "arrow.triangle.2.circlepath.camera").font(.title3.weight(.semibold))
                                     .foregroundStyle(.white).padding(10).background(.black.opacity(0.35), in: Circle())
@@ -390,6 +579,20 @@ struct StoryCameraView: View {
                 if dualMode { cornerPicker.padding(.top, 8) }
                 Spacer()
                 if !dualMode { zoomControls }
+                if !dualMode && filterNameShown {
+                    Text(liveFilter.title)
+                        .font(.subheadline.weight(.bold)).foregroundStyle(.white)
+                        .padding(.horizontal, 14).padding(.vertical, 7)
+                        .background(.black.opacity(0.45), in: Capsule())
+                        .padding(.bottom, 8)
+                        .transition(.opacity)
+                }
+                if !dualMode && showLiveFilters, let liveThumb {
+                    FilterStrip(thumbnail: liveThumb, selection: $liveFilter)
+                        .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .padding(.horizontal, 12).padding(.bottom, 6)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
                 bottomBar
             }
         }
@@ -413,7 +616,7 @@ struct StoryCameraView: View {
                             })
         }
         .havenFullScreenCover(item: $draft) { d in
-            StoryComposerView(draft: d) { ref, caption, track in
+            StoryComposerView(draft: d, initialFilter: liveFilter) { ref, caption, track in
                 onShare(ref, caption, track)
             } onDone: {
                 dismiss()   // close the camera once everything's shared
@@ -563,6 +766,14 @@ struct StoryCameraView: View {
         }
     }
 
+    /// Apply a swiped-to live filter and briefly flash its name.
+    private func cycleLiveFilter(_ filter: HavenFilter) {
+        withAnimation(HavenTheme.smooth) { liveFilter = filter; filterNameShown = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            withAnimation(.easeOut(duration: 0.3)) { if liveFilter == filter { filterNameShown = false } }
+        }
+    }
+
     private func finishPhoto(_ img: PlatformImage) {
         // A photo is a single-frame story → straight to the composer (no multi-clip stacking).
         draft = StoryDraft(mediaRef: MediaStore.shared.addImage(img))
@@ -579,29 +790,136 @@ struct StoryCameraView: View {
     }
 }
 #else
-/// macOS placeholder for the story camera — live capture is Phase-2 native work. Keeps the same
-/// initializer signature (`onShare`) so call sites compile unchanged.
+/// Native macOS story camera. Keeps the iOS initializer signature (`onShare`) so call sites
+/// compile unchanged. A live preview + capture controls (click = photo, hold = video) feed the
+/// shared `StoryCaptureModel` / `StoryReviewView` / `StoryComposerView` flow, ending in `onShare`.
+/// Simpler than the iOS surface (no filter strip / lens / pinch zoom — Macs lack the optics), but
+/// fully functional: capture → review → compose → share.
 struct StoryCameraView: View {
     var onShare: (_ mediaRef: String, _ caption: String, _ track: TrackRefFfi?) -> Void
     @Environment(\.dismiss) private var dismiss
+    @StateObject private var cam = CameraModel()
+    @StateObject private var capture = StoryCaptureModel()
+    @State private var showReview = false
+    @State private var draft: StoryDraft?
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            CameraUnavailablePlaceholder().padding(40)
+            if cam.ready {
+                CameraPreview(session: cam.session).ignoresSafeArea()
+            } else {
+                VStack(spacing: 12) {
+                    ProgressView().controlSize(.large).tint(.white)
+                    Text("Starting camera…").font(.subheadline.weight(.semibold)).foregroundStyle(.white.opacity(0.8))
+                }
+            }
+
             VStack {
                 HStack {
                     Button { dismiss() } label: {
                         Image(systemName: "xmark").font(.title2.weight(.semibold)).foregroundStyle(.white)
                             .padding(10).background(.black.opacity(0.35), in: Circle())
                     }
+                    .buttonStyle(.plain)
                     Spacer()
+                    if capture.isFull {
+                        Text("Max length").font(.caption.weight(.semibold)).foregroundStyle(.white)
+                            .padding(.horizontal, 10).padding(.vertical, 6).background(.black.opacity(0.4), in: Capsule())
+                    }
+                    Spacer()
+                    if cam.ready {
+                        Button { cam.flip() } label: {
+                            Image(systemName: "arrow.triangle.2.circlepath.camera").font(.title3.weight(.semibold))
+                                .foregroundStyle(.white).padding(10).background(.black.opacity(0.35), in: Circle())
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
-                .padding(.horizontal, 20).padding(.top, 8)
+                .padding(.horizontal, 20).padding(.top, 12)
                 Spacer()
+                bottomBar
             }
         }
         .portraitLocked()
+        .onAppear { cam.start() }
+        .onDisappear { cam.stop() }
+        .havenFullScreenCover(isPresented: $showReview) {
+            StoryReviewView(capture: capture,
+                            onCaptureMore: { showReview = false },
+                            onNext: {
+                                showReview = false
+                                let refs = capture.segments.map(\.ref)
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { draft = StoryDraft(refs: refs) }
+                            })
+        }
+        .havenFullScreenCover(item: $draft) { d in
+            StoryComposerView(draft: d) { ref, caption, track in
+                onShare(ref, caption, track)
+            } onDone: {
+                dismiss()
+            }
+        }
+    }
+
+    private var bottomBar: some View {
+        HStack {
+            Color.clear.frame(width: 52, height: 52)   // balance
+            Spacer()
+            shutter
+            Spacer()
+            if !capture.segments.isEmpty {
+                Button { showReview = true } label: {
+                    ZStack(alignment: .topTrailing) {
+                        Image(systemName: "checkmark.circle.fill").font(.system(size: 40)).foregroundStyle(HavenTheme.pink)
+                        Text("\(capture.segments.count)").font(.caption2.bold()).foregroundStyle(.white)
+                            .padding(4).background(Circle().fill(.black)).offset(x: 4, y: -4)
+                    }
+                    .frame(width: 52, height: 52)
+                }
+                .buttonStyle(.plain)
+            } else {
+                Color.clear.frame(width: 52, height: 52)
+            }
+        }
+        .padding(.horizontal, 28).padding(.bottom, 28)
+    }
+
+    /// Click = photo, click-and-hold = record video. (No pinch/lens zoom — Macs lack the optics.)
+    private var shutter: some View {
+        ZStack {
+            Circle().strokeBorder(.white, lineWidth: 5).frame(width: 82, height: 82)
+            Circle().fill(cam.isRecording ? Color.red : Color.white)
+                .frame(width: cam.isRecording ? 38 : 68, height: cam.isRecording ? 38 : 68)
+                .animation(.spring(response: 0.3), value: cam.isRecording)
+        }
+        .contentShape(Circle())
+        .gesture(
+            LongPressGesture(minimumDuration: 0.35)
+                .onEnded { _ in
+                    guard !capture.isFull, !cam.isRecording else { return }
+                    cam.startRecording(maxSeconds: capture.remaining) { url in finishVideo(url) }
+                }
+                .sequenced(before: DragGesture(minimumDistance: 0))
+                .onEnded { _ in
+                    if cam.isRecording { cam.stopRecording() }
+                    else if !capture.isFull { cam.capturePhoto { img in finishPhoto(img) } }
+                }
+        )
+        .disabled(!cam.ready)
+    }
+
+    private func finishPhoto(_ img: PlatformImage) {
+        draft = StoryDraft(mediaRef: MediaStore.shared.addImage(img))
+    }
+    private func finishVideo(_ url: URL) {
+        Task { @MainActor in
+            let secs = (try? await AVURLAsset(url: url).load(.duration).seconds) ?? 0.1
+            let ref = await MediaStore.shared.addVideo(url: url)
+            let thumb = MediaStore.shared.item(ref)?.image
+            capture.add(ref: ref, duration: secs.isFinite ? secs : 0.1, thumb: thumb)
+            if capture.isFull { showReview = true }
+        }
     }
 }
 #endif
@@ -624,11 +942,23 @@ struct StoryComposerView: View {
     var onDone: () -> Void = {}
     @Environment(\.dismiss) private var dismiss
 
+    /// `initialFilter` seeds the picker with the look that was live on the camera, so a story
+    /// framed with a filter keeps it by default (the composer still lets you change it).
+    init(draft: StoryDraft, initialFilter: HavenFilter = .original,
+         onShare: @escaping (_ mediaRef: String, _ caption: String, _ track: TrackRefFfi?) -> Void,
+         onDone: @escaping () -> Void = {}) {
+        self.draft = draft
+        self.onShare = onShare
+        self.onDone = onDone
+        _filter = State(initialValue: initialFilter)
+        _showFilters = State(initialValue: initialFilter != .original)
+    }
+
     @State private var caption = ""
     @State private var track: TrackRefFfi?
     @State private var showSongs = false
-    @State private var showFilters = false
-    @State private var filter: HavenFilter = .original
+    @State private var showFilters: Bool
+    @State private var filter: HavenFilter
     @State private var sharing = false
     @State private var editingCaption = false
     @State private var captionSpec = StoryCaptions.Spec()
@@ -680,6 +1010,9 @@ struct StoryComposerView: View {
                         // Show the glow/shadow/neon look live while typing (#88), not only after closing.
                         .modifier(CaptionStyleEffect(spec: captionSpec))
                         .tint(.white)
+                        // With a highlight background, hug the text width (like the final caption)
+                        // instead of stretching full-width while editing.
+                        .fixedSize(horizontal: StoryCaptions.bgColor(captionSpec) != nil, vertical: false)
                         .padding(.horizontal, StoryCaptions.bgColor(captionSpec) == nil ? 0 : 12)
                         .padding(.vertical, StoryCaptions.bgColor(captionSpec) == nil ? 0 : 6)
                         .background { if let bg = StoryCaptions.bgColor(captionSpec) { RoundedRectangle(cornerRadius: 8).fill(bg) } }
@@ -1037,40 +1370,144 @@ struct StoryReviewView: View {
     }
 }
 
-/// A muted, looping video for the composer preview.
+/// A muted, looping video for the composer preview. When a `filter` is set, frames are run through
+/// the SAME `FilterEngine` pipeline via an `AVVideoComposition` so the preview matches the live
+/// camera AND the baked-on-export result (it used to play unfiltered, so filters looked like they
+/// "didn't stick" on video clips).
 #if !os(macOS)
 struct LoopingVideo: UIViewRepresentable {
     let url: URL
     var fill: Bool = true   // false → fit (letterbox), e.g. show a landscape clip in full
+    var filter: HavenFilter = .original
     func makeUIView(context: Context) -> PlayerView {
         let v = PlayerView()
-        v.load(url, fill: fill)
+        v.load(url, fill: fill, filter: filter)
         return v
     }
-    func updateUIView(_ uiView: PlayerView, context: Context) {}
+    func updateUIView(_ uiView: PlayerView, context: Context) {
+        uiView.update(filter: filter)
+    }
 
     final class PlayerView: UIView {
         override class var layerClass: AnyClass { AVPlayerLayer.self }
         private var looper: Any?
+        private var queue: AVQueuePlayer?
+        private var asset: AVURLAsset?
+        private var current: HavenFilter = .original
         var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
-        func load(_ url: URL, fill: Bool) {
-            let item = AVPlayerItem(url: url)
+
+        func load(_ url: URL, fill: Bool, filter: HavenFilter) {
+            let asset = AVURLAsset(url: url)
+            self.asset = asset
+            current = filter
+            let item = Self.makeItem(asset: asset, filter: filter)
             let queue = AVQueuePlayer(playerItem: item)
             queue.isMuted = true
             looper = AVPlayerLooper(player: queue, templateItem: item)
             playerLayer.player = queue
             playerLayer.videoGravity = fill ? .resizeAspectFill : .resizeAspect
+            self.queue = queue
             queue.play()
+        }
+
+        /// Swap in a new filtered composition when the chosen look changes (rebuild the loop).
+        func update(filter: HavenFilter) {
+            guard filter != current, let asset, let queue else { return }
+            current = filter
+            let item = Self.makeItem(asset: asset, filter: filter)
+            looper = AVPlayerLooper(player: queue, templateItem: item)
+            queue.play()
+        }
+
+        private static func makeItem(asset: AVURLAsset, filter: HavenFilter) -> AVPlayerItem {
+            let item = AVPlayerItem(asset: asset)
+            guard filter != .original else { return item }
+            let spec = filter.spec
+            item.videoComposition = AVMutableVideoComposition(asset: asset) { request in
+                let src = request.sourceImage.clampedToExtent()
+                let out = FilterEngine.apply(spec, to: src).cropped(to: request.sourceImage.extent)
+                request.finish(with: out, context: nil)
+            }
+            return item
         }
     }
 }
 #else
-/// macOS placeholder for the looping-video preview — backed by AVPlayer wiring is Phase-2 work.
-/// Keeps the same `url`/`fill` members so call sites compile unchanged.
-struct LoopingVideo: View {
+/// Native macOS muted, looping video preview. Mirrors the iOS `LoopingVideo` public props
+/// (`url`, `fill`) using a layer-backed NSView wrapping an `AVQueuePlayer` + `AVPlayerLooper`
+/// rendered through an `AVPlayerLayer`.
+struct LoopingVideo: NSViewRepresentable {
     let url: URL
-    var fill: Bool = true
-    var body: some View { CameraUnavailablePlaceholder() }
+    var fill: Bool = true   // false → fit (letterbox)
+    var filter: HavenFilter = .original
+    func makeNSView(context: Context) -> PlayerNSView {
+        let v = PlayerNSView()
+        v.load(url, fill: fill, filter: filter)
+        return v
+    }
+    func updateNSView(_ nsView: PlayerNSView, context: Context) {
+        nsView.update(filter: filter)
+    }
+
+    static func dismantleNSView(_ nsView: PlayerNSView, coordinator: ()) {
+        nsView.stop()
+    }
+
+    final class PlayerNSView: NSView {
+        private var looper: AVPlayerLooper?
+        private var queue: AVQueuePlayer?
+        private var playerLayer: AVPlayerLayer?
+        private var asset: AVURLAsset?
+        private var current: HavenFilter = .original
+        override init(frame frameRect: NSRect) {
+            super.init(frame: frameRect)
+            wantsLayer = true
+            layer?.backgroundColor = NSColor.black.cgColor
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+        func load(_ url: URL, fill: Bool, filter: HavenFilter) {
+            let asset = AVURLAsset(url: url)
+            self.asset = asset
+            current = filter
+            let item = Self.makeItem(asset: asset, filter: filter)
+            let q = AVQueuePlayer(playerItem: item)
+            q.isMuted = true
+            looper = AVPlayerLooper(player: q, templateItem: item)
+            let pl = AVPlayerLayer(player: q)
+            pl.videoGravity = fill ? .resizeAspectFill : .resizeAspect
+            pl.frame = bounds
+            self.layer?.addSublayer(pl)
+            playerLayer = pl
+            queue = q
+            q.play()
+        }
+        func update(filter: HavenFilter) {
+            guard filter != current, let asset, let queue else { return }
+            current = filter
+            looper = AVPlayerLooper(player: queue, templateItem: Self.makeItem(asset: asset, filter: filter))
+            queue.play()
+        }
+        private static func makeItem(asset: AVURLAsset, filter: HavenFilter) -> AVPlayerItem {
+            let item = AVPlayerItem(asset: asset)
+            guard filter != .original else { return item }
+            let spec = filter.spec
+            item.videoComposition = AVMutableVideoComposition(asset: asset) { request in
+                let src = request.sourceImage.clampedToExtent()
+                let out = FilterEngine.apply(spec, to: src).cropped(to: request.sourceImage.extent)
+                request.finish(with: out, context: nil)
+            }
+            return item
+        }
+        func stop() {
+            queue?.pause()
+            queue = nil
+            looper = nil
+        }
+        override func layout() {
+            super.layout()
+            playerLayer?.frame = bounds
+        }
+    }
 }
 #endif
 
@@ -1085,9 +1522,8 @@ struct StoryMediaCanvas: View {
     var scale: CGFloat = 1
     var offX: CGFloat = 0
     var offY: CGFloat = 0
-    /// Live preview-only filter. The look is applied to the still here for instant feedback; it
-    /// is baked into the actual media bytes at share time (videos preview unfiltered — the
-    /// poster shows the look — and get the filter on export). Defaults to `.original` (no-op).
+    /// Live preview-only filter, applied to both stills and video frames here for instant
+    /// feedback; it is baked into the actual media bytes at share time. Defaults to `.original`.
     var filter: HavenFilter = .original
 
     /// The (optionally filtered) preview still for this ref.
@@ -1117,9 +1553,9 @@ struct StoryMediaCanvas: View {
                     // through.)
                     Group {
                         if m.kind == .video, let url = m.videoURL {
-                            // Video plays unfiltered in preview (the filter is baked on export);
-                            // a still photo previews the live look immediately.
-                            LoopingVideo(url: url, fill: true)
+                            // Video previews WITH the chosen filter (same FilterEngine pipeline,
+                            // applied per-frame), matching the live camera and the baked export.
+                            LoopingVideo(url: url, fill: true, filter: filter)
                         } else if let img = still {
                             Image(platformImage: img).resizable().scaledToFill()
                                 .frame(width: geo.size.width, height: geo.size.height)

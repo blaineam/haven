@@ -24,8 +24,10 @@ final class AccountStore: ObservableObject {
         case .found(let seed):
             if let restored = try? Account.fromSeed(seed: seed) {
                 account = restored
-                // Re-store device-local: converts any legacy *synchronizable* seed to
-                // device-only so iCloud Keychain can never carry/clobber it again. Also record
+                // Re-store device-local. This also performs the Secure-Enclave migration: if the
+                // seed came back from a legacy *plaintext* keychain item (or a synchronizable one),
+                // `saveSeed` re-wraps it under the SE key and deletes the plaintext copy — so a
+                // Keychain dump alone is useless after the first launch on this change. Also record
                 // it in the recoverable identity history.
                 Self.saveSeed(seed)
                 Self.archive(seed)
@@ -41,10 +43,13 @@ final class AccountStore: ObservableObject {
             Self.archive(fresh.secretSeed())
             SharedSeed.write(fresh.secretSeed())
             account = fresh
-        case .lockedOrError:
-            // Keychain not accessible yet (locked). Generating + saving here would DESTROY the
-            // real identity — the bug that flipped your old content to "not me". Use a throwaway
-            // and reload the real seed once unlocked. Do NOT save.
+        case .lockedOrError, .seError:
+            // Keychain not accessible yet (locked / errSecInteractionNotAllowed), OR the seed is
+            // SE-wrapped but the Enclave couldn't unwrap it right now (.seError — SE key locked,
+            // ciphertext present but key unreadable, decrypt transiently failed). In EITHER case a
+            // real seed almost certainly exists. Generating + saving here would DESTROY the real
+            // identity — the bug that flipped your old content to "not me". Use a throwaway and
+            // reload the real seed once unlocked. Do NOT save.
             account = Account.generate(); usingTemporaryIdentity = true
         }
     }
@@ -93,6 +98,10 @@ final class AccountStore: ObservableObject {
         Self.deleteSeed()
         Self.saveSeed(seed, synced: on)
         SharedSeed.write(seed)
+        // Migrate the recovery archive to match the new mode right away (SE-wrapped device-local
+        // ⇄ plaintext synchronizable) so the toggle takes effect now, not on the next identity
+        // change. `previousIdentities()` reads either form, so re-storing the current list is safe.
+        Self.storeHistory(Self.previousIdentities())
     }
 
     // MARK: - Multi-device: transfer code / QR
@@ -130,7 +139,27 @@ final class AccountStore: ObservableObject {
         return Data(base64Encoded: b)
     }
 
-    // MARK: - Keychain
+    // MARK: - Keychain (Secure-Enclave-wrapped seed)
+    //
+    // The 32-byte master seed is never stored as readable bytes on a device that has a Secure
+    // Enclave. Instead:
+    //   • A P-256 key is generated *inside* the Secure Enclave (the private key never leaves it).
+    //   • The seed is encrypted to that key's public half (ECIES X9.63 SHA-256 AES-GCM) and only
+    //     the ciphertext blob lives in the Keychain.
+    //   • On load the ciphertext is handed to the Enclave to decrypt; an attacker with a raw
+    //     Keychain dump but no Enclave gets nothing.
+    // Devices without an Enclave (the Simulator, very old hardware) fall back to the previous
+    // plaintext-keychain item, kept byte-for-byte compatible so existing users aren't disturbed.
+    //
+    // The seed is ALWAYS device-local and NON-synchronizable in either representation. iCloud
+    // Keychain must never carry the identity — a syncable seed let a fresh install on one device
+    // roll another device's identity. Cross-device is only ever via an explicit, user-confirmed
+    // transfer code. (SE-wrapped blobs are inherently device-bound: the Enclave key can't sync.)
+
+    private static let wrappedSeedKey = "account-master-seed-se"            // ciphertext blob
+    /// App-only Secure-Enclave key (default access group → unreachable by the NSE) that wraps the
+    /// authoritative seed and the device-local recovery archive.
+    private static let seedBox = SecureEnclaveBox(tag: "com.blaineam.kith.seed-se-key")
 
     private static func baseQuery() -> [String: Any] {
         [
@@ -140,11 +169,23 @@ final class AccountStore: ObservableObject {
         ]
     }
 
-    /// The seed is ALWAYS stored device-local and NON-synchronizable. iCloud Keychain must never
-    /// carry the identity — a syncable seed let a fresh install on one device roll another
-    /// device's identity. Cross-device is only ever via an explicit, user-confirmed transfer code.
+    /// Keychain query for the SE-wrapped ciphertext blob (a generic-password item, distinct
+    /// account from the legacy plaintext seed so the two can coexist during migration).
+    private static func wrappedQuery() -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: wrappedSeedKey,
+        ]
+    }
+
+    /// Persist the seed. Prefers Secure-Enclave wrapping; falls back to a device-local plaintext
+    /// item only when no Enclave is available. Always clears the *other* representation first so a
+    /// migrated user never leaves a stale plaintext copy behind.
     private static func saveSeed(_ data: Data, synced: Bool = false) {
         deleteSeed()
+        if wrapAndStore(data) { return }   // Secure-Enclave path (device hardware).
+        // Fallback: no Secure Enclave (Simulator / unsupported) → plaintext, device-local only.
         var query = baseQuery()
         query[kSecValueData as String] = data
         query[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
@@ -157,11 +198,38 @@ final class AccountStore: ObservableObject {
         return nil
     }
 
-    /// Distinguishes "no seed exists" from "seed exists but the keychain can't be read right
-    /// now" (locked). The init must NEVER treat a locked read as "new user" — that overwrites
-    /// a real identity.
-    private enum SeedStatus { case found(Data), notFound, lockedOrError }
+    /// The load result must distinguish four cases so the init never wipes a real identity:
+    ///   • `.found`        — seed is present and readable now.
+    ///   • `.notFound`     — genuinely no seed (new install) → the only case allowed to generate.
+    ///   • `.lockedOrError`— Keychain unreadable right now (locked / errSecInteractionNotAllowed).
+    ///   • `.seError`      — an SE-wrapped seed exists but the Enclave couldn't unwrap it this
+    ///                       launch (key locked, key missing, or decrypt failed). A real seed
+    ///                       exists; treat exactly like `.lockedOrError` — temp identity, retry.
+    private enum SeedStatus { case found(Data), notFound, lockedOrError, seError }
+
     private static func loadSeedStatus() -> SeedStatus {
+        // 1. Secure-Enclave-wrapped seed takes precedence over any legacy plaintext copy.
+        switch loadWrappedBlob() {
+        case .found(let cipher):
+            switch seedBox.open(cipher) {
+            case .ok(let seed) where seed.count == 32:
+                return .found(seed)
+            case .ok:
+                return .seError       // decrypted but wrong size — corrupt; never "new user".
+            case .locked:
+                return .lockedOrError // SE key present but locked — transient, retry on unlock.
+            case .missingKey, .failed:
+                // Ciphertext present but the Enclave key is gone or the decrypt failed. A real
+                // identity exists; regenerating here would destroy it. Treat as transient.
+                return .seError
+            }
+        case .locked:
+            return .lockedOrError
+        case .notFound:
+            break   // no wrapped seed → fall through to the legacy plaintext item.
+        }
+
+        // 2. Legacy / fallback plaintext seed (pre-migration users, or Simulator/no-SE devices).
         var query = baseQuery()
         query[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
         query[kSecReturnData as String] = true
@@ -175,10 +243,49 @@ final class AccountStore: ObservableObject {
         }
     }
 
+    /// Deletes both seed representations (the SE-wrapped ciphertext and any plaintext copy). The
+    /// Secure-Enclave private key itself is intentionally LEFT in place: it holds no identity (it
+    /// only wraps the seed) and is reused for the next `saveSeed`, avoiding needless key churn.
     private static func deleteSeed() {
         var query = baseQuery()
         query[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny   // delete either variant
         SecItemDelete(query as CFDictionary)
+        var wrapped = wrappedQuery()
+        wrapped[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
+        SecItemDelete(wrapped as CFDictionary)
+    }
+
+    // MARK: - Secure Enclave wrapping
+
+    private enum BlobStatus { case found(Data), notFound, locked }
+
+    /// Read the SE-wrapped ciphertext blob, distinguishing absent from locked (same discipline as
+    /// the seed itself — a locked read must never look like "no blob").
+    private static func loadWrappedBlob() -> BlobStatus {
+        var q = wrappedQuery()
+        q[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
+        q[kSecReturnData as String] = true
+        q[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(q as CFDictionary, &item)
+        switch status {
+        case errSecSuccess: return (item as? Data).map { .found($0) } ?? .locked
+        case errSecItemNotFound: return .notFound
+        default: return .locked
+        }
+    }
+
+    /// Encrypt the seed to the Secure-Enclave key and persist the ciphertext blob (device-local,
+    /// non-synchronizable). Returns false on any SE unavailability so `saveSeed` falls back to a
+    /// plaintext item (Simulator / no-Enclave hardware only).
+    private static func wrapAndStore(_ seed: Data) -> Bool {
+        guard let cipher = seedBox.seal(seed) else { return false }
+        var add = wrappedQuery()
+        add[kSecValueData as String] = cipher
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        add[kSecAttrSynchronizable as String] = kCFBooleanFalse!
+        let status = SecItemAdd(add as CFDictionary, nil)
+        return status == errSecSuccess || status == errSecDuplicateItem
     }
 
     // MARK: - Recoverable identity history (for rolling back a changed identity)
@@ -189,28 +296,53 @@ final class AccountStore: ObservableObject {
          kSecAttrService as String: service, kSecAttrAccount as String: historyKey]
     }
 
-    /// Append a seed to the identity history (newest first, deduped, capped at 12). The history
-    /// is a *recovery archive* and never the active identity, so it's safe to back up to iCloud
-    /// when the user opts in (`iCloudSyncEnabled`); the active seed always stays device-local.
+    /// Append a seed to the identity history (newest first, deduped, capped at 12). The history is
+    /// a *recovery archive* of past identities, never the active one.
+    ///
+    /// At-rest protection mirrors the active seed: when the archive is device-local (the default)
+    /// it is **Secure-Enclave-wrapped** so a Keychain dump reveals no past seeds either. The one
+    /// case it can't be SE-wrapped is the opt-in iCloud-synced archive — an Enclave key is
+    /// physically device-bound, so cross-device recovery requires the bytes to travel; there it
+    /// stays synchronizable plaintext, protected by Apple's end-to-end iCloud Keychain. (The
+    /// Simulator / no-Enclave hardware also takes the plaintext path.)
     static func archive(_ seed: Data) {
         let b64 = seed.base64EncodedString()
         var hist = previousIdentities()
         hist.removeAll { $0 == b64 }
         hist.insert(b64, at: 0)
         if hist.count > 12 { hist = Array(hist.prefix(12)) }
-        guard let data = try? JSONEncoder().encode(hist) else { return }
+        storeHistory(hist)
+    }
+
+    /// Re-write the history list in whichever at-rest representation matches the *current*
+    /// `iCloudSyncEnabled` setting: SE-wrapped device-local, or plaintext synchronizable. Used by
+    /// `archive()` and by `setICloudSync` so a sync-toggle migrates the archive immediately rather
+    /// than waiting for the next identity change.
+    private static func storeHistory(_ hist: [String]) {
+        guard let json = try? JSONEncoder().encode(hist) else { return }
         var del = historyQuery(); del[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
         SecItemDelete(del as CFDictionary)
+
         let synced = iCloudSyncEnabled
         var add = historyQuery()
-        add[kSecValueData as String] = data
-        add[kSecAttrAccessible as String] = synced ? kSecAttrAccessibleAfterFirstUnlock
-                                                   : kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-        add[kSecAttrSynchronizable as String] = synced ? kCFBooleanTrue! : kCFBooleanFalse!
+        if !synced, let sealed = seedBox.seal(json) {
+            // Device-local → Secure-Enclave-wrapped, same as the live seed.
+            add[kSecValueData as String] = sealed
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            add[kSecAttrSynchronizable as String] = kCFBooleanFalse!
+        } else {
+            // iCloud-synced recovery archive (opt-in), or no Enclave → plaintext is unavoidable.
+            add[kSecValueData as String] = json
+            add[kSecAttrAccessible as String] = synced ? kSecAttrAccessibleAfterFirstUnlock
+                                                       : kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            add[kSecAttrSynchronizable as String] = synced ? kCFBooleanTrue! : kCFBooleanFalse!
+        }
         SecItemAdd(add as CFDictionary, nil)
     }
 
-    /// Past identities (base64 seeds), newest first.
+    /// Past identities (base64 seeds), newest first. Transparently reads both representations: a
+    /// SE-wrapped device-local archive (unwrapped via `seedBox`) and a plaintext/synced JSON
+    /// archive. Legacy plaintext archives are upgraded to SE-wrapped by the next `archive()` call.
     static func previousIdentities() -> [String] {
         var q = historyQuery()
         q[kSecReturnData as String] = true
@@ -218,9 +350,12 @@ final class AccountStore: ObservableObject {
         q[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
         var item: CFTypeRef?
         guard SecItemCopyMatching(q as CFDictionary, &item) == errSecSuccess,
-              let d = item as? Data, let arr = try? JSONDecoder().decode([String].self, from: d)
-        else { return [] }
-        return arr
+              let d = item as? Data else { return [] }
+        // Plaintext/synced JSON decodes directly; otherwise it's an SE-wrapped blob to open first.
+        if let arr = try? JSONDecoder().decode([String].self, from: d) { return arr }
+        if case .ok(let json) = seedBox.open(d),
+           let arr = try? JSONDecoder().decode([String].self, from: json) { return arr }
+        return []
     }
 
     // MARK: - Identity roster (switch between identities you've used)

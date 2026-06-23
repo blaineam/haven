@@ -26,13 +26,14 @@ struct SecretBubble: View {
     var body: some View {
         Group {
             if revealed {
-                // Show the actual message. We rely on screenshot *detection* (re-conceal on
-                // the notification below) rather than the secure-field layer hack, which on
-                // current iOS hides the content from normal rendering too — so it showed blank.
+                // The message renders normally on screen but lives inside a secure-text-entry
+                // layer, so the system EXCLUDES it from screenshots AND screen recordings (they
+                // capture black). Screenshot *detection* below stays as a belt-and-suspenders.
                 Text(text)
                     .font(.body)
                     .foregroundStyle(isMe ? Color.white : Color.primary)
                     .padding(.horizontal, 12).padding(.vertical, 8)
+                    .screenshotProtected()
                     .transition(.scale(scale: 0.9).combined(with: .opacity))
             } else {
                 HStack(spacing: 6) {
@@ -92,28 +93,63 @@ struct ScreenshotProtected<Content: View>: UIViewRepresentable {
         let host = UIHostingController(rootView: content)
         host.view.backgroundColor = .clear
         host.view.translatesAutoresizingMaskIntoConstraints = false
+        context.coordinator.host = host
 
+        // Keep the secure field IN the view hierarchy (its secure-entry mode is what makes the
+        // system exclude its canvas from captures); host the content inside that canvas. Detaching
+        // the canvas from the field — the old approach — dropped the protection and blanked it.
+        let wrapper = UIView()
+        wrapper.backgroundColor = .clear
         let field = UITextField()
         field.isSecureTextEntry = true
-        guard let secure = field.subviews.first else { return host.view }
-        secure.subviews.forEach { $0.removeFromSuperview() }
-        secure.isUserInteractionEnabled = true
-        secure.translatesAutoresizingMaskIntoConstraints = false
-        secure.addSubview(host.view)
+        field.isUserInteractionEnabled = false
+        field.backgroundColor = .clear
+        field.translatesAutoresizingMaskIntoConstraints = false
+        wrapper.addSubview(field)
         NSLayoutConstraint.activate([
-            host.view.leadingAnchor.constraint(equalTo: secure.leadingAnchor),
-            host.view.trailingAnchor.constraint(equalTo: secure.trailingAnchor),
-            host.view.topAnchor.constraint(equalTo: secure.topAnchor),
-            host.view.bottomAnchor.constraint(equalTo: secure.bottomAnchor),
+            field.leadingAnchor.constraint(equalTo: wrapper.leadingAnchor),
+            field.trailingAnchor.constraint(equalTo: wrapper.trailingAnchor),
+            field.topAnchor.constraint(equalTo: wrapper.topAnchor),
+            field.bottomAnchor.constraint(equalTo: wrapper.bottomAnchor),
         ])
-        context.coordinator.host = host
-        return secure
+        let canvas = field.subviews.first ?? wrapper   // the protected canvas (private subview)
+        canvas.isUserInteractionEnabled = true
+        canvas.subviews.forEach { $0.removeFromSuperview() }
+        canvas.addSubview(host.view)
+        NSLayoutConstraint.activate([
+            host.view.leadingAnchor.constraint(equalTo: canvas.leadingAnchor),
+            host.view.trailingAnchor.constraint(equalTo: canvas.trailingAnchor),
+            host.view.topAnchor.constraint(equalTo: canvas.topAnchor),
+            host.view.bottomAnchor.constraint(equalTo: canvas.bottomAnchor),
+        ])
+        return wrapper
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {
         context.coordinator.host?.rootView = content
     }
+    /// Report the hosted content's size so SwiftUI lays the secret bubble out correctly.
+    func sizeThatFits(_ proposal: ProposedViewSize, uiView: UIView, context: Context) -> CGSize? {
+        context.coordinator.host?.sizeThatFits(in: CGSize(width: proposal.width ?? .infinity,
+                                                          height: proposal.height ?? .infinity))
+    }
     func makeCoordinator() -> Coordinator { Coordinator() }
     final class Coordinator { var host: UIHostingController<Content>? }
 }
 #endif
+
+// MARK: - Screenshot / screen-recording protection
+
+extension View {
+    /// Host this view inside a `UITextField` secure-entry layer so iOS excludes it from
+    /// screenshots and screen recordings (they capture black) while it renders normally on screen.
+    /// No-op on macOS (use NSWindow.sharingType for desktop capture control).
+    @ViewBuilder func screenshotProtected() -> some View {
+        #if canImport(UIKit) && !targetEnvironment(macCatalyst)
+        ScreenshotProtected { self }
+        #else
+        self
+        #endif
+    }
+}
+

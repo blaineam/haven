@@ -98,6 +98,7 @@ final class FeedStore: ObservableObject {
         PresignStore.shared.remintAllOwned()   // refresh any S3 pre-signed pools I own
         backfillMailbox(circleIds: circles.map(\.id))   // ensure already-posted content is in the mailbox
         Task { await BackgroundUploader.shared.flush() }   // retry any posts that didn't reach the mailbox
+        ScheduledStore.shared.start()   // fire any "send later" posts/DMs whose time has come
     }
 
     // MARK: - Demo seeding (HAVEN_DEMO=1 only — PII-free synthetic content for screenshots)
@@ -504,6 +505,15 @@ final class FeedStore: ObservableObject {
         broadcastEvent(activeCircleId, env); postTick += 1; refresh()
         let circle = activeCircleId
         for ref in media { Task { await SharedStore.backup(ref: ref, circleId: circle, social: social) } }
+    }
+
+    /// Post to a SPECIFIC circle (used by the scheduler when a queued post fires — the target
+    /// circle may not be the active one). Same seal → broadcast → mailbox-backup path as `post`.
+    func postScheduled(circleId: String, body: String, media: [String]) {
+        guard let social, let env = try? social.post(circleId: circleId, body: body, media: media, music: nil, retentionSecs: nil, story: false, muteVideo: false, createdAt: now()) else { return }
+        broadcastEvent(circleId, env); postTick += 1
+        if circleId == activeCircleId { refresh() }
+        for ref in media { Task { await SharedStore.backup(ref: ref, circleId: circleId, social: social) } }
     }
 
     /// Post text to a specific circle (used by App Intents with a circle filter).
@@ -1297,6 +1307,7 @@ struct FeedView: View {
     @State private var muteVideo = false   // author's audio choice for attached video(s)
     @State private var pendingSensitive: [String]?   // attachments SCA flagged, awaiting send-anyway
     @State private var showLocation = false   // opt-in: tag the post with a photo's reverse-geocoded place
+    @State private var showSchedule = false   // "send later" date picker
     @State private var showMediaPicker = false
     @State private var showCamera = false
     @State private var showSongPicker = false
@@ -1437,6 +1448,9 @@ struct FeedView: View {
             }
             .sheet(isPresented: $showSongPicker) {
                 SongPicker { track in attachedTrack = track }.macSheetClose()
+            }
+            .sheet(isPresented: $showSchedule) {
+                SchedulePicker(circleId: store.activeCircleId, isDM: false) { date in scheduleCurrentPost(at: date) }
             }
             .confirmationDialog("This media may be sensitive",
                                 isPresented: Binding(get: { pendingSensitive != nil },
@@ -1593,6 +1607,9 @@ struct FeedView: View {
                             Button("1 day") { composeRetention = 86_400 }
                             Button("1 week") { composeRetention = 604_800 }
                         } label: { Label("Disappears after…", systemImage: "timer") }
+                        if !compose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachedMedia.isEmpty {
+                            Button { showSchedule = true } label: { Label("Send later…", systemImage: "clock") }
+                        }
                     } label: {
                         Image(systemName: "plus.circle.fill").font(.title).foregroundStyle(HavenTheme.pink)
                     }
@@ -1720,6 +1737,15 @@ struct FeedView: View {
 
     private func replaceAttached(_ old: String, with new: String) {
         if let i = attachedMedia.firstIndex(of: old) { attachedMedia[i] = new }
+    }
+
+    /// Queue the current composer contents to post at a future time, then clear the field.
+    private func scheduleCurrentPost(at date: Date) {
+        let text = compose.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty || !attachedMedia.isEmpty else { return }
+        ScheduledStore.shared.schedule(circleId: store.activeCircleId, isDM: false, body: text, media: attachedMedia, at: date)
+        compose = ""; attachedMedia = []; attachedTrack = nil; composeRetention = nil; muteVideo = false; showLocation = false
+        composeFocused = false
     }
 
     private func send() {

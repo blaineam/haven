@@ -12,15 +12,25 @@ import Security
 /// in `…kith.shared`, which both the app and the extension can read. The extension only ever
 /// reads; it never creates or overwrites identity.
 ///
-/// Accessibility is `AfterFirstUnlockThisDeviceOnly` — the seed is readable once the device
-/// has been unlocked at least once (so a push that lands on the lock screen still decrypts),
-/// never syncs to iCloud, and never leaves this device.
+/// **At rest the mirror is Secure-Enclave-wrapped**, exactly like the primary seed: the app
+/// generates a P-256 Enclave key *in the shared access group* (so the NSE can use it too),
+/// encrypts the seed to its public half, and stores only the ECIES ciphertext. The NSE opens
+/// the blob with the same Enclave key — `.privateKeyUsage` needs no user presence, so a push
+/// still decrypts on the lock screen — but a raw Keychain dump of the shared group yields
+/// nothing. On the Simulator / no-Enclave hardware it falls back to the plaintext mirror.
+///
+/// Accessibility is `AfterFirstUnlockThisDeviceOnly` — readable once the device has been
+/// unlocked at least once (so a lock-screen push still decrypts), never syncs to iCloud.
 enum SharedSeed {
     /// Full keychain access group = team prefix (`$(AppIdentifierPrefix)` in the
     /// entitlements) + the shared group id. Both the app and the NSE declare this group.
     private static let accessGroup = "8ZVSPZYSVF.com.blaineam.kith.shared"
     private static let service = "com.blaineam.kith"
     private static let account = "account-master-seed-shared"
+
+    /// Enclave key pinned to the shared group: the app creates + seals, the NSE only opens.
+    private static let box = SecureEnclaveBox(tag: "com.blaineam.kith.shared-se-key",
+                                              accessGroup: accessGroup)
 
     private static func base() -> [String: Any] {
         [
@@ -31,25 +41,32 @@ enum SharedSeed {
         ]
     }
 
-    /// App side: mirror the real seed into the shared group. Idempotent (delete-then-add).
+    /// App side: mirror the real seed into the shared group, Secure-Enclave-wrapped where the
+    /// hardware allows. Idempotent (delete-then-add).
     static func write(_ seed: Data) {
         guard seed.count == 32 else { return }
         SecItemDelete(base() as CFDictionary)
         var add = base()
-        add[kSecValueData as String] = seed
+        // SE-wrap when available; otherwise store the raw seed (Simulator / no-Enclave). The two
+        // are trivially distinguishable on read by length (a 32-byte seed vs. a larger blob).
+        add[kSecValueData as String] = box.seal(seed) ?? seed
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
         SecItemAdd(add as CFDictionary, nil)
     }
 
-    /// NSE side (and app): read the mirrored seed. `nil` if absent or the device hasn't been
-    /// unlocked since boot — the NSE then shows a generic alert rather than decrypted text.
+    /// NSE side (and app): read the mirrored seed, unwrapping the SE blob via the shared Enclave
+    /// key. `nil` if absent, if the device hasn't been unlocked since boot, or if the Enclave
+    /// can't unwrap right now — the NSE then shows a generic alert rather than decrypted text.
     static func read() -> Data? {
         var q = base()
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
         var item: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &item) == errSecSuccess else { return nil }
-        return item as? Data
+        guard SecItemCopyMatching(q as CFDictionary, &item) == errSecSuccess,
+              let blob = item as? Data else { return nil }
+        if blob.count == 32 { return blob }                      // legacy / Simulator plaintext.
+        if case .ok(let seed) = box.open(blob), seed.count == 32 { return seed }
+        return nil
     }
 
     /// Remove the mirror (e.g. on identity reset). Safe to call when nothing is stored.

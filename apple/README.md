@@ -74,6 +74,8 @@ Notes:
 ```
 project.yml         XcodeGen spec (app + UI test target)
 HavenApp/            SwiftUI sources (app, account/Keychain, QR, UI)
+HavenWatch/          standalone watchOS companion (thin WCSession client; no FFI/WebRTC)
+WatchShared/         FFI-free Codable wire models shared by the iOS app + HavenWatch
 HavenUITests/        on-device hybrid-PQ self-test (XCUITest)
 build-rust-xcframework.sh   builds the Rust core into HavenFFI.xcframework
 Generated/          UniFFI Swift bindings        (generated; gitignored)
