@@ -1,6 +1,7 @@
 package com.blaineam.haven
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -101,6 +102,40 @@ class CoreInstrumentedTest {
         for (env in aliceSocial.syncEnvelopes(dmId)) if (bobSocial.receive(dmId, env)) got = true
         assertTrue(got)
         assertTrue(bobSocial.feed(dmId, 2UL, null).any { it.body == "hey bob, dm" && !it.isMe })
+    }
+
+    @Test fun export_import_preserves_posts_reactions_and_comments() {
+        // The persistence contract HavenNet relies on: exportState() -> importState() into a
+        // fresh engine restores the full feed. Guards against posts vanishing on app restart.
+        val a = Account.generate()
+        val s1 = HavenSocial(a.secretSeed())
+        val postEnv = s1.post("default", "remembered post", emptyList(), null, null, false, false, 1UL)
+        // self-comment + self-react so the whole event log is exercised.
+        val pid = s1.feed("default", 2UL, null).first().id
+        s1.comment("default", pid, "my comment", emptyList(), 2UL)
+        s1.react("default", pid, "🔥", 3UL)
+
+        val blob = s1.exportState()
+        val s2 = HavenSocial(a.secretSeed())
+        s2.importState(blob)
+
+        val restored = s2.feed("default", 4UL, null).firstOrNull { it.body == "remembered post" }
+        assertNotNull("post survived restart", restored)
+        assertTrue("comment survived", restored!!.comments.any { it.body == "my comment" })
+        assertTrue("reaction survived", restored.reactions.any { it.emoji == "🔥" })
+        assertTrue(postEnv.isNotEmpty())
+    }
+
+    @Test fun local_media_seals_stores_and_loads_back() {
+        val ctx = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation().targetContext
+        com.blaineam.haven.core.HavenNet.init(ctx)
+        com.blaineam.haven.core.LocalMedia.init(ctx)
+        val original = ByteArray(4096) { (it * 31).toByte() }
+        val id = com.blaineam.haven.core.LocalMedia.store("default", original)
+        assertTrue("media stored", com.blaineam.haven.core.LocalMedia.has(id))
+        val back = com.blaineam.haven.core.LocalMedia.load("default", id)
+        assertNotNull("media loaded back", back)
+        assertArrayEquals("media round-trips byte-identical", original, back)
     }
 
     @Test fun seal_open_media_roundtrips_between_two_identities() {

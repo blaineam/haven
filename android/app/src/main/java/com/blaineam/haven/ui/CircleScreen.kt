@@ -18,7 +18,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.PersonAdd
-import androidx.compose.material.icons.filled.Send
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -36,19 +36,39 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.material.icons.filled.AddPhotoAlternate
 import com.blaineam.haven.core.DEFAULT_CIRCLE
 import com.blaineam.haven.core.HavenNet
+import com.blaineam.haven.core.LocalMedia
 import com.blaineam.haven.core.PendingRequest
+import com.blaineam.haven.core.loadAndDownscale
 import com.blaineam.haven.core.nowMs
 import uniffi.haven_ffi.FeedItemFfi
 
 /** The Circle (feed) — real posts from the shared engine, a composer, and pending requests. */
 @Composable
 fun CircleScreen(onAddFriend: () -> Unit) {
+    val context = LocalContext.current
     var draft by remember { mutableStateOf("") }
+    var pendingPhoto by remember { mutableStateOf<String?>(null) }   // media id staged for the next post
     val version by HavenNet.feedVersion          // recompose when the feed changes
     val items: List<FeedItemFfi> = remember(version) {
         runCatching { HavenNet.engine.feed(DEFAULT_CIRCLE, nowMs(), null) }.getOrDefault(emptyList())
+    }
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) {
+            val bytes = loadAndDownscale(context, uri)
+            if (bytes != null) pendingPhoto = LocalMedia.store(DEFAULT_CIRCLE, bytes)
+        }
     }
 
     HavenBackground {
@@ -95,11 +115,27 @@ fun CircleScreen(onAddFriend: () -> Unit) {
                 }
             }
 
+            // Staged photo preview.
+            pendingPhoto?.let { id ->
+                Box(Modifier.padding(start = 16.dp, bottom = 4.dp)) {
+                    MediaImage(DEFAULT_CIRCLE, id, Modifier.size(64.dp).clip(RoundedCornerShape(10.dp)))
+                    Text("✕", color = Color.White, fontSize = 16.sp,
+                        modifier = Modifier.align(Alignment.TopEnd).clip(CircleShape)
+                            .background(Color.Black.copy(alpha = 0.6f)).clickable { pendingPhoto = null }
+                            .padding(horizontal = 6.dp))
+                }
+            }
             // Composer.
             Row(
                 Modifier.fillMaxWidth().padding(12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                Box(
+                    Modifier.size(44.dp).clip(CircleShape).clickable {
+                        picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                    },
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Filled.AddPhotoAlternate, "Add photo", tint = HavenTheme.pink) }
                 OutlinedTextField(
                     value = draft,
                     onValueChange = { draft = it },
@@ -113,14 +149,16 @@ fun CircleScreen(onAddFriend: () -> Unit) {
                     ),
                 )
                 Spacer(Modifier.size(8.dp))
+                val canPost = draft.isNotBlank() || pendingPhoto != null
                 Box(
                     Modifier.size(48.dp).clip(CircleShape)
                         .background(HavenTheme.brandHorizontal)
-                        .clickable(enabled = draft.isNotBlank()) {
-                            HavenNet.post(DEFAULT_CIRCLE, draft.trim()); draft = ""
+                        .clickable(enabled = canPost) {
+                            HavenNet.post(DEFAULT_CIRCLE, draft.trim(), listOfNotNull(pendingPhoto))
+                            draft = ""; pendingPhoto = null
                         },
                     contentAlignment = Alignment.Center,
-                ) { Icon(Icons.Filled.Send, "Post", tint = Color.White) }
+                ) { Icon(Icons.AutoMirrored.Filled.Send, "Post", tint = Color.White) }
             }
         }
     }
@@ -142,6 +180,21 @@ private fun PendingCard(req: PendingRequest) {
         Text("Ignore", color = HavenTheme.textSecondary,
             modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { HavenNet.dismiss(req) }.padding(8.dp))
     }
+}
+
+/** Decode a stored (sealed) media id into an Image, off the main thread. Shows nothing until ready. */
+@Composable
+fun MediaImage(circleId: String, id: String, modifier: Modifier = Modifier) {
+    var bmp by remember(id) { mutableStateOf<ImageBitmap?>(null) }
+    LaunchedEffect(id, circleId) {
+        bmp = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val bytes = LocalMedia.load(circleId, id) ?: return@withContext null
+            runCatching {
+                android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+            }.getOrNull()
+        }
+    }
+    bmp?.let { Image(it, contentDescription = "Photo", modifier = modifier, contentScale = ContentScale.FillWidth) }
 }
 
 private val QUICK_EMOJI = listOf("❤️", "😂", "🔥", "👍", "🎉", "😮")
@@ -167,6 +220,12 @@ fun PostCard(item: FeedItemFfi, circleId: String = DEFAULT_CIRCLE) {
         if (item.body.isNotBlank()) {
             Spacer(Modifier.height(10.dp))
             Text(item.body, color = Color.White, fontSize = 15.sp)
+        }
+
+        // Attached photos.
+        item.media.forEach { id ->
+            Spacer(Modifier.height(10.dp))
+            MediaImage(circleId, id, Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)))
         }
 
         // Existing reactions.

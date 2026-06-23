@@ -66,6 +66,7 @@ object HavenNet : InboundListener {
         core = HavenCore.get(appContext)
         profile = ProfileStore.get(appContext)
         social = HavenSocial(core.seed)
+        LocalMedia.init(appContext)
         restoreState()
         loadContacts()
     }
