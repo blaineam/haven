@@ -56,21 +56,12 @@ the tunnel.
 Both designs preserve the security model: envelopes are **already circle-sealed**, so the
 volunteer (and the tunnel) only ever moves opaque bytes.
 
-## Where the web client fits (this is also web continuity)
+## ~~Where the web client fits~~ (obsolete — web client abandoned)
 
-Browsers can't open raw iroh QUIC the way native can, but **iroh ships browser support over
-WebSocket-relayed connections**. Two honest tiers:
-
-1. **Now (no public host *required*, one optional relay):** the web client speaks the
-   `haven/mbx/1` request/response to a volunteer via iroh's **WebSocket relay**. The relay
-   forwards encrypted frames it can't read — it is not a content host, just a switchboard,
-   the same role iroh relays already play for native NAT traversal.
-2. **Direct (when the browser can):** WebTransport/WebRTC data channel straight to the
-   volunteer, no relay. Falls back to (1) when blocked.
-
-Until that lands, the web client's pragmatic transport is to **GET/PUT the mailbox over
-plain HTTPS+SigV4** (Web Crypto) against a BYO S3 bucket — works today, but *is* a public
-endpoint, so it's the "I'd rather just pay a bucket" path, not the no-host path.
+> **Obsolete (2026-06-22).** The web client was dropped (a browser can't be an iroh peer;
+> see [`WEB-PARITY.md`](WEB-PARITY.md)), so the browser-transport tiers below no longer
+> apply. The tunnel work is purely for **native** peers. Native Android (a real iroh peer)
+> gets the `haven/mbx/1` request/response directly — no WebSocket-relay bridge needed.
 
 ## Build steps
 

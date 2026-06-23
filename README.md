@@ -3,8 +3,8 @@
 > Your friends *and* your family. That's the whole product.
 
 [![License: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/license-PolyForm%20Noncommercial%201.0.0-blue.svg)](LICENSE)
-[![Status: pre-alpha](https://img.shields.io/badge/status-pre--alpha-orange.svg)](docs/ROADMAP.md)
-[![Platforms](https://img.shields.io/badge/platforms-iOS%20%7C%20macOS%20%7C%20Web-lightgrey.svg)](#platforms)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](docs/ROADMAP.md)
+[![Platforms](https://img.shields.io/badge/platforms-iOS%20%7C%20macOS-lightgrey.svg)](#platforms)
 [![Crypto](https://img.shields.io/badge/crypto-hybrid%20post--quantum-success.svg)](docs/DECISIONS.md)
 
 A peer-to-peer, end-to-end encrypted social network for the people you actually
@@ -36,28 +36,40 @@ nothing monthly; your media rides on your own iCloud and direct peer-to-peer lin
 
 ## Status
 
-Pre-alpha, but it runs on iPhone. Done so far:
+Alpha. It runs on iPhone **and** macOS, is on TestFlight, and has been used
+device-to-device over the real internet and a nearby Bluetooth/Wi-Fi mesh. Done so far:
 
 - **Hybrid post-quantum core** (`p2pcore`) — identity (Ed25519+ML-DSA, X25519+ML-KEM-768),
-  AEAD, reach-me links, deterministic seed-based identity; 7 unit tests green.
-- **First transfer working** — a sealed photo moves peer-to-peer over iroh QUIC,
-  decrypted byte-identical (`core/demo`).
-- **iOS app** — SwiftUI on the real Rust core via a UniFFI XCFramework: on-device
-  identity, `haven://` QR + reach-me link, Keychain persistence, and a hybrid-PQ
-  self-test covered by a passing UI test (verified in the iPhone 17 Pro simulator).
+  AEAD seal/open, reach-me links, deterministic seed-based identity; unit-tested.
+- **Real P2P transport** — sealed posts, DMs, reactions, comments, and media move
+  peer-to-peer over iroh QUIC (with a nearby Bluetooth/Wi-Fi mesh fallback and a
+  ttl-bounded mesh-relay), decrypted byte-identical.
+- **Apple app (iOS + macOS via Mac Catalyst)** — SwiftUI on the real Rust core via a
+  UniFFI XCFramework: circles + multi-circle feed, stories (multi-clip + captions),
+  DMs, in-app camera with filters, Apple Music on posts, **WebRTC 1:1 and group calls**
+  (audio+video, screen share), **multi-identity switcher** with per-identity profiles,
+  a blind-APNs notification relay with on-device NSE decrypt, and an in-app/standalone
+  store-and-forward relay.
 
-Next: networking in the app, MLS group messaging, multi-device, and the web client.
+In progress: a **native AppKit/SwiftUI macOS port** (replacing Mac Catalyst — see
+[`docs/MACOS-NATIVE-PORT.md`](docs/MACOS-NATIVE-PORT.md)) and a **native Android client**
+(`android/`, Jetpack Compose + the same Rust core via UniFFI/Kotlin). The web client was
+abandoned (a browser can't be an iroh peer); `web/` is now just an invite-landing page.
 See [`docs/ROADMAP.md`](docs/ROADMAP.md) and [`apple/README.md`](apple/README.md).
 
 ## Repository layout
 
 ```
-core/      Rust workspace — the portable, security-critical core
-  p2pcore/   identity, hybrid-PQ crypto, links, transport seam
-apple/     SwiftUI app (iOS/macOS) — consumes the core via an XCFramework
-web/       Static web/Android client — consumes the core via WASM
-relay/     Self-hostable relay (a dumb encrypted-blob pipe)
-docs/      Architecture, decisions, threat model, link spec, roadmap
+core/        Rust workspace — the portable, security-critical core
+  p2pcore/     identity, hybrid-PQ crypto, links, social engine, transport seam
+  haven-net/   iroh QUIC networking node (listen/dial, sealed payloads)
+  haven-relay/ standalone store-and-forward relay daemon
+  p2pcore-ffi/ UniFFI crate (`haven_ffi`) — Swift/Kotlin bindings
+apple/       SwiftUI app (iOS/macOS) — consumes the core via an XCFramework
+android/     Native Android app (Jetpack Compose) — same core via UniFFI/Kotlin
+relay/       Self-hostable relay packaging (launchd / systemd / Docker)
+web/         Invite-landing / app-promo page (the web client was abandoned)
+docs/        Architecture, decisions, threat model, link spec, roadmap
 ```
 
 ## Build & test the core
@@ -71,9 +83,10 @@ cargo test
 
 One Rust core (`p2pcore`) powers every client, so new platforms are mostly UI:
 
-- **iOS / macOS** — SwiftUI + UniFFI (primary)
-- **Web / Android** — the static WASM client (Android natively later via UniFFI→Kotlin)
-- **Windows / Linux** — Tauri desktop reusing the web UI + native core
+- **iOS / macOS** — SwiftUI + UniFFI (primary; macOS ships today via Mac Catalyst, with
+  a native AppKit/SwiftUI port in progress)
+- **Android** — native Jetpack Compose + the same core via UniFFI→Kotlin (in progress)
+- **Windows / Linux** — planned native client reusing the Rust core
 - **Apple Watch** — glanceable companion (messages/photos/reactions/quick replies;
   not bulk video)
 
@@ -91,8 +104,16 @@ noncommercial restriction is the difference). Contributions require a CLA/DCO.
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how the pieces fit together
 - [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) — what we defend against, and abuse resistance
 - [`docs/LINK-SYSTEM.md`](docs/LINK-SYSTEM.md) — the reach-me link / QR design
-- [`docs/MULTI-DEVICE.md`](docs/MULTI-DEVICE.md) — one account, many authorized devices + always-on forwarder
+- [`docs/MULTI-DEVICE.md`](docs/MULTI-DEVICE.md) — multi-identity switcher today; many-device account design ahead
 - [`docs/SCHEDULED-MESSAGES.md`](docs/SCHEDULED-MESSAGES.md) — "send later" without a server
+- [`docs/MEDIA-AND-MUSIC.md`](docs/MEDIA-AND-MUSIC.md) — in-app camera, Apple Music on posts, audio crossfade
+- [`docs/NOTIFICATIONS.md`](docs/NOTIFICATIONS.md) — blind APNs relay + on-device NSE decrypt
 - [`docs/RELAY-AND-DEPLOY.md`](docs/RELAY-AND-DEPLOY.md) — relay roles, BYO storage, IP privacy, the deploy tool
-- [`docs/OPERATING-COSTS.md`](docs/OPERATING-COSTS.md) — what it costs to run (≈free–low-tens/mo)
+- [`docs/HAVEN-NET-RELAY.md`](docs/HAVEN-NET-RELAY.md) — routing the relay/mailbox over Haven Net (no public host)
+- [`docs/BYO-STORAGE.md`](docs/BYO-STORAGE.md) — bring-your-own S3 / cloud-drive storage
+- [`docs/OPERATING-COSTS.md`](docs/OPERATING-COSTS.md) — $0 operator cost model
+- [`docs/EXPORT-COMPLIANCE.md`](docs/EXPORT-COMPLIANCE.md) — US export-compliance (automated)
+- [`docs/MACOS-NATIVE-PORT.md`](docs/MACOS-NATIVE-PORT.md) — Mac Catalyst → native AppKit/SwiftUI port
+- [`docs/ANDROID-PARITY.md`](docs/ANDROID-PARITY.md) — the native Android client plan + status
+- [`docs/WEB-PARITY.md`](docs/WEB-PARITY.md) — why the web client was abandoned
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — milestones and prerequisites

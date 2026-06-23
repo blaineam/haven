@@ -79,14 +79,18 @@ for big files.
   interoperate); cross-OS over relay always works. A custom BLE+socket protocol for
   cross-OS local is a later milestone.
 
-## D6 — Rust core, Swift UI, shared into the web via WASM
+## D6 — Rust core, native UIs (Swift + Kotlin via UniFFI)
+
+> **Updated (2026-06-22):** the WASM path was dropped with the web client (see
+> [`WEB-PARITY.md`](WEB-PARITY.md)). The core is now shared to **Swift** (Apple) and
+> **Kotlin** (Android) via UniFFI; there is no wasm-bindgen client.
 
 **Decision:** One Rust crate (`p2pcore`) is the single source of truth for all
-security-critical logic. It's exposed to Swift via **UniFFI** (XCFramework) and to
-the web/Android client via **wasm-bindgen**.
+security-critical logic. It's exposed to Swift via **UniFFI** (XCFramework) and to the
+Android client via **UniFFI Kotlin** bindings.
 
-**Why:** `iroh` and `mls-rs` are Rust, and one core means the native and web clients
-run *identical* crypto — no second implementation to audit or drift.
+**Why:** `iroh` and `mls-rs` are Rust, and one core means every native client runs
+*identical* crypto — no second implementation to audit or drift.
 
 **Trade-off:** Requires a Rust toolchain in the build (the user already runs a
 Rust-XCFramework pipeline for MLX, so this is a paved road). `rustup` + iOS targets
@@ -179,12 +183,17 @@ time-delayed). Swap-in is a one-file change.
 **Decision:** Because all security-critical logic lives in `p2pcore` (Rust), new
 clients are mostly UI:
 
+> **Updated (2026-06-22):** the web (WASM) client was dropped — a browser can't be an
+> iroh peer (see [`WEB-PARITY.md`](WEB-PARITY.md)). Android is now a *native* UniFFI →
+> Kotlin client (in progress, `android/`), and macOS ships via Mac Catalyst today with a
+> native AppKit/SwiftUI port underway (see [`MACOS-NATIVE-PORT.md`](MACOS-NATIVE-PORT.md)).
+
 | Platform | How | Effort |
 |---|---|---|
-| iOS / macOS | SwiftUI + UniFFI (XCFramework) | primary |
-| **Android** | **UniFFI → Kotlin/JNI** reuses the *same* core; or the WASM web client short-term | low–medium |
-| Web | wasm-bindgen → WASM (also serves Android immediately) | medium |
-| **Windows / Linux desktop** | **Tauri** (reuses the web UI) + the Rust core natively, or egui | low–medium |
+| iOS / macOS | SwiftUI + UniFFI (XCFramework); macOS via Catalyst (native port in progress) | primary |
+| **Android** | **native** Jetpack Compose + **UniFFI → Kotlin/JNI** over the *same* core | low–medium |
+| ~~Web~~ | ~~wasm-bindgen → WASM~~ — **abandoned** (no browser iroh peer) | n/a |
+| **Windows / Linux desktop** | native client reusing the Rust core | low–medium |
 | **Apple Watch** | companion app, Rust core via `aarch64-apple-watchos` (tier-3) | scoped (see below) |
 
 **Watch scope (honest):** messages, photos, reactions, notifications, quick replies,
@@ -236,8 +245,9 @@ and makes the strongest IP claim that is actually true rather than a comforting 
   bucket. "The sender funds the cost to share," literally.
 - **Connection relay** = iroh/n0 **free public relays** + community-run relays;
   hole-punching via **public STUN**; discovery via the **mainline DHT**.
-- **Hosting** = GitHub Pages (`blaineam.github.io`) for the web client, AASA, and
-  marketing page. **Notifications** = APNs / Web Push.
+- **Hosting** = GitHub Pages (`blaineam.github.io`) for the invite-landing page, AASA,
+  and marketing page. **Notifications** = a blind APNs relay on Cloudflare Workers
+  (free tier; see [`NOTIFICATIONS.md`](NOTIFICATIONS.md)).
 - App is a **one-time $9.99, no subscription**.
 
 **This deletes** the 512MB quota, blind-signed tokens, App Attest gating, the storage

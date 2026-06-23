@@ -1,5 +1,15 @@
 # Multi-device: one account, many authorized devices
 
+> **Status (shipped vs. designed):** the account-key / device-credential / MLS-leaf model
+> below is the **target design**, not yet built. What ships **today** is simpler: a
+> **multi-identity switcher** (a roster of identities you can jump between, each with its
+> own profile namespaced by node-id), **move-to-device** via a transfer code / QR
+> (`haven-seed:…`), **iCloud-Keychain backup/restore** of identity history (the active
+> seed stays device-only), and **multi-token push** (the relay holds several device tokens
+> per identity, so every linked device gets pushes and authored events self-sync). True
+> per-device keys + signed device credentials + live device-to-device sync are still ahead
+> (see `ROADMAP.md` M2b).
+
 A user is **one account identity** with a set of **authorized devices**, each holding
 its *own* key. No private key is ever copied between devices. This gives "receive on
 all my devices" plus instant revocation of a lost one — without ever changing who you

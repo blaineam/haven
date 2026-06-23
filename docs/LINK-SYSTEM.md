@@ -30,8 +30,9 @@ Three deliberate properties:
    server — so even the page hosting the link sees nothing. Honors "collect no data"
    at the protocol level.
 3. **Graceful degradation.** On a phone with the app → opens the app (Universal Link
-   / App Link). Without the app → the static web client (same WASM core) starts the
-   identical connection. One link, every platform.
+   / App Link). Without the app → a static **invite-landing page** (`web/index.html`)
+   that promotes installing the native app. (There is no web *client* — a browser can't
+   be an iroh peer; see [`WEB-PARITY.md`](WEB-PARITY.md).)
 
 ## On your own website
 

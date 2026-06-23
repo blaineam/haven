@@ -69,7 +69,7 @@ re-architecture. The parity table is really "which platform API replaces which A
 
 1. **Cargo-NDK build of `haven_ffi` + `haven-net`** → `.so` per ABI + UniFFI Kotlin bindings. Prove `self_test()` + a seal/open round-trip in a bare Compose app. *(toolchain already installed this session: android targets, cargo-ndk, NDK — only the JDK-17 pin remains, current JDK 26 is too new for AGP.)*
 2. **Identity + circles + invite link** (paste a Haven link, add a contact, verify). No UI polish.
-3. **Mailbox transport in Rust** — do SigV4 + put/get/list *in the core* and expose via FFI, so iOS and Android share one implementation (retires the per-platform `S3Client`). This is also what unblocks **web** (same Rust → WASM).
+3. **Mailbox transport in Rust** — do SigV4 + put/get/list *in the core* and expose via FFI, so iOS and Android share one implementation (retires the per-platform `S3Client`).
 4. **Feed** (posts + media via CameraX/MediaStore) over the mailbox. First real cross-platform post (iPhone ↔ Android).
 5. **DMs + stories + reactions/comments.**
 6. **Calls** (audio first, then the type-15 video path) via Telecom.
@@ -83,5 +83,6 @@ re-architecture. The parity table is really "which platform API replaces which A
 - **Parked (same as iOS):** real push (FCM/APNs relay), pending the no-server decision.
 
 The single most valuable cross-platform investment is **moving the mailbox/S3 transport
-into the Rust core** (step 3): it gives iOS, Android, and the web client the *same*
-networking from one implementation — which is exactly what #44 and web continuity need too.
+into the Rust core** (step 3): it gives iOS and Android the *same* networking from one
+implementation. (The web client was abandoned — see [`WEB-PARITY.md`](WEB-PARITY.md) — so
+this is now an iOS↔Android concern only.)

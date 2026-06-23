@@ -12,7 +12,7 @@ This supersedes the earlier quota'd-bucket model (see DECISIONS D15).
 | NAT hole-punching (~80% of links) | public STUN | **$0** |
 | Connection relay (~15–20% hard-NAT + calls) | iroh/n0 free relays + community-run relays | **$0** (best-effort, see trade-off) |
 | Storage / offline delivery / large files | **the sender's own iCloud** (private CloudKit + `CKShare`) or BYO S3/R2/NAS | **$0** (funded by the sender's own storage) |
-| Web client + AASA + marketing page | **GitHub Pages** (`blaineam.github.io`) | **$0** |
+| Invite-landing page + AASA + marketing page | **GitHub Pages** (`blaineam.github.io`) | **$0** |
 | "You got media" notifications | APNs / Web Push | **$0** |
 
 **Result: the app is a one-time $9.99 with no subscription and no monthly operator

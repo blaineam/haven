@@ -50,14 +50,35 @@ Worker).
 - Rotate/cache the JWT; nothing is logged.
 
 ## App side (the work in Haven)
-1. **Add a Notification Service Extension target** — decrypts `e` against the circle/contact
-   keys (reuse the Rust core via the same XCFramework) and rewrites the alert body.
-2. **Register for remote notifications**, send `deviceToken ↔ myNodeId` to the Worker `/register`.
-3. **On send to an offline peer**, call `/notify` (the mailbox upload path is the natural place).
-4. Keep local-notifications + the (now crash-fixed) background refresh as a fallback.
+1. ✅ **Notification Service Extension** (`HavenNotificationService`) — decrypts the relay's `e`
+   field on-device and rewrites the banner. It needs nothing but our master seed: a new
+   seed-only FFI `open_sealed_with_seed(seed, sealed)` opens the blob with no engine/circle
+   state or disk access, so it works in the extension's own process even on the lock screen.
+   The seed reaches the extension through a **shared Keychain access group**
+   (`…kith.shared`): `AccountStore` keeps the authoritative item exactly where it always was
+   (no migration / identity-loss risk) and *additionally* mirrors a read-only copy into the
+   shared group (`SharedSeed`). Accessibility is `AfterFirstUnlockThisDeviceOnly`.
+2. ✅ **Register for remote notifications**, send `deviceToken ↔ myNodeId` to the Worker
+   `/register` (`PushManager`).
+3. ✅ **On send to an offline peer**, the sender seals a tiny `{t,b}` banner *per recipient*
+   (`HavenSocial.seal_media`) and calls `/notify` with its base64 — the relay forwards
+   ciphertext only (`FeedView.broadcastEvent`).
+4. ✅ Worker now sends an **alert** push with `mutable-content: 1` (was a throttled silent
+   `content-available` wake). No `content-available`, so the app isn't also woken to post a
+   duplicate local banner. A generic `alert` stub is the fallback when the NSE can't decrypt.
+5. Local notifications + the (crash-fixed) background refresh remain as a fallback.
+
+### Sealed banner wire format
+The relay's `e` = base64 of `seal_media`'s layout `[32 eph_x_pub][u32 LE pq_len][pq_ct][AEAD]`.
+Plaintext is JSON `{ "t": "<sender name>", "b": "Sent you a message" | "Posted in <circle>" }`.
+
+### Still device/pipeline-only
+APNs and the NSE don't run in the iOS Simulator, so live decryption is verified on a physical
+device. The new `com.blaineam.kith.NotificationService` App ID needs its own provisioning
+profile in the signing pipeline (the keychain-sharing group is same-team-prefix, so no extra
+ASC capability). Both targets carry `keychain-access-groups` with `…kith.shared`.
 
 ## Decision status
-This is **#51** — previously parked. Given background fetch is confirmed unworkable, this is
-now the recommended path: **self-run Cloudflare Worker + NSE, encrypted payloads.** Cost ≈ $0
+**#51 — shipped (app side).** Self-run Cloudflare Worker + NSE, encrypted payloads. Cost ≈ $0
 to start, $5/mo at real scale. Not fully decentralized (impossible on iOS), but zero-knowledge
 on content and operated by us, not a vendor.

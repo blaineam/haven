@@ -57,9 +57,9 @@ claim it. What we *do* guarantee, enforced by the deploy tool's default config:
   never to the relay. The relay/broker sees opaque sealed frames addressed by
   **ephemeral rendezvous tokens**, not Haven public keys. A node that somehow logged
   an IP still could not tie it to a Haven identity.
-- **Quota without identity.** Allotments use **blind-signed tokens** (Privacy
-  Pass-style): the operator issues N tokens and cannot link a redeemed token to who
-  received it. Quota is enforced without knowing *who* you are.
+- **No operator-funded quota.** Storage is the user's own (iCloud/BYO bucket) or a
+  volunteer's, so there is no metered allotment to enforce (the earlier blind-signed
+  quota-token model was deleted per D15).
 - **Opt-in onion/proxy mode for true hiding.** The only way a node genuinely cannot
   see your IP is to not connect to it directly. Haven ships an **optional** mode that
   routes relay + storage access through Tor or a user-chosen proxy. Off by default
@@ -89,13 +89,19 @@ privacy-hardened defaults they can't accidentally turn off.
   **self-registers to discovery** so clients can find and rank it.
 - **Storage-only needs no compute** — a Tofu module that provisions just a bucket +
   scoped creds + auto-expiry + the broker. The cheapest possible relay.
-- **Defaults are the product.** No-logging, RAM-only, identity-blind rendezvous, and
-  token-based quota are *on by default and hard to disable*, so a casual operator
-  can't accidentally run a surveilling relay.
+- **Defaults are the product.** No-logging, RAM-only, and identity-blind rendezvous are
+  *on by default and hard to disable*, so a casual operator can't accidentally run a
+  surveilling relay.
 
 ## Status
 
-Design only. Implementation order (see `ROADMAP.md`): the storage-relay + broker and
-the deploy tool come after the core transport (M1b) and group messaging (M2), since
-they depend on the on-wire framing and rendezvous-token format those milestones
-define.
+**Implemented:** the relay itself ships in two forms — an **in-app RelayHost** (FFI,
+runs in-process; the Mac runs it as an *invisible background relay* via accessory
+activation policy) and a **standalone `haven-relay` daemon** (single static Rust binary;
+`relay/` packages it for macOS launchd, Linux systemd, and Docker). It serves both roles
+(connection relay + media store-and-forward) over Haven Net with no public host. The
+storage mailbox also supports a **pre-signed-URL** model (`PresignStore`) so members never
+hold bucket credentials.
+
+**Still design-only:** the multi-cloud OpenTofu deploy modules (`haven-relay deploy
+--provider …`) and self-registration to discovery.

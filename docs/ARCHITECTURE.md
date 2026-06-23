@@ -6,18 +6,23 @@
 ┌─────────────────────────────────────────────────────────────┐
 │  UI                                                           │
 │   • Apple: SwiftUI app (iOS / macOS)  ── UniFFI ─┐            │
-│   • Web/Android: static page          ── WASM ───┤            │
+│   • Android: Jetpack Compose          ── UniFFI ─┤  (Kotlin)  │
 ├──────────────────────────────────────────────────┼───────────┤
 │  p2pcore  (Rust — ONE implementation for both)   ▼           │
-│   identity   hybrid-PQ crypto   links   groups(MLS)   blobs   │
+│   identity   hybrid-PQ crypto   links   social engine   media │
 │                         │                                     │
-│   transport seam  ──►  path-selector: BLE → localWiFi → relay │
+│   transport seam  ──►  path-selector: nearby → iroh → relay   │
 ├──────────────────────────────────────────────────────────────┤
 │  Network                                                      │
-│   BLE (CoreBluetooth) · LAN/p2p WiFi (iroh) · relay (iroh)    │
-│   discovery: signed records on the mainline DHT (no directory)│
+│   nearby (MultipeerConnectivity) · iroh QUIC · relay (iroh)   │
+│   discovery: iroh n0 / signed records (no central directory)  │
 └──────────────────────────────────────────────────────────────┘
 ```
+
+> Both native clients link the *same* Rust core through UniFFI (Swift on Apple, Kotlin
+> on Android). The web client was abandoned (a browser can't be an iroh peer — no raw
+> UDP / NAT hole-punch), so there is no WASM UI; `web/` is now just an invite-landing
+> page.
 
 **Invariant:** everything above the transport seam deals only in hybrid-PQ
 encrypted bytes. The transport is interchangeable; the crypto is transport-blind.
@@ -26,19 +31,25 @@ encrypted bytes. The transport is interchangeable; the crypto is transport-blind
 
 | Module | Responsibility | Status |
 |---|---|---|
-| `identity` | On-device keypair (Ed25519 + X25519 + ML-KEM-768); public `HavenId`; routable node id; tamper-check hash | ✅ implemented + tested |
+| `identity` | On-device keypair (Ed25519 + ML-DSA-65 + X25519 + ML-KEM-768); public `HavenId`; routable node id; tamper-check hash | ✅ implemented + tested |
 | `crypto` | Hybrid-PQ KEM (X25519 + ML-KEM-768 → HKDF) and AES-256-GCM seal/open | ✅ implemented + tested |
 | `link` | `haven://` and `https://` reach-me links/QR; parse, verify, MITM check | ✅ implemented + tested |
-| `transport` | `Path` ladder + `select()` + `Transport` trait seam | ✅ seam + selector tested |
-| `groups` (MLS) | `mls-rs` groups with hybrid-PQ ciphersuite; posts/comments/reactions as group messages | ⏳ next |
-| `discovery` | Publish/resolve signed address records on the DHT | ⏳ next |
-| `blobs` | Content-addressed (BLAKE3) chunked transfer; resumable, multi-source | ⏳ next |
-| FFI | UniFFI (Swift) + wasm-bindgen (web) | ⏳ next |
+| `social` | Circles, posts, stories, comments, reactions, edit/unsend, DMs, media + music refs — events sealed E2E to all members (per-member hybrid-KEM wrap), hybrid-signed; `build_feed` reducer | ✅ implemented + tested |
+| `transport` (`haven-net`) | iroh QUIC `Node` (listen/dial, sealed payloads); mesh-relay frames; S3-over-iroh tunnel | ✅ implemented + tested |
+| `groups` (MLS) | Harden the multi-recipient PKE layer to `mls-rs` with a hybrid-PQ ciphersuite (forward secrecy / efficient membership) | ⏳ planned |
+| `discovery` | Resolve a node id to a live address (iroh n0 today; signed DHT records later) | 🟡 iroh discovery in use |
+| `blobs` | Content-addressed (BLAKE3) chunked media transfer (512 KB sealed chunks) | ✅ implemented |
+| FFI | UniFFI → Swift (Apple) + Kotlin (Android) | ✅ implemented |
 
 ## How a photo gets from A to B (target flow)
 
+> **Today vs. target:** the implemented engine seals each event with a fresh content key
+> wrapped per-member via the hybrid KEM (multi-recipient PKE), *not* yet MLS. The MLS
+> hardening (forward secrecy / efficient membership) is planned; the flow below reads
+> "group/MLS" as the target shape.
+
 1. **A** has **B**'s `HavenId` (from a prior QR/link approval). A is a member of the
-   shared MLS group with B.
+   shared circle (group) with B.
 2. A optionally **auto-optimizes** the media (HEVC/HEIF/AAC) or sends the original
    losslessly if chosen. The file is chunked and content-addressed (BLAKE3).
 3. A derives a content key for B's group via MLS, **seals** the chunks (AES-256-GCM
@@ -62,11 +73,15 @@ Because there's no central store, large content for an offline peer falls throug
 
 ## Clients
 
-- **Apple (native):** full transport ladder (BLE + p2p WiFi + relay), Secure Enclave
-  key storage, MusicKit, on-device `SensitiveContentAnalysis`.
-- **Web / Android-web:** static page, keys in WebCrypto/IndexedDB, same `p2pcore`
-  compiled to WASM, transport limited to WebRTC/relay (no BLE/WiFi-direct in
-  browsers). MusicKit JS for music.
+- **Apple (iOS + macOS):** SwiftUI on the Rust core via UniFFI. Full transport ladder
+  (nearby MultipeerConnectivity + iroh + relay), Keychain key storage, MusicKit,
+  WebRTC calls, on-device `SensitiveContentAnalysis`. macOS ships today via **Mac
+  Catalyst**; a **native AppKit/SwiftUI port is in progress** (see
+  [`MACOS-NATIVE-PORT.md`](MACOS-NATIVE-PORT.md)).
+- **Android (native, in progress):** Jetpack Compose + the *same* Rust core via UniFFI
+  Kotlin bindings — a real iroh peer, not a browser. Android Keystore for keys. The web
+  client was abandoned (browsers can't be iroh peers); `web/` is now an invite-landing
+  page only.
 
 ## Relays (`relay/`)
 

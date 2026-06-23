@@ -41,7 +41,11 @@ console) once; only the public client ID ships in the app.
 ## Status
 
 - ✅ Storage settings UI; **functional Custom S3 config** (saved to Keychain);
-  provider selection; PKCE helper (`PKCE` in `Storage.swift`); OAuth connect UI.
-- ⏭️ Live OAuth token exchange + the actual upload/download against the chosen
-  provider land with the storage/send path (roadmap M5) — they need the per-provider
-  public client IDs (registered by you, no secret) and the encrypted-blob upload code.
+  provider selection.
+- ✅ **Working S3 path**: a real SigV4 `S3Client` does encrypted-blob put/get/list against
+  a BYO bucket; the per-circle mailbox uses **pre-signed URLs** (`PresignStore`) so members
+  never hold the bucket credentials. Circle-sealed media is stored + re-served peer-to-peer.
+- ⏭️ **Cloud drives (Google Drive / Dropbox) not yet wired**: the `PKCE` helper in
+  `Storage.swift` is retained for a future build; live OAuth token exchange + drive
+  upload/download still need the per-provider public client IDs (registered by you, no
+  secret).
