@@ -223,21 +223,39 @@ fun CircleScreen(onAddFriend: () -> Unit) {
             }
         }
 
-        // Full-screen story viewer overlay.
-        viewingStory?.let { start ->
+    }
+
+    // Full-screen overlays (a borderless Dialog draws above the tab bar — true full-screen).
+    viewingStory?.let { start ->
+        FullScreenOverlay(onDismiss = { viewingStory = null }) {
             StoryViewer(groups = storyGroups, startGroup = start, onClose = { viewingStory = null })
         }
-        // In-app story camera overlay.
-        if (showStoryCamera) {
+    }
+    if (showStoryCamera) {
+        FullScreenOverlay(onDismiss = { showStoryCamera = false }) {
             StoryCameraScreen(onClose = { showStoryCamera = false })
         }
     }
-
     if (showMusicDialog) {
-        MusicSearchSheet(
-            onPick = { track -> pendingMusic = track; showMusicDialog = false },
-            onDismiss = { showMusicDialog = false },
-        )
+        FullScreenOverlay(onDismiss = { showMusicDialog = false }) {
+            MusicSearchSheet(
+                onPick = { track -> pendingMusic = track; showMusicDialog = false },
+                onDismiss = { showMusicDialog = false },
+            )
+        }
+    }
+}
+
+/** Hosts content in a borderless full-screen dialog window so it covers the bottom tab bar too. */
+@Composable
+fun FullScreenOverlay(onDismiss: () -> Unit, content: @Composable () -> Unit) {
+    androidx.compose.ui.window.Dialog(
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.DialogProperties(
+            usePlatformDefaultWidth = false, dismissOnClickOutside = false,
+        ),
+    ) {
+        Box(Modifier.fillMaxSize().background(HavenTheme.background)) { content() }
     }
 }
 

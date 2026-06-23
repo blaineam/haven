@@ -357,10 +357,10 @@ object HavenNet : InboundListener {
         )
 
     /** Post a story (a post with the story flag + 24h retention; auto-expires). */
-    fun postStory(body: String, mediaId: String?) {
-        if (body.isBlank() && mediaId == null) return
+    fun postStory(body: String, mediaId: String?, music: uniffi.haven_ffi.TrackRefFfi? = null) {
+        if (body.isBlank() && mediaId == null && music == null) return
         val env = runCatching {
-            social.post(DEFAULT_CIRCLE, body, listOfNotNull(mediaId), null, 86_400UL, true, false, nowMs())
+            social.post(DEFAULT_CIRCLE, body, listOfNotNull(mediaId), music, 86_400UL, true, false, nowMs())
         }.getOrNull() ?: return
         afterAuthor(DEFAULT_CIRCLE, env)
         scope.launch { mediaId?.let { uploadMedia(DEFAULT_CIRCLE, it) } }
