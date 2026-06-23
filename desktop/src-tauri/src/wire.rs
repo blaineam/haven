@@ -26,6 +26,7 @@ pub const SDP_ANSWER: u8 = 17;
 pub const ICE: u8 = 18;
 pub const RELAY_NODE: u8 = 19;
 pub const PRESIGN: u8 = 20;
+pub const GROUP_INVITE: u8 = 21;
 
 /// Prepend the one-byte frame type.
 pub fn frame(t: u8, payload: &[u8]) -> Vec<u8> {

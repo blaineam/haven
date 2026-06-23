@@ -67,6 +67,7 @@ core/        Rust workspace — the portable, security-critical core
   p2pcore/     identity, hybrid-PQ crypto, links, social engine, transport seam
   haven-net/   iroh QUIC networking node (listen/dial, sealed payloads)
   haven-relay/ standalone store-and-forward relay daemon
+  haven-s3/    shared AWS SigV4 S3 client (BYO-storage mailbox) — used by the desktop client
   p2pcore-ffi/ UniFFI crate (`haven_ffi`) — Swift/Kotlin bindings
 apple/       SwiftUI app (iOS/macOS) — consumes the core via an XCFramework
 android/     Native Android app (Jetpack Compose) — same core via UniFFI/Kotlin

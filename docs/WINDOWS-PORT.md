@@ -57,12 +57,26 @@ cargo run -- --headless  # runs ONLY the relay, prints a relay node id to share
 `cargo tauri dev` works on macOS/Linux too (native WebView), so the whole UI + core
 integration is developed and verified locally, then cross-built for Windows.
 
-## Build (Windows artifact)
+## Build (artifacts)
 
+- **CI:** [`.github/workflows/desktop.yml`](../.github/workflows/desktop.yml) runs the
+  core + desktop unit tests, then builds on `windows-latest` (.msi + NSIS .exe) and
+  `ubuntu-latest` (.deb + .AppImage) and uploads them as artifacts.
 - **On Windows:** `cargo tauri build` → `.msi` + NSIS `.exe` in `target/release/bundle/`.
-  Add an `msix` target for Store submission.
 - **Cross from macOS/Linux:** `cargo tauri build --target x86_64-pc-windows-msvc` via
-  [`cargo-xwin`], or a Windows CI runner (preferred for signing + MSIX).
+  [`cargo-xwin`], or the Windows CI runner.
+
+### Microsoft Store (MSIX)
+
+Tauri emits MSI/NSIS, not MSIX directly. For the Store ($10 one-time, zero recurring):
+
+1. Build the MSI/exe in CI.
+2. Wrap it into an `.msix` with the **MSIX Packaging Tool** or `makeappx.exe` + a
+   `AppxManifest.xml` (identity `com.blaineam.haven`, the `icons/Square*Logo.png` set is
+   already generated for this).
+3. Sign with the Partner Center publisher cert (`signtool`), then submit via Partner Center.
+
+NSIS/MSI direct download is the no-Store fallback; both should be EV/OV code-signed.
 
 ## Parity table (iOS → Windows/Tauri)
 
@@ -70,7 +84,7 @@ integration is developed and verified locally, then cross-built for Windows.
 |---|---|---|
 | Crypto / identity / circles / feed reducer | Same `haven_ffi` crate, linked directly | **Done** — identical engine |
 | iroh P2P transport + mesh relay | Same `haven-net` crate (native) | **Done** |
-| Wire protocol (Hello/Event/MediaReq/Chunk/Relay) | `wire.rs`, byte-exact | **Done** (Hello/Event/Media wired; call frames reserved) |
+| Wire protocol (Hello/Event/MediaReq/Chunk/Relay/Call) | `wire.rs` + `callwire.rs`, byte-exact | **Done** |
 | Keychain key storage | OS secure store via `keyring` (Credential Manager) | **Done** |
 | Persistence + multi-circle + DMs | `engine.rs` + `store.rs` | **Done** |
 | Posts / comments / reactions / edit / unsend | commands + feed reducer | **Done** |
@@ -78,25 +92,31 @@ integration is developed and verified locally, then cross-built for Windows.
 | QR invite show + camera scan + verified handshake | `qrcode.js` + `jsQR` + WebView camera | **Done** |
 | Photo/video attach + inline render | HTML file pick → downscale → sealed local store → `data:` URL | **Done** (image downscale in JS; video transcode TODO) |
 | Circle relay / mailbox (host + adopt) + offline delivery | `RelayServerHandle` in-process + `RelayClient`; `--headless` | **Done** |
-| Cross-device media bytes (frame 3/5 chunks) | ported in `engine.rs` | **Done** (device-test pending) |
-| Local notifications | Tauri event → toast; native toast/tray TODO | **Partial** |
+| Cross-device media bytes (frame 3/5 chunks) | ported in `engine.rs`; covered by an in-crate round-trip test | **Done** (live device-test pending) |
+| Local notifications + tray | `tauri-plugin-notification` (native toast) + system tray (show / host relay / quit) | **Done** |
 | Apple Music | portable track refs + deep-link (no inline catalog playback) | **Redesign** — same as Android |
-| Audio/video/group calls (WebRTC) | WebView2 `RTCPeerConnection`; signaling over the sealed iroh channel (frames 10–18) | **TODO** (Wave) |
-| Screen share | WebRTC `getDisplayMedia` | **TODO** |
+| Audio/video/group calls (WebRTC) | `callwire.rs` frames 10–18/21 in Rust; WebView2 `RTCPeerConnection` full mesh in `app.js`; signaling over the sealed iroh channel | **Done** (live device-test pending) |
+| Screen share | WebRTC `getDisplayMedia` (reuses the mesh) | **TODO** |
 | Sensitive content blur | per-circle `flag_sensitive` (already in core); no on-device classifier | **Partial** |
-| S3 BYO-bucket / pre-signed pool | move SigV4 into the core (shared) then expose | **TODO** (parity with Android step 3) |
+| S3 BYO-bucket | `core/haven-s3` — one shared SigV4 client (AWS/R2/B2/MinIO), wired into the engine's mailbox | **Done** (SigV4 unit-tested vs AWS vector; live bucket test pending) |
 | Nearby offline mesh | no desktop equivalent of MultipeerConnectivity; later via local mDNS/BLE | **Deferred** |
 | Push (APNs/FCM) | n/a — desktop stays running; headless relay covers offline | **n/a** |
 
+## Done so far
+
+- ✅ Compiles + unit/integration tests green (wire, callwire, SigV4 vector, two-party round-trip).
+- ✅ Headless relay verified end-to-end (identity → OS keychain → iroh node → relay link).
+- ✅ WebRTC calls: `callwire.rs` + full-mesh `RTCPeerConnection` in `app.js`, signaling on the sealed channel.
+- ✅ Native notifications + system tray (show / host relay / quit).
+- ✅ Shared SigV4 S3 mailbox in `core/haven-s3`, wired into the engine.
+- ✅ CI builds Windows (.msi/.exe) + Linux (.deb/.AppImage) artifacts.
+
 ## Remaining milestones (recommended order)
 
-1. **Compile + run green** on the host, verify identity/feed/QR/relay round-trips.
-2. **Cross-device interop test**: Windows ↔ iPhone ↔ Android text post + DM over iroh.
-3. **WebRTC calls** in WebView2 (audio → video → group), signaling over frames 10–18.
-4. **Native notifications + tray menu** (quit/relay toggle) — the proper background relay.
-5. **Shared SigV4 mailbox in the core** (retires per-platform S3 clients; helps all clients).
-6. **MSIX packaging + code signing + Microsoft Store** submission.
-7. **Linux build** (AppImage/deb) — nearly free from the same crate.
+1. **Live cross-device interop test**: Windows ↔ iPhone ↔ Android — text post, DM, media bytes, and a call over iroh.
+2. **Screen share** (`getDisplayMedia`) reusing the call mesh.
+3. **MSIX packaging + code signing + Microsoft Store** submission (CI emits MSI/exe today).
+4. **On-device sensitive-content classifier** (the per-circle flag already propagates).
 
 ## Notes / gotchas
 

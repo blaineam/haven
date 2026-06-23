@@ -389,8 +389,15 @@ async function renderThread(root, dm) {
       el("div", { class: "chat-bubble" }, m.body || "", ...(m.media || []).map((r) => r.startsWith("v:") ? el("video", { "data-ref": r, controls: "" }) : el("img", { "data-ref": r, style: "max-width:220px;border-radius:8px;display:block;margin-top:6px" })))));
   }
   const input = el("input", { placeholder: "Message…", onkeydown: async (e) => { if (e.key === "Enter" && e.target.value.trim()) { await invoke("send_dm", { circleId: dm.id, body: e.target.value.trim(), media: [] }); e.target.value = ""; } } });
+  const partner = dm.id.replace("dm:", "").split("-").find((h) => h !== state.node) || "";
   root.replaceChildren(
-    el("div", { class: "view-head" }, el("button", { class: "btn small ghost", onclick: () => { state.activeDm = null; renderMessages(); } }, "← Back"), el("h1", {}, dm.name)),
+    el("div", { class: "view-head" },
+      el("button", { class: "btn small ghost", onclick: () => { state.activeDm = null; renderMessages(); } }, "← Back"),
+      el("h1", {}, dm.name),
+      el("div", { class: "spacer" }),
+      partner ? el("button", { class: "btn small", title: "Audio call", onclick: () => callStart([partner], dm.name, false) }, "📞") : null,
+      partner ? el("button", { class: "btn small", title: "Video call", onclick: () => callStart([partner], dm.name, true) }, "📹") : null,
+    ),
     el("div", { class: "card" }, chat, el("div", { class: "chat-input" }, input, el("button", { class: "btn primary", onclick: async () => { if (input.value.trim()) { await invoke("send_dm", { circleId: dm.id, body: input.value.trim(), media: [] }); input.value = ""; } } }, "Send"))),
   );
   hydrateMedia(root, dm.id);
@@ -523,7 +530,30 @@ async function renderRelay() {
     el("h3", {}, "Run headless"),
     el("div", { class: "muted small html", html: "Launch <span class='mono'>haven-desktop --headless</span> to run only the relay with no window — like a small always-on server for your circle. It prints a relay id to share." }),
   );
-  root.replaceChildren(el("div", { class: "view-head" }, el("h1", {}, "Relay")), hostCard, adoptCard, headless);
+  const s3 = await invoke("s3_status");
+  const f = {
+    endpoint: el("input", { value: s3.endpoint || "", placeholder: "Endpoint, e.g. https://s3.us-east-1.amazonaws.com" }),
+    region: el("input", { value: s3.region || "us-east-1", placeholder: "Region", style: "max-width:160px" }),
+    bucket: el("input", { value: s3.bucket || "", placeholder: "Bucket name" }),
+    access: el("input", { value: s3.access_key || "", placeholder: "Access key id" }),
+    secret: el("input", { type: "password", placeholder: s3.configured ? "•••••• (stored in your keychain)" : "Secret access key" }),
+    prefix: el("input", { value: s3.prefix || "", placeholder: "Key prefix (optional)" }),
+  };
+  const s3card = el("div", { class: "card col" },
+    el("h3", {}, "Bring your own bucket (S3 / R2 / B2)"),
+    el("div", { class: "muted small" }, "Park E2E-sealed blobs in your own bucket so offline members can fetch them — the provider never sees plaintext. Works with AWS S3, Cloudflare R2, Backblaze B2, MinIO. " + (s3.configured ? "✓ Configured: " + s3.bucket : "Not configured.")),
+    f.endpoint, el("div", { class: "row" }, f.region, f.bucket), f.access, f.secret, f.prefix,
+    el("div", { class: "row" },
+      el("button", { class: "btn primary", onclick: async () => {
+        try {
+          await invoke("s3_configure", { endpoint: f.endpoint.value.trim(), region: f.region.value.trim(), bucket: f.bucket.value.trim(), accessKey: f.access.value.trim(), secretKey: f.secret.value, prefix: f.prefix.value.trim() });
+          toast("Bucket connected"); renderRelay();
+        } catch (e) { toast("" + e); }
+      } }, s3.configured ? "Update" : "Connect bucket"),
+      s3.configured ? el("button", { class: "btn danger small", onclick: async () => { await invoke("s3_clear"); toast("Bucket removed"); renderRelay(); } }, "Remove") : null,
+    ),
+  );
+  root.replaceChildren(el("div", { class: "view-head" }, el("h1", {}, "Relay")), hostCard, adoptCard, s3card, headless);
 }
 
 // ---- You / Settings --------------------------------------------------------------------
@@ -565,6 +595,192 @@ async function renderYou() {
 
 const line = (label, ok) => el("div", { class: "row" }, el("span", { style: "flex:1" }, label), el("span", { class: ok ? "ok-text" : "warn-text" }, ok ? "✓ pass" : "✗ fail"));
 
+// ---- WebRTC mesh calls -----------------------------------------------------------------
+// Mirrors the iOS/Android CallManager: a call = sessionId + roster of node hexes; every
+// participant opens one RTCPeerConnection to every other (full mesh, no SFU). 1:1 is a
+// 2-person group. The lexicographically smaller hex offers (glare-free). SDP/ICE ride the
+// sealed iroh channel via the call_signal command; media is DTLS-SRTP in the WebView.
+const ICE_SERVERS = [{ urls: ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"] }];
+const call = {
+  session: "", me: "", name: "", roster: new Set(), pcs: new Map(),
+  localStream: null, micOn: true, camOn: true,
+  ringing: false, connecting: false, inCall: false, video: true,
+};
+
+const invitees = () => [...call.roster].filter((h) => h !== call.me).sort();
+
+async function callStart(others, name, video) {
+  if (call.inCall || call.ringing || call.connecting) { others.forEach((o) => call.roster.add(o)); return; }
+  call.me = state.node;
+  call.session = `win-${call.me.slice(0, 8)}-${Date.now()}`;
+  call.roster = new Set([...others, call.me]);
+  call.name = name; call.video = video; call.connecting = true; call.camOn = video;
+  await invoke("call_group_invite", { sessionId: call.session, groupName: name, roster: [...call.roster], to: invitees() });
+  await startMesh();
+  renderCallOverlay();
+}
+
+async function callAccept() {
+  call.ringing = false; call.inCall = true;
+  await invoke("call_accept", { sessionId: call.session, to: invitees() });
+  await startMesh();
+  invitees().forEach(connectPeerIfNeeded);
+  renderCallOverlay();
+}
+
+async function callHangup() {
+  await invoke("call_hangup", { to: invitees() });
+  teardownCall();
+}
+
+async function startMesh() {
+  if (call.localStream) return;
+  try {
+    call.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: call.video });
+  } catch (e) {
+    toast("Mic/camera unavailable: " + e);
+    call.localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false }).catch(() => null);
+  }
+  call.connecting = call.connecting && !call.inCall;
+  invitees().forEach(connectPeerIfNeeded);
+  renderCallOverlay();
+}
+
+function pcFor(peer) {
+  if (call.pcs.has(peer)) return call.pcs.get(peer);
+  const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  if (call.localStream) call.localStream.getTracks().forEach((t) => pc.addTrack(t, call.localStream));
+  pc.onicecandidate = (e) => {
+    if (e.candidate) invoke("call_signal", { kind: "ice", sessionId: call.session, to: peer, json: JSON.stringify({ c: e.candidate.candidate, m: e.candidate.sdpMLineIndex, i: e.candidate.sdpMid }) });
+  };
+  pc.ontrack = (e) => { call.remote = call.remote || {}; call.remote[peer] = e.streams[0]; renderCallOverlay(); };
+  pc.onconnectionstatechange = () => { if (["failed", "closed", "disconnected"].includes(pc.connectionState)) {} };
+  call.pcs.set(peer, pc);
+  return pc;
+}
+
+async function connectPeerIfNeeded(peer) {
+  const pc = pcFor(peer);
+  if (call.me < peer && call.localStream) {
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    invoke("call_signal", { kind: "offer", sessionId: call.session, to: peer, json: JSON.stringify({ t: "offer", sdp: offer.sdp }) });
+  }
+}
+
+async function onCallEvent(payload) {
+  const c = payload || {};
+  call.me = state.node;
+  switch (c.kind) {
+    case "groupInvite":
+    case "invite": {
+      const members = new Set([...(c.roster || []), c.from, call.me]);
+      if (call.inCall || call.ringing || call.connecting) {
+        if (call.session === c.sessionId) { members.forEach((m) => call.roster.add(m)); if (call.localStream) invitees().forEach(connectPeerIfNeeded); }
+        return;
+      }
+      call.session = c.sessionId; call.roster = members; call.name = c.groupName || c.name || displayNameFor(c.from);
+      call.ringing = true; call.video = true; renderCallOverlay();
+      break;
+    }
+    case "accept": {
+      if (!validSession(c.sessionId)) return;
+      call.connecting = false; call.inCall = true; call.roster.add(c.from);
+      await startMesh(); connectPeerIfNeeded(c.from); renderCallOverlay();
+      break;
+    }
+    case "hangup": {
+      const pc = call.pcs.get(c.from); if (pc) pc.close();
+      call.pcs.delete(c.from); call.roster.delete(c.from);
+      if (call.remote) delete call.remote[c.from];
+      if (invitees().length === 0) teardownCall(); else renderCallOverlay();
+      break;
+    }
+    case "offer": {
+      if (!validSession(c.sessionId)) return;
+      if (!call.localStream) await startMesh();
+      const pc = pcFor(c.from);
+      const { sdp } = JSON.parse(c.json);
+      await pc.setRemoteDescription({ type: "offer", sdp });
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      invoke("call_signal", { kind: "answer", sessionId: call.session, to: c.from, json: JSON.stringify({ t: "answer", sdp: answer.sdp }) });
+      break;
+    }
+    case "answer": {
+      if (!validSession(c.sessionId)) return;
+      const pc = call.pcs.get(c.from); if (!pc) return;
+      const { sdp } = JSON.parse(c.json);
+      await pc.setRemoteDescription({ type: "answer", sdp });
+      break;
+    }
+    case "ice": {
+      if (!validSession(c.sessionId)) return;
+      const pc = pcFor(c.from);
+      const o = JSON.parse(c.json);
+      try { await pc.addIceCandidate({ candidate: o.c, sdpMLineIndex: o.m, sdpMid: o.i }); } catch (_) {}
+      break;
+    }
+  }
+}
+
+const validSession = (sid) => sid === call.session || !call.session;
+function displayNameFor(hex) {
+  const c = (state.contacts || []).find((x) => x.id_hex === hex);
+  return c ? c.name : "Someone";
+}
+
+function teardownCall() {
+  call.pcs.forEach((pc) => pc.close()); call.pcs.clear();
+  if (call.localStream) call.localStream.getTracks().forEach((t) => t.stop());
+  call.localStream = null; call.remote = {};
+  call.roster.clear(); call.session = ""; call.ringing = false; call.connecting = false; call.inCall = false;
+  renderCallOverlay();
+}
+
+function toggleMic() { call.micOn = !call.micOn; if (call.localStream) call.localStream.getAudioTracks().forEach((t) => (t.enabled = call.micOn)); renderCallOverlay(); }
+function toggleCam() { call.camOn = !call.camOn; if (call.localStream) call.localStream.getVideoTracks().forEach((t) => (t.enabled = call.camOn)); renderCallOverlay(); }
+
+function renderCallOverlay() {
+  const root = $("#modal-root");
+  if (!call.ringing && !call.connecting && !call.inCall) {
+    if (root.querySelector(".call-overlay")) root.replaceChildren();
+    return;
+  }
+  if (call.ringing) {
+    root.replaceChildren(el("div", { class: "modal-backdrop" }, el("div", { class: "modal call-overlay", style: "text-align:center" },
+      el("div", { class: "avatar lg", style: "margin:0 auto 12px" }, initials(call.name)),
+      el("h2", {}, "Incoming call"), el("p", { class: "muted" }, call.name + " is calling…"),
+      el("div", { class: "row", style: "justify-content:center;gap:16px;margin-top:14px" },
+        el("button", { class: "btn danger", onclick: () => callHangup() }, "Decline"),
+        el("button", { class: "btn primary", onclick: () => callAccept() }, "Accept"),
+      ))));
+    return;
+  }
+  // In-call / connecting: a video grid + controls.
+  const grid = el("div", { class: "call-grid" });
+  const localTile = el("div", { class: "call-tile" });
+  const lv = el("video", { autoplay: "", muted: "", playsinline: "" });
+  if (call.localStream) lv.srcObject = call.localStream;
+  localTile.append(lv, el("span", { class: "call-name" }, "You" + (call.camOn ? "" : " (camera off)")));
+  grid.append(localTile);
+  for (const peer of invitees()) {
+    const tile = el("div", { class: "call-tile" });
+    const v = el("video", { autoplay: "", playsinline: "" });
+    if (call.remote && call.remote[peer]) v.srcObject = call.remote[peer];
+    tile.append(v, el("span", { class: "call-name" }, displayNameFor(peer)));
+    grid.append(tile);
+  }
+  root.replaceChildren(el("div", { class: "modal-backdrop" }, el("div", { class: "call-overlay-full" },
+    el("div", { class: "muted small", style: "text-align:center;margin-bottom:8px" }, call.connecting ? "Calling " + call.name + "…" : call.name),
+    grid,
+    el("div", { class: "call-controls" },
+      el("button", { class: "btn " + (call.micOn ? "" : "danger"), onclick: toggleMic }, call.micOn ? "🎤 Mute" : "🔇 Unmute"),
+      call.video ? el("button", { class: "btn " + (call.camOn ? "" : "danger"), onclick: toggleCam }, call.camOn ? "📹 Camera off" : "📷 Camera on") : null,
+      el("button", { class: "btn danger", onclick: () => callHangup() }, "📞 Hang up"),
+    ))));
+}
+
 // ---- boot ------------------------------------------------------------------------------
 async function boot() {
   $$(".nav-btn").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.view)));
@@ -586,8 +802,10 @@ async function boot() {
   // First-run nudge to set a name.
   if (!state.profile.name) switchView("you");
 
-  listen("haven:changed", async () => { await refreshStatus(); await refreshBadges(); await render(); });
+  try { state.contacts = await invoke("contacts"); } catch (_) {}
+  listen("haven:changed", async () => { await refreshStatus(); await refreshBadges(); try { state.contacts = await invoke("contacts"); } catch (_) {} await render(); });
   listen("haven:notify", (e) => { const p = e.payload || {}; toast(`${p.title}: ${p.body}`); });
+  listen("haven:call", (e) => onCallEvent(e.payload));
   setInterval(refreshStatus, 5000);
 
   // Tell the backend whether the window is foregrounded (suppress notifications when it is).

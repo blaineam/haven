@@ -13,10 +13,12 @@ use haven_ffi::{
     parse_link, Account, FeedItemFfi, HavenNode, HavenSocial, InboundListener, RelayClient,
     RelayServerHandle, TrackRefFfi,
 };
+use haven_s3::{S3Config, S3Mailbox};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter};
 use tokio::sync::Mutex as TokioMutex;
 
+use crate::callwire;
 use crate::localmedia::LocalMedia;
 use crate::store::{self, Contact, Paths, Prefs, Profile};
 use crate::wire;
@@ -64,6 +66,7 @@ pub struct Engine {
     prefs: StdMutex<Prefs>,
     dyn_state: StdMutex<DynState>,
     relay_clients: TokioMutex<HashMap<String, Arc<RelayClient>>>,
+    s3: TokioMutex<Option<Arc<S3Mailbox>>>,
 }
 
 const MEDIA_CHUNK_SIZE: usize = 512 * 1024;
@@ -96,6 +99,7 @@ impl Engine {
             prefs: StdMutex::new(prefs),
             dyn_state: StdMutex::new(DynState::default()),
             relay_clients: TokioMutex::new(HashMap::new()),
+            s3: TokioMutex::new(None),
         }))
     }
 
@@ -118,6 +122,10 @@ impl Engine {
             return;
         }
         if let Some(app) = self.app.lock().unwrap().clone() {
+            // Native OS notification (Action Center / toast)…
+            use tauri_plugin_notification::NotificationExt;
+            let _ = app.notification().builder().title(title).body(body).show();
+            // …and an in-app event for a toast if a window is open.
             let _ = app.emit("haven:notify", serde_json::json!({ "title": title, "body": body }));
         }
     }
@@ -552,7 +560,7 @@ impl Engine {
         let t = payload[0];
         let body = payload[1..].to_vec();
         // Call/media frames lead with a 64-char sender hex — drop blocked senders early.
-        if matches!(t, wire::MEDIA_REQ | wire::CALL_INVITE | wire::CALL_ACCEPT | wire::CALL_HANGUP | wire::SDP_OFFER | wire::SDP_ANSWER | wire::ICE) {
+        if matches!(t, wire::MEDIA_REQ | wire::CALL_INVITE | wire::CALL_ACCEPT | wire::CALL_HANGUP | wire::SDP_OFFER | wire::SDP_ANSWER | wire::ICE | wire::GROUP_INVITE) {
             if body.len() >= 64 {
                 let head = String::from_utf8_lossy(&body[..64]).into_owned();
                 if head.len() == 64 && self.prefs.lock().unwrap().blocked.contains(&head) {
@@ -569,6 +577,8 @@ impl Engine {
                 wire::RELAY_NODE => me.handle_relay_node(&body).await,
                 wire::MEDIA_REQ => me.handle_media_request(&body).await,
                 wire::MEDIA_CHUNK => me.handle_media_chunk(&body),
+                wire::CALL_INVITE | wire::GROUP_INVITE | wire::CALL_ACCEPT | wire::CALL_HANGUP
+                | wire::SDP_OFFER | wire::SDP_ANSWER | wire::ICE => me.handle_call(t, &body),
                 _ => log::debug!("ignoring frame type {t} (not yet handled)"),
             }
             me.emit_changed();
@@ -658,7 +668,8 @@ impl Engine {
 
     pub fn relay_status(&self) -> (bool, bool, bool, bool, bool) {
         let st = self.dyn_state.lock().unwrap();
-        let has_relay = !self.prefs.lock().unwrap().relay_nodes.is_empty();
+        let prefs = self.prefs.lock().unwrap();
+        let has_relay = !prefs.relay_nodes.is_empty() || prefs.s3.is_some();
         (st.hosting, has_relay, st.relay_active, st.internet_active, st.started)
     }
 
@@ -739,28 +750,59 @@ impl Engine {
         format!("haven/mailbox/{circle_id}/{hex}")
     }
 
-    async fn upload_event(self: &Arc<Self>, circle_id: &str, env: &[u8]) {
-        let node_hex = self.prefs.lock().unwrap().relay_nodes.get(circle_id).cloned();
-        let Some(node_hex) = node_hex else { return };
-        let Some(client) = self.relay_client_for(&node_hex).await else { return };
-        let key = Self::mailbox_key(circle_id, env);
-        if self.dyn_state.lock().unwrap().seen_mailbox.contains(&key) {
-            return;
+    /// Build (and cache) the BYO S3 mailbox client from prefs + the keychain secret, if configured.
+    async fn s3_client(self: &Arc<Self>) -> Option<Arc<S3Mailbox>> {
+        if let Some(c) = self.s3.lock().await.as_ref() {
+            return Some(c.clone());
         }
-        match client.put(key.clone(), env.to_vec()).await {
-            Ok(()) => {
-                self.dyn_state.lock().unwrap().seen_mailbox.insert(key);
-                self.dyn_state.lock().unwrap().relay_active = true;
+        let pub_cfg = self.prefs.lock().unwrap().s3.clone()?;
+        let secret = store::load_s3_secret()?;
+        let cfg = S3Config {
+            endpoint: pub_cfg.endpoint,
+            region: pub_cfg.region,
+            bucket: pub_cfg.bucket,
+            access_key: pub_cfg.access_key,
+            secret_key: secret,
+            prefix: pub_cfg.prefix,
+        };
+        let client = Arc::new(S3Mailbox::new(cfg).ok()?);
+        *self.s3.lock().await = Some(client.clone());
+        Some(client)
+    }
+
+    async fn upload_event(self: &Arc<Self>, circle_id: &str, env: &[u8]) {
+        let key = Self::mailbox_key(circle_id, env);
+        // 1) Haven relay node over iroh (if a circle relay is configured).
+        let relay_node = self.prefs.lock().unwrap().relay_nodes.get(circle_id).cloned();
+        if let Some(node_hex) = relay_node {
+            let already = self.dyn_state.lock().unwrap().seen_mailbox.contains(&key);
+            if !already {
+                if let Some(client) = self.relay_client_for(&node_hex).await {
+                    match client.put(key.clone(), env.to_vec()).await {
+                        Ok(()) => {
+                            self.dyn_state.lock().unwrap().seen_mailbox.insert(key.clone());
+                            self.dyn_state.lock().unwrap().relay_active = true;
+                        }
+                        Err(e) => {
+                            log::debug!("mailbox put failed: {e}");
+                            self.relay_clients.lock().await.remove(&node_hex);
+                        }
+                    }
+                }
             }
-            Err(e) => {
-                log::debug!("mailbox put failed: {e}");
-                self.relay_clients.lock().await.remove(&node_hex);
+        }
+        // 2) BYO S3 bucket (content-addressed, so re-puts are idempotent).
+        if let Some(s3) = self.s3_client().await {
+            if s3.put(&key, env).await.is_ok() {
+                self.dyn_state.lock().unwrap().relay_active = true;
             }
         }
     }
 
     async fn backfill_mailbox(self: &Arc<Self>, circle_id: &str) {
-        if self.prefs.lock().unwrap().relay_nodes.get(circle_id).is_none() {
+        let has_relay = self.prefs.lock().unwrap().relay_nodes.get(circle_id).is_some();
+        let has_s3 = self.prefs.lock().unwrap().s3.is_some();
+        if !has_relay && !has_s3 {
             return;
         }
         for env in self.social.export_my_envelopes(circle_id.to_string()) {
@@ -811,11 +853,84 @@ impl Engine {
                 }
             }
         }
+        // BYO S3 bucket mailbox (the same circle-sealed envelopes, in the user's own bucket).
+        if let Some(s3) = self.s3_client().await {
+            for c in self.social.circles() {
+                let keys = s3.list(&format!("haven/mailbox/{}", c.id)).await.unwrap_or_default();
+                if !keys.is_empty() {
+                    self.dyn_state.lock().unwrap().relay_active = true;
+                }
+                for key in keys {
+                    if self.dyn_state.lock().unwrap().seen_mailbox.contains(&key) {
+                        continue;
+                    }
+                    let env = match s3.get(&key).await {
+                        Ok(Some(e)) => e,
+                        _ => continue,
+                    };
+                    self.dyn_state.lock().unwrap().seen_mailbox.insert(key);
+                    if self.social.receive(c.id.clone(), env).unwrap_or(false) {
+                        changed = true;
+                        let is_dm = c.id.starts_with("dm:");
+                        self.notify(
+                            if is_dm { "New message" } else { "New in your circle" },
+                            if is_dm { "You have a new Haven message" } else { "Someone posted in your circle" },
+                        );
+                    }
+                }
+            }
+        }
         if changed {
             self.persist();
             self.emit_changed();
             self.request_missing_media();
         }
+    }
+
+    /// Configure (and verify) a BYO S3/R2/B2 bucket. Stores the secret in the keychain, the rest
+    /// in prefs, caches the client, and back-fills + polls. Errors if the bucket can't be reached.
+    pub async fn s3_configure(self: &Arc<Self>, pub_cfg: store::S3Public, secret_key: String) -> Result<()> {
+        let cfg = S3Config {
+            endpoint: pub_cfg.endpoint.clone(),
+            region: pub_cfg.region.clone(),
+            bucket: pub_cfg.bucket.clone(),
+            access_key: pub_cfg.access_key.clone(),
+            secret_key: secret_key.clone(),
+            prefix: pub_cfg.prefix.clone(),
+        };
+        let client = S3Mailbox::new(cfg)?;
+        // Connectivity / auth check.
+        client.list("haven/mailbox").await.map_err(|e| anyhow::anyhow!("bucket unreachable: {e}"))?;
+        store::save_s3_secret(&secret_key)?;
+        {
+            let mut p = self.prefs.lock().unwrap();
+            p.s3 = Some(pub_cfg);
+            p.save(&self.paths)?;
+        }
+        *self.s3.lock().await = Some(Arc::new(client));
+        let me = self.clone();
+        tauri::async_runtime::spawn(async move {
+            for c in me.social.circles() {
+                me.backfill_mailbox(&c.id).await;
+            }
+            me.poll_mailbox().await;
+        });
+        Ok(())
+    }
+
+    pub async fn s3_clear(self: &Arc<Self>) {
+        {
+            let mut p = self.prefs.lock().unwrap();
+            p.s3 = None;
+            let _ = p.save(&self.paths);
+        }
+        store::delete_s3_secret();
+        *self.s3.lock().await = None;
+        self.emit_changed();
+    }
+
+    pub fn s3_status(&self) -> Option<store::S3Public> {
+        self.prefs.lock().unwrap().s3.clone()
     }
 
     // ---- cross-device media bytes (frame 3 request / frame 5 sealed chunks) -------------
@@ -866,20 +981,37 @@ impl Engine {
     }
 
     async fn upload_media(self: &Arc<Self>, circle_id: &str, reference: &str) {
-        let node_hex = self.prefs.lock().unwrap().relay_nodes.get(circle_id).cloned();
-        let Some(node_hex) = node_hex else { return };
-        let Some(client) = self.relay_client_for(&node_hex).await else { return };
         let Some(blob) = self.media.raw_sealed(reference) else { return };
-        let _ = client.put(Self::media_key(reference), blob).await;
+        let key = Self::media_key(reference);
+        let relay_node = self.prefs.lock().unwrap().relay_nodes.get(circle_id).cloned();
+        if let Some(node_hex) = relay_node {
+            if let Some(client) = self.relay_client_for(&node_hex).await {
+                let _ = client.put(key.clone(), blob.clone()).await;
+            }
+        }
+        if let Some(s3) = self.s3_client().await {
+            let _ = s3.put(&key, &blob).await;
+        }
     }
 
     async fn fetch_media_from_relay(self: &Arc<Self>, circle_id: &str, reference: &str) -> bool {
-        let node_hex = self.prefs.lock().unwrap().relay_nodes.get(circle_id).cloned();
-        let Some(node_hex) = node_hex else { return false };
-        let Some(client) = self.relay_client_for(&node_hex).await else { return false };
-        let Some(blob) = client.get(Self::media_key(reference)).await else { return false };
-        self.media.write_raw_sealed(reference, &blob);
-        true
+        let key = Self::media_key(reference);
+        let relay_node = self.prefs.lock().unwrap().relay_nodes.get(circle_id).cloned();
+        if let Some(node_hex) = relay_node {
+            if let Some(client) = self.relay_client_for(&node_hex).await {
+                if let Some(blob) = client.get(key.clone()).await {
+                    self.media.write_raw_sealed(reference, &blob);
+                    return true;
+                }
+            }
+        }
+        if let Some(s3) = self.s3_client().await {
+            if let Ok(Some(blob)) = s3.get(&key).await {
+                self.media.write_raw_sealed(reference, &blob);
+                return true;
+            }
+        }
+        false
     }
 
     async fn handle_media_request(self: &Arc<Self>, body: &[u8]) {
@@ -967,6 +1099,68 @@ impl Engine {
             .or_else(|| self.media.load_any_circle(&self.social, reference))
     }
 
+    // ---- calls (signaling only; WebRTC media lives in the WebView) ----------------------
+
+    /// Parse an inbound call frame and forward it to the UI's WebRTC mesh via `haven:call`.
+    fn handle_call(self: &Arc<Self>, t: u8, body: &[u8]) {
+        let Some(app) = self.app.lock().unwrap().clone() else { return };
+        let ev = match t {
+            wire::CALL_INVITE => callwire::parse_invite_name(body).map(|(from, name)| {
+                serde_json::json!({ "kind": "invite", "from": from, "name": name, "sessionId": format!("legacy:{from}"), "roster": [from] })
+            }),
+            wire::GROUP_INVITE => callwire::parse_group_invite(body).map(|g| {
+                serde_json::json!({ "kind": "groupInvite", "from": g.from, "sessionId": g.session_id, "groupName": g.group_name, "roster": g.roster })
+            }),
+            wire::CALL_ACCEPT => callwire::parse_accept(body).map(|a| {
+                serde_json::json!({ "kind": "accept", "from": a.from, "sessionId": a.session_id })
+            }),
+            wire::CALL_HANGUP => callwire::parse_hangup(body).map(|from| {
+                serde_json::json!({ "kind": "hangup", "from": from })
+            }),
+            wire::SDP_OFFER | wire::SDP_ANSWER | wire::ICE => callwire::parse_signal(body, "").map(|s| {
+                let kind = match t { wire::SDP_OFFER => "offer", wire::SDP_ANSWER => "answer", _ => "ice" };
+                serde_json::json!({ "kind": kind, "from": s.from, "sessionId": s.session_id, "json": String::from_utf8_lossy(&s.json) })
+            }),
+            _ => None,
+        };
+        if let Some(ev) = ev {
+            // Resolve a friendly name for the caller for the ringing UI.
+            let _ = app.emit("haven:call", ev);
+        }
+    }
+
+    pub fn call_group_invite(self: &Arc<Self>, session_id: String, group_name: String, roster: Vec<String>, to: Vec<String>) {
+        let me = self.node_id_hex();
+        let frame = callwire::group_invite(&me, &session_id, &group_name, &roster.join(","));
+        for t in to {
+            self.send_frame(wire::GROUP_INVITE, &frame, &t);
+        }
+    }
+
+    pub fn call_accept(self: &Arc<Self>, session_id: String, to: Vec<String>) {
+        let frame = callwire::accept(&self.node_id_hex(), &session_id);
+        for t in to {
+            self.send_frame(wire::CALL_ACCEPT, &frame, &t);
+        }
+    }
+
+    pub fn call_hangup(self: &Arc<Self>, to: Vec<String>) {
+        let frame = callwire::hangup(&self.node_id_hex());
+        for t in to {
+            self.send_frame(wire::CALL_HANGUP, &frame, &t);
+        }
+    }
+
+    pub fn call_signal(self: &Arc<Self>, kind: String, session_id: String, json: String, to: String) {
+        let t = match kind.as_str() {
+            "offer" => wire::SDP_OFFER,
+            "answer" => wire::SDP_ANSWER,
+            _ => wire::ICE,
+        };
+        let frame = callwire::signal(&self.node_id_hex(), &session_id, json.as_bytes());
+        self.send_frame(t, &frame, &to);
+    }
+
     // ---- persistence --------------------------------------------------------------------
 
     fn persist(&self) {
@@ -987,6 +1181,7 @@ impl Engine {
         }
         self.media.clear();
         store::remove_if_exists(&self.paths.state_file());
+        store::delete_s3_secret();
         let _ = store::delete_seed();
         self.emit_changed();
     }
@@ -1003,5 +1198,63 @@ impl InboundListener for NodeListener {
         if let Some(engine) = self.engine.upgrade() {
             engine.dispatch(payload);
         }
+    }
+}
+
+#[cfg(test)]
+mod round_trip_tests {
+    use crate::wire;
+    use haven_ffi::HavenSocial;
+
+    /// Two parties handshake and exchange a post + a sealed media chunk through the exact
+    /// `wire` framing the engine moves over iroh — a stand-in for a real cross-device test
+    /// (Windows ↔ iPhone ↔ Android) that doesn't need two machines or the network.
+    #[test]
+    fn two_parties_exchange_post_and_media_over_wire() {
+        let alice = HavenSocial::new([11u8; 32].to_vec()).unwrap();
+        let bob = HavenSocial::new([22u8; 32].to_vec()).unwrap();
+        let cid = "default".to_string();
+
+        // --- Hello handshake (frame 0) ---
+        let hello = wire::hello_payload(
+            &cid,
+            "My Circle",
+            &alice.my_bundle(),
+            &alice.my_signed_profile("Alice".into(), String::new(), String::new(), String::new(), String::new()),
+        );
+        let frame = wire::frame(wire::HELLO, &hello);
+        assert_eq!(frame[0], wire::HELLO);
+        let parsed = wire::parse_hello(&frame[1..]).expect("hello parses");
+        assert_eq!(
+            bob.verify_profile(parsed.bundle.clone(), parsed.signed_profile.clone()).as_deref(),
+            Some("Alice"),
+            "bob reads alice's signed name"
+        );
+        bob.add_contact_bundle(cid.clone(), parsed.bundle).unwrap();
+        alice.add_contact_bundle(cid.clone(), bob.my_bundle()).unwrap();
+
+        // --- Post (frame 1) ---
+        let env = alice.post(cid.clone(), "hello from windows".into(), vec![], None, None, false, false, 1_000).unwrap();
+        let ev_frame = wire::frame(wire::EVENT, &wire::event_payload(&cid, &env));
+        let ev = wire::parse_event(&ev_frame[1..]).expect("event parses");
+        assert!(bob.receive(ev.circle_id, ev.envelope).unwrap(), "new on first receive");
+        let feed = bob.feed(cid.clone(), 2_000, None);
+        assert_eq!(feed.len(), 1);
+        assert_eq!(feed[0].body, "hello from windows");
+        assert!(!feed[0].is_me);
+
+        // --- Sealed media chunk (frame 5) ---
+        let blob = vec![9u8; 1000];
+        let sealed = alice.seal_media(bob.my_node_hex(), blob.clone()).unwrap();
+        let chunk = wire::chunk_frame(b"v:abc", 0, 1, &sealed);
+        let ref_len = (chunk[0] as usize) | ((chunk[1] as usize) << 8);
+        assert_eq!(String::from_utf8_lossy(&chunk[2..2 + ref_len]), "v:abc");
+        let mut off = 2 + ref_len;
+        let index = u32::from_le_bytes([chunk[off], chunk[off + 1], chunk[off + 2], chunk[off + 3]]);
+        off += 4;
+        let total = u32::from_le_bytes([chunk[off], chunk[off + 1], chunk[off + 2], chunk[off + 3]]);
+        off += 4;
+        assert_eq!((index, total), (0, 1));
+        assert_eq!(bob.open_media(chunk[off..].to_vec()), Some(blob), "bob reassembles + decrypts the media");
     }
 }

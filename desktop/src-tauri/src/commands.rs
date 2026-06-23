@@ -415,6 +415,65 @@ pub fn media_data_url(engine: Eng, circle_id: String, reference: String) -> Opti
     Some(format!("data:{mime};base64,{b64}"))
 }
 
+// ---- BYO S3 mailbox ----------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct S3StatusDto {
+    pub configured: bool,
+    pub endpoint: String,
+    pub bucket: String,
+    pub region: String,
+    pub access_key: String,
+    pub prefix: String,
+}
+
+#[tauri::command]
+pub fn s3_status(engine: Eng) -> S3StatusDto {
+    match engine.s3_status() {
+        Some(c) => S3StatusDto { configured: true, endpoint: c.endpoint, bucket: c.bucket, region: c.region, access_key: c.access_key, prefix: c.prefix },
+        None => S3StatusDto { configured: false, endpoint: String::new(), bucket: String::new(), region: String::new(), access_key: String::new(), prefix: String::new() },
+    }
+}
+
+#[tauri::command]
+pub async fn s3_configure(engine: Eng<'_>, endpoint: String, region: String, bucket: String, access_key: String, secret_key: String, prefix: String) -> R<()> {
+    let pub_cfg = crate::store::S3Public { endpoint, region, bucket, access_key, prefix };
+    engine.s3_configure(pub_cfg, secret_key).await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn s3_clear(engine: Eng<'_>) -> R<()> {
+    engine.s3_clear().await;
+    Ok(())
+}
+
+// ---- calls (signaling; the WebRTC mesh runs in the WebView) ------------------------------
+
+#[tauri::command]
+pub fn call_group_invite(engine: Eng, session_id: String, group_name: String, roster: Vec<String>, to: Vec<String>) {
+    engine.call_group_invite(session_id, group_name, roster, to);
+}
+
+#[tauri::command]
+pub fn call_accept(engine: Eng, session_id: String, to: Vec<String>) {
+    engine.call_accept(session_id, to);
+}
+
+#[tauri::command]
+pub fn call_hangup(engine: Eng, to: Vec<String>) {
+    engine.call_hangup(to);
+}
+
+#[tauri::command]
+pub fn call_signal(engine: Eng, kind: String, session_id: String, json: String, to: String) {
+    engine.call_signal(kind, session_id, json, to);
+}
+
+#[tauri::command]
+pub fn my_node_hex(engine: Eng) -> String {
+    engine.node_id_hex()
+}
+
 // ---- misc --------------------------------------------------------------------------------
 
 #[tauri::command]

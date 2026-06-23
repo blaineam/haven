@@ -40,9 +40,14 @@ remaining milestones (WebRTC calls, native notifications/tray, MSIX/Store, Linux
 
 ## Status
 
-Done: project scaffold; backend compiles + unit tests pass; the headless relay runs
-end-to-end (identity in the OS keychain → iroh node → relay link); GUI covers identity,
-profile, circles, feed (post/comment/react/edit/unsend), stories, DMs, QR
-show+camera-scan handshake, photo/video attach, contacts/pending/block, and relay
-host/adopt. Wired but device-test-pending: cross-device media-byte chunks + mailbox.
-Not yet: WebRTC calls, native notifications/tray, MSIX packaging.
+Done: project scaffold; backend compiles + unit/integration tests pass; the headless relay
+runs end-to-end (identity in the OS keychain → iroh node → relay link); GUI covers identity,
+profile, circles, feed (post/comment/react/edit/unsend), stories, DMs, QR show+camera-scan
+handshake, photo/video attach, contacts/pending/block, and relay host/adopt; **WebRTC
+audio/video/group calls** (full mesh in the WebView, signaling on the sealed channel);
+**native notifications + system tray** (show / host relay / quit); **BYO S3/R2/B2 bucket**
+mailbox via the shared `core/haven-s3` SigV4 client; and **CI** building Windows + Linux
+installers.
+
+Live-device-test pending: cross-device media-byte chunks, calls, and a real S3 bucket.
+Not yet: screen share, MSIX/Microsoft Store packaging, on-device sensitive-content classifier.

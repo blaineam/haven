@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 const SERVICE: &str = "com.blaineam.haven";
 const SEED_ACCOUNT: &str = "master-seed";
+const S3_SECRET_ACCOUNT: &str = "s3-secret-key";
 
 /// Resolved app-data paths.
 #[derive(Clone)]
@@ -64,6 +65,17 @@ pub struct Contact {
     pub verify_hex: String,
 }
 
+/// Non-secret config for a BYO S3/R2/B2 bucket (the secret key lives in the keychain).
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct S3Public {
+    pub endpoint: String,
+    pub region: String,
+    pub bucket: String,
+    pub access_key: String,
+    #[serde(default)]
+    pub prefix: String,
+}
+
 /// Everything that lives in `prefs.json` (mirrors the Android SharedPreferences set).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Prefs {
@@ -79,6 +91,9 @@ pub struct Prefs {
     /// Retention window in seconds for the viewer's own auto-prune (None = keep all).
     #[serde(default)]
     pub retention_secs: Option<u64>,
+    /// BYO bucket config (non-secret); `None` until configured.
+    #[serde(default)]
+    pub s3: Option<S3Public>,
 }
 
 impl Prefs {
@@ -127,6 +142,23 @@ pub fn delete_seed() -> Result<()> {
     match entry.delete_credential() {
         Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
         Err(e) => Err(anyhow!("keyring delete failed: {e}")),
+    }
+}
+
+/// Store / read / clear the S3 secret access key in the OS secure store (never in prefs.json).
+pub fn save_s3_secret(secret: &str) -> Result<()> {
+    let entry = keyring::Entry::new(SERVICE, S3_SECRET_ACCOUNT).context("open s3 keyring entry")?;
+    entry.set_password(secret).context("write s3 secret")
+}
+
+pub fn load_s3_secret() -> Option<String> {
+    let entry = keyring::Entry::new(SERVICE, S3_SECRET_ACCOUNT).ok()?;
+    entry.get_password().ok()
+}
+
+pub fn delete_s3_secret() {
+    if let Ok(entry) = keyring::Entry::new(SERVICE, S3_SECRET_ACCOUNT) {
+        let _ = entry.delete_credential();
     }
 }
 

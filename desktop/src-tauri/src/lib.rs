@@ -2,6 +2,7 @@
 //! shared Rust core (`haven_ffi`). The GUI is the WebView2 frontend in `../ui`; `--headless`
 //! runs only the in-process relay/mailbox (the "invisible relay", like the Mac app).
 
+mod callwire;
 mod commands;
 mod engine;
 mod localmedia;
@@ -13,6 +14,9 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use haven_ffi::Account;
 use sha2::{Digest, Sha256};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::TrayIconBuilder;
+use tauri::Manager;
 
 use crate::engine::Engine;
 use crate::store::Paths;
@@ -41,14 +45,45 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_notification::init())
         .manage(engine)
         .setup(move |app| {
             let handle = app.handle().clone();
-            setup_engine.set_app(handle);
+            setup_engine.set_app(handle.clone());
             let e = setup_engine.clone();
             tauri::async_runtime::spawn(async move {
                 e.start().await;
             });
+
+            // System tray: show the window, toggle the relay, or quit. The relay keeps running
+            // when the window is closed, so the tray is the "invisible background relay" surface.
+            let show = MenuItem::with_id(app, "show", "Open Haven", true, None::<&str>)?;
+            let relay = MenuItem::with_id(app, "relay", "Host relay", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "Quit Haven", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &relay, &quit])?;
+            let tray_engine = setup_engine.clone();
+            TrayIconBuilder::with_id("haven-tray")
+                .icon(app.default_window_icon().unwrap().clone())
+                .tooltip("Haven")
+                .menu(&menu)
+                .show_menu_on_left_click(true)
+                .on_menu_event(move |app, event| match event.id().as_ref() {
+                    "show" => {
+                        if let Some(w) = app.get_webview_window("main") {
+                            let _ = w.show();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "relay" => {
+                        let e = tray_engine.clone();
+                        tauri::async_runtime::spawn(async move {
+                            let _ = e.start_hosting().await;
+                        });
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .build(app)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -87,6 +122,14 @@ pub fn run() {
             commands::adopt_relay,
             commands::add_media,
             commands::media_data_url,
+            commands::call_group_invite,
+            commands::call_accept,
+            commands::call_hangup,
+            commands::call_signal,
+            commands::my_node_hex,
+            commands::s3_status,
+            commands::s3_configure,
+            commands::s3_clear,
             commands::set_foreground,
             commands::reset,
         ])

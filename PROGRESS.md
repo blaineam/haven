@@ -24,12 +24,15 @@ Updated continuously. (Times in your local day.)
 - **Native-macOS port started**: native-macOS FFI slice (`aarch64-apple-darwin`) added to
   the xcframework and a `HavenMac` target stood up (Phase 0; Catalyst still ships) — see
   `docs/MACOS-NATIVE-PORT.md`. A **native Android** client is also underway in `android/`.
-- **Windows/Linux desktop started** (`desktop/`): a **Tauri 2** client — the Rust backend
-  links the core *directly* (no UniFFI), the WebView2 UI is the GUI, and the **same binary
-  runs headless as the circle relay** (`--headless`), like the invisible Mac relay. Backend
-  compiles + unit tests pass; the headless relay is verified end-to-end (identity in the OS
-  keychain → iroh node → relay link). GUI covers identity/profile/circles/feed/stories/DMs/
-  QR-handshake/media-attach/relay-host. See `docs/WINDOWS-PORT.md`.
+- **Windows/Linux desktop** (`desktop/`): a **Tauri 2** client — the Rust backend links the
+  core *directly* (no UniFFI), the WebView2 UI is the GUI, and the **same binary runs headless
+  as the circle relay** (`--headless`), like the invisible Mac relay. Backend compiles + unit
+  & integration tests pass; the headless relay is verified end-to-end. Covers identity/profile/
+  circles/feed/stories/DMs/QR-handshake/media-attach/relay-host, **WebRTC audio·video·group
+  calls** (full mesh in the WebView, signaling on the sealed channel), **native notifications +
+  system tray**, and a **BYO S3/R2/B2 bucket** mailbox via a new shared `core/haven-s3` SigV4
+  client (SigV4 unit-tested vs the AWS vector). **CI** builds Windows (.msi/.exe) + Linux
+  (.deb/.AppImage). Live cross-device test + MSIX/Store packaging are next. See `docs/WINDOWS-PORT.md`.
 
 ## 🚦 Shipping status
 
