@@ -175,19 +175,23 @@ fun CircleScreen(onAddFriend: () -> Unit) {
 
             // Staged photo preview.
             pendingPhoto?.let { ref ->
-                Box(Modifier.padding(start = 16.dp, bottom = 4.dp)) {
+                Box(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
                     if (LocalMedia.isVideo(ref)) {
-                        Box(Modifier.size(64.dp).clip(RoundedCornerShape(10.dp)).background(HavenTheme.card),
+                        Box(Modifier.fillMaxWidth().height(160.dp)
+                            .clip(RoundedCornerShape(14.dp)).background(HavenTheme.card),
                             contentAlignment = Alignment.Center) {
-                            Icon(Icons.Filled.Videocam, "Video", tint = Color.White)
+                            Icon(Icons.Filled.Videocam, "Video attached", tint = Color.White, modifier = Modifier.size(40.dp))
                         }
                     } else {
-                        MediaImage(active, ref, Modifier.size(64.dp).clip(RoundedCornerShape(10.dp)))
+                        MediaImage(active, ref,
+                            Modifier.fillMaxWidth().height(160.dp)
+                                .clip(RoundedCornerShape(14.dp)),
+                            contentScale = ContentScale.Crop)
                     }
-                    Text("✕", color = Color.White, fontSize = 16.sp,
-                        modifier = Modifier.align(Alignment.TopEnd).clip(CircleShape)
+                    Text("✕", color = Color.White, fontSize = 18.sp,
+                        modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).clip(CircleShape)
                             .background(Color.Black.copy(alpha = 0.6f)).clickable { pendingPhoto = null }
-                            .padding(horizontal = 6.dp))
+                            .padding(horizontal = 8.dp, vertical = 2.dp))
                 }
             }
             // Staged music chip.
@@ -299,7 +303,8 @@ private fun PendingCard(req: PendingRequest) {
 
 /** Decode a stored (sealed) media id into an Image, off the main thread. Shows nothing until ready. */
 @Composable
-fun MediaImage(circleId: String, id: String, modifier: Modifier = Modifier) {
+fun MediaImage(circleId: String, id: String, modifier: Modifier = Modifier,
+               contentScale: ContentScale = ContentScale.FillWidth) {
     var bmp by remember(id) { mutableStateOf<ImageBitmap?>(null) }
     LaunchedEffect(id, circleId) {
         bmp = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
@@ -309,7 +314,10 @@ fun MediaImage(circleId: String, id: String, modifier: Modifier = Modifier) {
             }.getOrNull()
         }
     }
-    bmp?.let { Image(it, contentDescription = "Photo", modifier = modifier, contentScale = ContentScale.FillWidth) }
+    bmp?.let { Image(it, contentDescription = "Photo", modifier = modifier, contentScale = contentScale) }
+        ?: Box(modifier.background(HavenTheme.card), contentAlignment = Alignment.Center) {
+            Text("…", color = HavenTheme.textSecondary)
+        }
 }
 
 /** Feed-circle switcher: tap the title for a dropdown of your circles + "New circle". */

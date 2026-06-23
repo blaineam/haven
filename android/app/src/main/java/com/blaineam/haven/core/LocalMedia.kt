@@ -104,22 +104,45 @@ fun readVideoBytes(context: Context, uri: Uri, maxBytes: Int = 60 * 1024 * 1024)
 fun isVideoUri(context: Context, uri: Uri): Boolean =
     context.contentResolver.getType(uri)?.startsWith("video") == true
 
-/** Read a picked image, downscale to <= maxDim and JPEG-compress (parity with iOS ~2560px cap). */
-fun loadAndDownscale(context: Context, uri: Uri, maxDim: Int = 2048, quality: Int = 82): ByteArray? {
-    val resolver = context.contentResolver
-    // First pass: bounds only, to compute an integer sample size.
+/**
+ * Read a picked image, fix its EXIF orientation, downscale to <= maxDim, and JPEG-compress.
+ * Reads the URI's bytes ONCE (re-opening a picker content stream often fails → blank previews),
+ * samples down to avoid OOM on large photos, and applies EXIF rotation (so photos aren't sideways).
+ */
+fun loadAndDownscale(context: Context, uri: Uri, maxDim: Int = 2048, quality: Int = 82): ByteArray? = runCatching {
+    val raw = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        ?: return null.also { android.util.Log.w("LocalMedia", "openInputStream null for $uri") }
+
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-    resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return null
+    BitmapFactory.decodeByteArray(raw, 0, raw.size, bounds)
     val longest = max(bounds.outWidth, bounds.outHeight).coerceAtLeast(1)
     var sample = 1
-    while (longest / sample > maxDim * 2) sample *= 2
+    while (longest / sample > maxDim) sample *= 2   // sample DOWN to ~maxDim — avoids OOM
+
     val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-    val bmp = resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) } ?: return null
-    val scaled = if (max(bmp.width, bmp.height) > maxDim) {
+    var bmp = BitmapFactory.decodeByteArray(raw, 0, raw.size, opts)
+        ?: return null.also { android.util.Log.w("LocalMedia", "decode failed for $uri") }
+
+    // Downscale the rest of the way if still over the cap.
+    if (max(bmp.width, bmp.height) > maxDim) {
         val r = maxDim.toFloat() / max(bmp.width, bmp.height)
-        Bitmap.createScaledBitmap(bmp, (bmp.width * r).toInt(), (bmp.height * r).toInt(), true)
-    } else bmp
-    val out = ByteArrayOutputStream()
-    scaled.compress(Bitmap.CompressFormat.JPEG, quality, out)
-    return out.toByteArray()
-}
+        bmp = Bitmap.createScaledBitmap(bmp, (bmp.width * r).coerceAtLeast(1f).toInt(), (bmp.height * r).coerceAtLeast(1f).toInt(), true)
+    }
+    // Apply EXIF orientation (gallery/camera photos are often rotated/mirrored in metadata).
+    val rot = runCatching {
+        val exif = androidx.exifinterface.media.ExifInterface(java.io.ByteArrayInputStream(raw))
+        when (exif.getAttributeInt(androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION,
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_NORMAL)) {
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+            androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+            else -> 0f
+        }
+    }.getOrDefault(0f)
+    if (rot != 0f) {
+        val m = android.graphics.Matrix().apply { postRotate(rot) }
+        bmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
+    }
+
+    ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.JPEG, quality, it) }.toByteArray()
+}.getOrElse { android.util.Log.e("LocalMedia", "loadAndDownscale failed", it); null }

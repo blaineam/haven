@@ -99,6 +99,9 @@ dependencies {
     // Biometric (per-circle Face/fingerprint lock).
     implementation("androidx.biometric:biometric:1.1.0")
 
+    // EXIF orientation for picked photos (so they aren't sideways/blank).
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
+
     // Nearby Connections — offline mesh over BLE/Wi-Fi (the Android take on MultipeerConnectivity).
     implementation("com.google.android.gms:play-services-nearby:19.3.0")
 
