@@ -104,6 +104,17 @@ class CoreInstrumentedTest {
         assertTrue(bobSocial.feed(dmId, 2UL, null).any { it.body == "hey bob, dm" && !it.isMe })
     }
 
+    @Test fun story_flag_round_trips_through_the_feed() {
+        val a = Account.generate()
+        val s = HavenSocial(a.secretSeed())
+        // A normal post and a story.
+        s.post("default", "normal", emptyList(), null, null, false, false, 1UL)
+        s.post("default", "my story", emptyList(), null, 86_400UL, true, false, 2UL)
+        val feed = s.feed("default", 3UL, null)
+        assertTrue("story flagged", feed.any { it.body == "my story" && it.story })
+        assertTrue("normal not a story", feed.any { it.body == "normal" && !it.story })
+    }
+
     @Test fun export_import_preserves_posts_reactions_and_comments() {
         // The persistence contract HavenNet relies on: exportState() -> importState() into a
         // fresh engine restores the full feed. Guards against posts vanishing on app restart.

@@ -265,6 +265,15 @@ object HavenNet : InboundListener {
         afterAuthor(circleId, env)
     }
 
+    /** Post a story (a post with the story flag + 24h retention; auto-expires). */
+    fun postStory(body: String, mediaId: String?) {
+        if (body.isBlank() && mediaId == null) return
+        val env = runCatching {
+            social.post(DEFAULT_CIRCLE, body, listOfNotNull(mediaId), null, 86_400UL, true, false, nowMs())
+        }.getOrNull() ?: return
+        afterAuthor(DEFAULT_CIRCLE, env)
+    }
+
     /** React / unreact / comment on a post — author + broadcast, same as a post. */
     fun react(circleId: String, postId: String, emoji: String) {
         val env = runCatching { social.react(circleId, postId, emoji, nowMs()) }.getOrNull() ?: return

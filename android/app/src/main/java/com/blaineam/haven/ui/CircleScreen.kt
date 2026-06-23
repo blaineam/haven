@@ -65,10 +65,19 @@ fun CircleScreen(onAddFriend: () -> Unit) {
     val items: List<FeedItemFfi> = remember(version, profile.retentionDays) {
         runCatching { HavenNet.engine.feed(DEFAULT_CIRCLE, nowMs(), profile.retentionSecs()) }.getOrDefault(emptyList())
     }
+    val storyGroups = remember(items) { groupStories(items) }
+    val posts = remember(items) { items.filter { !it.story } }
+    var viewingStory by remember { mutableStateOf<Int?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
             val bytes = loadAndDownscale(context, uri)
             if (bytes != null) pendingPhoto = LocalMedia.store(DEFAULT_CIRCLE, bytes)
+        }
+    }
+    val storyPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) {
+            val bytes = loadAndDownscale(context, uri)
+            if (bytes != null) HavenNet.postStory("", LocalMedia.store(DEFAULT_CIRCLE, bytes))
         }
     }
 
@@ -87,11 +96,18 @@ fun CircleScreen(onAddFriend: () -> Unit) {
                 ) { Icon(Icons.Filled.PersonAdd, "Add a friend", tint = HavenTheme.pink) }
             }
 
+            // Stories tray (rings) — always shown so you can add your own.
+            StoriesTray(
+                groups = storyGroups,
+                onAddStory = { storyPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                onOpen = { viewingStory = it },
+            )
+
             if (HavenNet.pending.isNotEmpty()) {
                 HavenNet.pending.forEach { PendingCard(it) }
             }
 
-            if (items.isEmpty()) {
+            if (posts.isEmpty()) {
                 Column(
                     Modifier.fillMaxWidth().weight(1f).padding(32.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -112,7 +128,7 @@ fun CircleScreen(onAddFriend: () -> Unit) {
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
-                    items(items, key = { it.id }) { PostCard(it) }
+                    items(posts, key = { it.id }) { PostCard(it) }
                 }
             }
 
@@ -161,6 +177,11 @@ fun CircleScreen(onAddFriend: () -> Unit) {
                     contentAlignment = Alignment.Center,
                 ) { Icon(Icons.AutoMirrored.Filled.Send, "Post", tint = Color.White) }
             }
+        }
+
+        // Full-screen story viewer overlay.
+        viewingStory?.let { start ->
+            StoryViewer(groups = storyGroups, startGroup = start, onClose = { viewingStory = null })
         }
     }
 }
