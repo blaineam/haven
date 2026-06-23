@@ -1233,10 +1233,11 @@ struct CallOverlay: View {
                                startPoint: .top, endPoint: .bottom)
             } else {
                 Rectangle().fill(HavenTheme.brand.opacity(0.9))
-                let name = call.displayName(for: hex)
-                Circle().fill(.white.opacity(0.18)).frame(width: 64, height: 64)
-                    .overlay(Text(String(name.prefix(1)).uppercased())
-                        .font(.title.bold()).foregroundStyle(.white))
+                // Camera off → show the participant's profile photo (falls back to their emoji,
+                // then an initialed gradient) just like FaceTime/Messages do.
+                PeerAvatar(nodeHex: hex, name: call.displayName(for: hex), size: 78)
+                    .overlay(Circle().strokeBorder(.white.opacity(0.25), lineWidth: 2))
+                    .shadow(color: .black.opacity(0.25), radius: 8, y: 3)
             }
             VStack {
                 Spacer()

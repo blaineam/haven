@@ -66,6 +66,7 @@ enum DemoSeeder {
         let name: String
         let emoji: String
         let bio: String
+        let avatar: String      // bundled synthetic-face asset name (AI-generated, not a real person)
         let seedByte: UInt8     // fills a deterministic 32-byte account seed
         var engine: HavenSocial?
         var hex: String = ""
@@ -82,19 +83,17 @@ enum DemoSeeder {
         me.emoji = "🌿"
         me.bio = "designer · plant hoarder · weekend hiker 🌄"
         me.link = "rileyavery.studio"
-        if let avatar = DemoArt.avatar(top: (0.40, 0.78, 0.55), bottom: (0.16, 0.52, 0.82)) {
-            me.setAvatar(avatar)
-        }
+        if let avatar = DemoArt.bundledImage("avatar-me") { me.setAvatar(avatar) }
 
         let mainHex = main.myNodeHex()
         main.createCircle(id: "default", name: "Your circle")
 
         // ── The cast ──────────────────────────────────────────────────────────────
         var people = [
-            Persona(name: "Maya Quinn",  emoji: "🌸", bio: "ceramics & cold brew", seedByte: 0xA1),
-            Persona(name: "Theo Park",   emoji: "🦊", bio: "trail runner, map nerd", seedByte: 0xB2),
-            Persona(name: "Nina Brooks", emoji: "🦋", bio: "film photography", seedByte: 0xC3),
-            Persona(name: "Sam Rivera",  emoji: "🌊", bio: "surf + sourdough", seedByte: 0xD4),
+            Persona(name: "Maya Quinn",  emoji: "🌸", bio: "ceramics & cold brew",     avatar: "avatar-maya", seedByte: 0xA1),
+            Persona(name: "Theo Park",   emoji: "🦊", bio: "trail runner, map nerd",    avatar: "avatar-theo", seedByte: 0xB2),
+            Persona(name: "Nina Brooks", emoji: "🦋", bio: "film photography",          avatar: "avatar-nina", seedByte: 0xC3),
+            Persona(name: "Sam Rivera",  emoji: "🌊", bio: "surf + sourdough",          avatar: "avatar-sam",  seedByte: 0xD4),
         ]
 
         for i in people.indices {
@@ -109,7 +108,8 @@ enum DemoSeeder {
             guard !hex.isEmpty else { continue }
             let p = people[i]
             ContactsStore.shared.add(name: p.name, idHex: hex)
-            ContactsStore.shared.setCard(idHex: hex, name: p.name, bio: p.bio, link: "", avatar: "", emoji: p.emoji)
+            ContactsStore.shared.setCard(idHex: hex, name: p.name, bio: p.bio, link: "",
+                                         avatar: DemoArt.avatarBase64(p.avatar), emoji: p.emoji)
             feed.recordHeard(hex)   // shows a live green "Connected" dot
         }
         let valid = people.filter { $0.engine != nil && !$0.hex.isEmpty }
@@ -119,10 +119,10 @@ enum DemoSeeder {
         DemoArt.installPhotos()
 
         // ── Stories tray (me + two friends) ─────────────────────────────────────────
-        story(main, by: valid.first, refs: ["img_demo_sunset"], caption: "golden hour 🌅", at: mins(40))
-        story(main, by: valid.dropFirst().first, refs: ["img_demo_trail"], caption: "made it to the ridge", at: mins(95))
+        story(main, by: valid.first, refs: ["img_demo_sunset"], caption: "golden hour at the cove 🌅", at: mins(40))
+        story(main, by: valid.dropFirst().first, refs: ["img_demo_ridge"], caption: "made it to the ridge 🥾", at: mins(95))
         // My own story.
-        _ = try? main.post(circleId: "default", body: "studio day ✷", media: ["img_demo_studio"],
+        _ = try? main.post(circleId: "default", body: "studio fuel ☕️", media: ["img_demo_coffee"],
                            music: nil, retentionSecs: 86_400, story: true, muteVideo: false,
                            createdAt: msAgo(mins(20)))
 
@@ -130,13 +130,15 @@ enum DemoSeeder {
         // Friend posts (each is sealed by the friend and received into my engine), so the
         // feed is authentically multi-author.
         let p1 = friendPost(main, valid: valid, by: 0, body: "first throw off the new wheel 🪴 obsessed",
-                            media: ["img_demo_studio"], at: mins(180))
+                            media: ["img_demo_pottery"], at: mins(180))
         let p2 = friendPost(main, valid: valid, by: 1, body: "12 miles before breakfast. trail magic is real.",
                             media: ["img_demo_trail"], music: track("Sunrun", "The Wanderers"), at: mins(140))
         let p3 = myPost(main, body: "new little corner of the studio came together today 🌿",
-                        media: ["img_demo_studio2"], at: mins(75))
-        let p4 = friendPost(main, valid: valid, by: 2, body: "shot a whole roll at the coast. can't wait to develop these.",
-                            media: ["img_demo_coast"], at: mins(30))
+                        media: ["img_demo_plant"], at: mins(75))
+        let p4 = friendPost(main, valid: valid, by: 2, body: "everyone, meet the newest member of the crew 🐾",
+                            media: ["img_demo_pup"], at: mins(30))
+        let p5 = friendPost(main, valid: valid, by: 3, body: "sunday slow brunch — the sourdough finally rose 🍞",
+                            media: ["img_demo_brunch"], at: mins(12))
 
         // Reactions + comments fan in from the circle. Friends only react to posts they hold,
         // so we feed my posts to them first (done inside the helpers below).
@@ -151,8 +153,11 @@ enum DemoSeeder {
         react(main, valid: valid, targets: p3, emoji: "🌿", by: [0, 1, 2, 3])
         comment(main, valid: valid, target: p3, by: 2, body: "cozy!! love the light in here", at: mins(60))
 
-        react(main, valid: valid, targets: p4, emoji: "🎞️", by: [0, 1])
-        react(main, valid: valid, targets: p4, emoji: "🌊", by: [3])
+        react(main, valid: valid, targets: p4, emoji: "🐶", by: [0, 1, 3])
+        react(main, valid: valid, targets: p4, emoji: "❤️", by: [2])
+        comment(main, valid: valid, target: p4, by: 0, body: "the FLOOF 😭🐾", at: mins(24))
+
+        react(main, valid: valid, targets: p5, emoji: "🤤", by: [0, 2])
 
         // ── A second circle, so the switcher is populated ───────────────────────────
         let crew = "demo-weekend-crew"
@@ -307,74 +312,64 @@ enum DemoSeeder {
     }
 }
 
-// MARK: - Synthetic demo art
+// MARK: - Demo art
 //
-// All demo imagery is generated on-device with Core Graphics — abstract gradient
-// "photos" and avatars. Nothing here is, or resembles, a real person or place: it is
-// impossible for this to leak PII into a screenshot.
+// Demo imagery is bundled with the app (HavenApp/DemoAssets) and loaded by name:
+//   • post/story photos — real, royalty-free LANDSCAPE / OBJECT / FOOD / PET photographs
+//     with NO identifiable people, so nothing here is PII.
+//   • avatars — AI-GENERATED faces (StyleGAN, thispersondoesnotexist-style). They look
+//     like real profile photos but depict no real person, so they're PII-free too.
+// A gradient is used only as a last-ditch fallback if an asset is somehow missing.
 
 @MainActor
 enum DemoArt {
-    typealias RGB = (CGFloat, CGFloat, CGFloat)
+    /// ref → bundled photo asset name. These fill the demo posts/stories.
+    private static let photoMap: [(ref: String, asset: String)] = [
+        ("img_demo_sunset",  "photo-sunset"),
+        ("img_demo_ridge",   "photo-ridge"),
+        ("img_demo_pottery", "photo-pottery"),
+        ("img_demo_trail",   "photo-trail"),
+        ("img_demo_plant",   "photo-plant"),
+        ("img_demo_pup",     "photo-pup"),
+        ("img_demo_coffee",  "photo-coffee"),
+        ("img_demo_brunch",  "photo-brunch"),
+    ]
 
-    /// Install the gradient "photos" the demo posts/stories reference, under fixed refs.
+    /// Install the demo photos into MediaStore under fixed refs (idempotent).
     static func installPhotos() {
-        let photos: [(String, RGB, RGB)] = [
-            ("img_demo_sunset",  (0.99, 0.62, 0.38), (0.55, 0.21, 0.52)),
-            ("img_demo_trail",   (0.36, 0.62, 0.36), (0.13, 0.30, 0.42)),
-            ("img_demo_studio",  (0.92, 0.78, 0.55), (0.62, 0.40, 0.34)),
-            ("img_demo_studio2", (0.74, 0.82, 0.72), (0.30, 0.45, 0.50)),
-            ("img_demo_coast",   (0.40, 0.74, 0.86), (0.12, 0.28, 0.55)),
-        ]
-        for (ref, a, b) in photos {
-            guard !MediaStore.shared.has(ref),
-                  let img = photo(top: a, bottom: b),
-                  let data = img.jpegData(compressionQuality: 0.9) else { continue }
-            MediaStore.shared.store(ref, data)
+        for (ref, asset) in photoMap where !MediaStore.shared.has(ref) {
+            if let img = bundledImage(asset), let data = img.jpegData(compressionQuality: 0.9) {
+                MediaStore.shared.store(ref, data)
+            } else if let img = fallbackGradient(), let data = img.jpegData(compressionQuality: 0.9) {
+                MediaStore.shared.store(ref, data)   // only if the bundled asset is missing
+            }
         }
     }
 
-    /// A portrait gradient "photo" with a soft light bloom.
-    static func photo(top: RGB, bottom: RGB, w: Int = 1200, h: Int = 1500) -> PlatformImage? {
-        render(w: w, h: h) { ctx in
-            drawLinear(ctx, top: top, bottom: bottom, w: w, h: h)
-            bloom(ctx, at: CGPoint(x: Double(w) * 0.72, y: Double(h) * 0.30), radius: Double(w) * 0.6)
-        }
+    /// Load a bundled demo image (`<name>.jpg` in the app bundle).
+    static func bundledImage(_ name: String) -> PlatformImage? {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "jpg"),
+              let data = try? Data(contentsOf: url) else { return nil }
+        return PlatformImage(data: data)
     }
 
-    /// A square avatar gradient.
-    static func avatar(top: RGB, bottom: RGB, size: Int = 400) -> PlatformImage? {
-        render(w: size, h: size) { ctx in
-            drawLinear(ctx, top: top, bottom: bottom, w: size, h: size)
-            bloom(ctx, at: CGPoint(x: Double(size) * 0.3, y: Double(size) * 0.78), radius: Double(size) * 0.7)
-        }
+    /// Base64 of a bundled avatar JPEG, for riding a contact's signed profile card.
+    static func avatarBase64(_ name: String) -> String {
+        guard let url = Bundle.main.url(forResource: name, withExtension: "jpg"),
+              let data = try? Data(contentsOf: url) else { return "" }
+        return data.base64EncodedString()
     }
 
-    // MARK: drawing primitives
-
-    private static func render(w: Int, h: Int, _ draw: (CGContext) -> Void) -> PlatformImage? {
+    /// Last-ditch placeholder if a bundled asset is missing — a soft gradient.
+    private static func fallbackGradient(w: Int = 1080, h: Int = 1350) -> PlatformImage? {
         let cs = CGColorSpaceCreateDeviceRGB()
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { return nil }
-        draw(ctx)
-        guard let cg = ctx.makeImage() else { return nil }
-        return PlatformImage(cgImage: cg)
-    }
-
-    private static func drawLinear(_ ctx: CGContext, top: RGB, bottom: RGB, w: Int, h: Int) {
-        let cs = CGColorSpaceCreateDeviceRGB()
-        let colors = [CGColor(colorSpace: cs, components: [top.0, top.1, top.2, 1])!,
-                      CGColor(colorSpace: cs, components: [bottom.0, bottom.1, bottom.2, 1])!] as CFArray
-        guard let grad = CGGradient(colorsSpace: cs, colors: colors, locations: [0, 1]) else { return }
+                                  space: cs, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue),
+              let grad = CGGradient(colorsSpace: cs,
+                                    colors: [CGColor(colorSpace: cs, components: [0.40, 0.62, 0.82, 1])!,
+                                             CGColor(colorSpace: cs, components: [0.20, 0.30, 0.50, 1])!] as CFArray,
+                                    locations: [0, 1]) else { return nil }
         ctx.drawLinearGradient(grad, start: CGPoint(x: 0, y: h), end: CGPoint(x: w, y: 0), options: [])
-    }
-
-    private static func bloom(_ ctx: CGContext, at center: CGPoint, radius: Double) {
-        let cs = CGColorSpaceCreateDeviceRGB()
-        let colors = [CGColor(colorSpace: cs, components: [1, 1, 1, 0.45])!,
-                      CGColor(colorSpace: cs, components: [1, 1, 1, 0])!] as CFArray
-        guard let grad = CGGradient(colorsSpace: cs, colors: colors, locations: [0, 1]) else { return }
-        ctx.drawRadialGradient(grad, startCenter: center, startRadius: 0, endCenter: center,
-                               endRadius: CGFloat(radius), options: [])
+        return ctx.makeImage().map { PlatformImage(cgImage: $0) }
     }
 }
