@@ -64,6 +64,8 @@ object HavenNet : InboundListener {
     fun init(context: Context) {
         if (this::appContext.isInitialized) return
         appContext = context.applicationContext
+        // Must run before any iroh/TLS networking, or the node panics on Android.
+        NativeBridge.ensureAndroidContext(appContext)
         core = HavenCore.get(appContext)
         profile = ProfileStore.get(appContext)
         social = HavenSocial(core.seed)
@@ -269,7 +271,7 @@ object HavenNet : InboundListener {
         val name = profile.displayName.ifBlank { "Someone" }
         val circleName = social.circles().firstOrNull { it.id == circleId }?.name ?: "My Circle"
         val bundle = social.myBundle()
-        val signed = social.mySignedProfile(name, profile.bio, "")
+        val signed = social.mySignedProfile(name, profile.bio, "", "", profile.emoji)
         return Wire.helloPayload(circleId, circleName, bundle, signed)
     }
 
