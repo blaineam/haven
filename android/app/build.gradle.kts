@@ -82,9 +82,12 @@ dependencies {
     // Persisted identity / prefs, encrypted at rest by the Android Keystore.
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
-    // QR: generate (core) the invite, scan (embedded) a friend's invite.
+    // QR: generate + decode with zxing-core; scan with a custom in-app CameraX UI.
     implementation("com.google.zxing:core:3.5.3")
-    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
 
     // WebRTC (maintained libwebrtc fork, prebuilt .so) for mesh group calls — Android side of
     // the same DTLS-SRTP media + SDP/ICE-over-sealed-channel design as iOS.

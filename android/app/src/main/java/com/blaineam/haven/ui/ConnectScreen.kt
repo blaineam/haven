@@ -1,9 +1,13 @@
 package com.blaineam.haven.ui
 
+import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -34,8 +38,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.blaineam.haven.core.HavenNet
-import com.journeyapps.barcodescanner.ScanContract
-import com.journeyapps.barcodescanner.ScanOptions
 
 /**
  * Invite / Add a friend — the Android ConnectView. Show my QR for them to scan, or scan/paste
@@ -48,13 +50,28 @@ fun ConnectScreen(onDone: () -> Unit) {
     val qr = rememberQr(uri)
     var pasted by remember { mutableStateOf("") }
     var status by remember { mutableStateOf<String?>(null) }
+    var showScanner by remember { mutableStateOf(false) }
 
-    val scanner = rememberLauncherForActivityResult(ScanContract()) { result ->
-        val text = result.contents
-        if (text != null) {
-            status = if (HavenNet.connectByLink(text)) "Invite sent — waiting for them to accept."
-            else "That didn't look like a Haven invite."
-        }
+    val camPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) showScanner = true
+        else status = "Camera permission is needed to scan."
+    }
+    fun launchScanner() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED)
+            showScanner = true
+        else camPermission.launch(Manifest.permission.CAMERA)
+    }
+
+    if (showScanner) {
+        QrScannerScreen(
+            onResult = { text ->
+                showScanner = false
+                status = if (HavenNet.connectByLink(text)) "Invite sent — waiting for them to accept."
+                else "That didn't look like a Haven invite."
+            },
+            onCancel = { showScanner = false },
+        )
+        return
     }
 
     HavenBackground {
@@ -89,13 +106,7 @@ fun ConnectScreen(onDone: () -> Unit) {
             }
 
             Spacer(Modifier.height(20.dp))
-            BrandButton(text = "Scan their QR") {
-                scanner.launch(
-                    ScanOptions().setOrientationLocked(false)
-                        .setBeepEnabled(false)
-                        .setPrompt("Point at your friend's Haven QR"),
-                )
-            }
+            BrandButton(text = "Scan their QR") { launchScanner() }
 
             Spacer(Modifier.height(16.dp))
             OutlinedTextField(
