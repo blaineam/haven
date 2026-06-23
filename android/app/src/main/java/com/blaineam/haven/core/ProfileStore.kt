@@ -17,6 +17,7 @@ class ProfileStore private constructor(context: Context) {
         private set
     var displayName by mutableStateOf(prefs.getString(KEY_NAME, "") ?: "")
     var bio by mutableStateOf(prefs.getString(KEY_BIO, "") ?: "")
+    var link by mutableStateOf(prefs.getString(KEY_LINK, "") ?: "")
     var emoji by mutableStateOf(prefs.getString(KEY_EMOJI, "🌅") ?: "🌅")
 
     /** Auto-expire posts older than this many days (0 = keep forever). Parity with iOS retention. */
@@ -45,6 +46,7 @@ class ProfileStore private constructor(context: Context) {
         prefs.edit()
             .putString(KEY_NAME, displayName)
             .putString(KEY_BIO, bio)
+            .putString(KEY_LINK, link)
             .putString(KEY_EMOJI, emoji)
             .apply()
     }
@@ -61,6 +63,7 @@ class ProfileStore private constructor(context: Context) {
         private const val KEY_ONBOARDED = "onboarded"
         private const val KEY_NAME = "name"
         private const val KEY_BIO = "bio"
+        private const val KEY_LINK = "link"
         private const val KEY_EMOJI = "emoji"
         private const val KEY_RETENTION = "retentionDays"
 

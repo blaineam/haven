@@ -49,6 +49,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.ArrowDropDown
 import com.blaineam.haven.core.DEFAULT_CIRCLE
 import com.blaineam.haven.core.HavenNet
 import com.blaineam.haven.core.LocalMedia
@@ -75,8 +76,10 @@ fun CircleScreen(onAddFriend: () -> Unit) {
     }
     val profile = remember { com.blaineam.haven.core.ProfileStore.get(context) }
     val version by HavenNet.feedVersion          // recompose when the feed changes
-    val items: List<FeedItemFfi> = remember(version, profile.retentionDays) {
-        runCatching { HavenNet.engine.feed(DEFAULT_CIRCLE, nowMs(), profile.retentionSecs()) }.getOrDefault(emptyList())
+    val circlesVersion by HavenNet.circlesVersion
+    val active by HavenNet.activeCircle
+    val items: List<FeedItemFfi> = remember(version, active, profile.retentionDays) {
+        runCatching { HavenNet.engine.feed(active, nowMs(), profile.retentionSecs()) }.getOrDefault(emptyList())
     }
     val storyGroups = remember(items) { groupStories(items) }
     val posts = remember(items) { items.filter { !it.story } }
@@ -94,10 +97,10 @@ fun CircleScreen(onAddFriend: () -> Unit) {
         if (uri != null) {
             if (com.blaineam.haven.core.isVideoUri(context, uri)) {
                 val bytes = com.blaineam.haven.core.readVideoBytes(context, uri)
-                if (bytes != null) pendingPhoto = LocalMedia.store(DEFAULT_CIRCLE, bytes, isVideo = true)
+                if (bytes != null) pendingPhoto = LocalMedia.store(HavenNet.activeCircle.value, bytes, isVideo = true)
             } else {
                 val bytes = loadAndDownscale(context, uri)
-                if (bytes != null) pendingPhoto = LocalMedia.store(DEFAULT_CIRCLE, bytes)
+                if (bytes != null) pendingPhoto = LocalMedia.store(HavenNet.activeCircle.value, bytes)
             }
         }
     }
@@ -109,7 +112,7 @@ fun CircleScreen(onAddFriend: () -> Unit) {
                 Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 16.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                BrandText("Circle", fontSize = 26)
+                CircleSwitcher(active, circlesVersion)
                 Spacer(Modifier.weight(1f))
                 ConnectionDot()
                 Box(
@@ -150,7 +153,7 @@ fun CircleScreen(onAddFriend: () -> Unit) {
                     contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
-                    items(posts, key = { it.id }) { PostCard(it) }
+                    items(posts, key = { it.id }) { PostCard(it, active) }
                 }
             }
 
@@ -163,7 +166,7 @@ fun CircleScreen(onAddFriend: () -> Unit) {
                             Icon(Icons.Filled.Videocam, "Video", tint = Color.White)
                         }
                     } else {
-                        MediaImage(DEFAULT_CIRCLE, ref, Modifier.size(64.dp).clip(RoundedCornerShape(10.dp)))
+                        MediaImage(active, ref, Modifier.size(64.dp).clip(RoundedCornerShape(10.dp)))
                     }
                     Text("✕", color = Color.White, fontSize = 16.sp,
                         modifier = Modifier.align(Alignment.TopEnd).clip(CircleShape)
@@ -215,7 +218,7 @@ fun CircleScreen(onAddFriend: () -> Unit) {
                     Modifier.size(48.dp).clip(CircleShape)
                         .background(HavenTheme.brandHorizontal)
                         .clickable(enabled = canPost) {
-                            HavenNet.post(DEFAULT_CIRCLE, draft.trim(), listOfNotNull(pendingPhoto), pendingMusic)
+                            HavenNet.post(active, draft.trim(), listOfNotNull(pendingPhoto), pendingMusic)
                             draft = ""; pendingPhoto = null; pendingMusic = null
                         },
                     contentAlignment = Alignment.Center,
@@ -293,6 +296,56 @@ fun MediaImage(circleId: String, id: String, modifier: Modifier = Modifier) {
     bmp?.let { Image(it, contentDescription = "Photo", modifier = modifier, contentScale = ContentScale.FillWidth) }
 }
 
+/** Feed-circle switcher: tap the title for a dropdown of your circles + "New circle". */
+@Composable
+private fun CircleSwitcher(activeId: String, circlesVersion: Int) {
+    var menu by remember { mutableStateOf(false) }
+    var showCreate by remember { mutableStateOf(false) }
+    val circles = remember(circlesVersion) { HavenNet.feedCircles() }
+    val name = remember(activeId, circlesVersion) { HavenNet.circleName(activeId) }
+    Box {
+        Row(verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { menu = true }) {
+            BrandText(name, fontSize = 24)
+            Icon(androidx.compose.material.icons.Icons.Filled.ArrowDropDown, "Switch circle", tint = HavenTheme.pink)
+        }
+        androidx.compose.material3.DropdownMenu(
+            expanded = menu, onDismissRequest = { menu = false }, modifier = Modifier.background(HavenTheme.card),
+        ) {
+            circles.forEach { c ->
+                androidx.compose.material3.DropdownMenuItem(
+                    text = { Text("${c.name}  ·  ${c.memberCount}", color = Color.White) },
+                    onClick = { HavenNet.setActiveCircle(c.id); menu = false },
+                )
+            }
+            androidx.compose.material3.HorizontalDivider(color = HavenTheme.cardBorder)
+            androidx.compose.material3.DropdownMenuItem(
+                text = { Text("+ New circle", color = HavenTheme.pink) },
+                onClick = { menu = false; showCreate = true },
+            )
+        }
+    }
+    if (showCreate) {
+        var nm by remember { mutableStateOf("") }
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showCreate = false }, containerColor = HavenTheme.card,
+            title = { Text("New circle", color = Color.White) },
+            text = {
+                OutlinedTextField(value = nm, onValueChange = { nm = it }, singleLine = true,
+                    placeholder = { Text("Circle name") },
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = HavenTheme.pink, cursorColor = HavenTheme.pink))
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(enabled = nm.isNotBlank(),
+                    onClick = { HavenNet.createCircle(nm.trim()); showCreate = false }) {
+                    Text("Create", color = HavenTheme.pink)
+                }
+            },
+            dismissButton = { androidx.compose.material3.TextButton(onClick = { showCreate = false }) { Text("Cancel", color = HavenTheme.textSecondary) } },
+        )
+    }
+}
+
 /** Live connection status: online (iroh) + relay (mailbox) dots, like the iOS connection chips. */
 @Composable
 private fun ConnectionDot() {
@@ -349,6 +402,7 @@ fun PostCard(item: FeedItemFfi, circleId: String = DEFAULT_CIRCLE) {
     var showComment by remember(item.id) { mutableStateOf(false) }
     var commentDraft by remember(item.id) { mutableStateOf("") }
     var showPicker by remember(item.id) { mutableStateOf(false) }
+    var showEdit by remember(item.id) { mutableStateOf(false) }
 
     Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -414,6 +468,26 @@ fun PostCard(item: FeedItemFfi, circleId: String = DEFAULT_CIRCLE) {
             Spacer(Modifier.size(8.dp))
             Text("Comment", color = HavenTheme.pink, fontSize = 13.sp, fontWeight = FontWeight.Medium,
                 modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { showComment = !showComment }.padding(6.dp))
+            if (item.isMe) {
+                Spacer(Modifier.size(8.dp))
+                Text("Edit", color = HavenTheme.textSecondary, fontSize = 13.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { showEdit = !showEdit }.padding(6.dp))
+                Text("Delete", color = Color(0xFFF87171), fontSize = 13.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { HavenNet.unsendPost(circleId, item.id) }.padding(6.dp))
+            }
+        }
+        if (showEdit) {
+            var editText by remember(item.id) { mutableStateOf(item.body) }
+            Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(value = editText, onValueChange = { editText = it },
+                    modifier = Modifier.weight(1f), shape = RoundedCornerShape(18.dp),
+                    colors = OutlinedTextFieldDefaults.colors(focusedBorderColor = HavenTheme.pink, cursorColor = HavenTheme.pink))
+                Text("Save", color = HavenTheme.pink, fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable {
+                        HavenNet.editPost(circleId, item.id, editText.trim()); showEdit = false
+                    }.padding(10.dp))
+            }
         }
         if (showPicker) {
             var customEmoji by remember(item.id) { mutableStateOf("") }

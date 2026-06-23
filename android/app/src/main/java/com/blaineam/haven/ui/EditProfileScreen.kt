@@ -43,6 +43,7 @@ fun EditProfileScreen(onDone: () -> Unit) {
     val profile = remember { ProfileStore.get(context) }
     var name by remember { mutableStateOf(profile.displayName) }
     var bio by remember { mutableStateOf(profile.bio) }
+    var link by remember { mutableStateOf(profile.link) }
     var emoji by remember { mutableStateOf(profile.emoji) }
     val emojis = listOf("🌅", "🌙", "⭐️", "🔥", "🌊", "🌸", "🦊", "🐦", "🍃", "💜", "🐺", "🎧")
 
@@ -88,11 +89,19 @@ fun EditProfileScreen(onDone: () -> Unit) {
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = HavenTheme.pink, cursorColor = HavenTheme.pink, focusedLabelColor = HavenTheme.pink),
             )
+            Spacer(Modifier.height(12.dp))
+            OutlinedTextField(
+                value = link, onValueChange = { link = it }, label = { Text("Link") }, singleLine = true,
+                modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(14.dp),
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = HavenTheme.pink, cursorColor = HavenTheme.pink, focusedLabelColor = HavenTheme.pink),
+            )
 
             Spacer(Modifier.height(24.dp))
             BrandButton(text = "Save", enabled = name.isNotBlank()) {
                 profile.displayName = name.trim()
                 profile.bio = bio.trim()
+                profile.link = link.trim()
                 profile.emoji = emoji
                 profile.save()
                 HavenNet.syncWithContacts()   // re-share the updated business card

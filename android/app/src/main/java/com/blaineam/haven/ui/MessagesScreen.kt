@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
@@ -99,9 +100,21 @@ private fun ThreadList(onOpen: (Contact) -> Unit) {
 
 @Composable
 fun DmThread(circleId: String, partner: Contact, onBack: () -> Unit) {
+    val context = androidx.compose.ui.platform.LocalContext.current
     var draft by remember { mutableStateOf("") }
+    var pendingPhoto by remember { mutableStateOf<String?>(null) }
     val version by HavenNet.feedVersion
     val msgs = remember(version, circleId) { HavenNet.messages(circleId) }
+    val picker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia()) { uri ->
+        if (uri != null) {
+            if (com.blaineam.haven.core.isVideoUri(context, uri)) {
+                com.blaineam.haven.core.readVideoBytes(context, uri)?.let { pendingPhoto = com.blaineam.haven.core.LocalMedia.store(circleId, it, isVideo = true) }
+            } else {
+                com.blaineam.haven.core.loadAndDownscale(context, uri)?.let { pendingPhoto = com.blaineam.haven.core.LocalMedia.store(circleId, it) }
+            }
+        }
+    }
 
     HavenBackground {
         Column(Modifier.fillMaxSize()) {
@@ -129,10 +142,25 @@ fun DmThread(circleId: String, partner: Contact, onBack: () -> Unit) {
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(msgs, key = { it.id }) { m -> Bubble(m.body, mine = m.isMe) }
+                items(msgs, key = { it.id }) { m -> Bubble(m.body, mine = m.isMe, media = m.media, circleId = circleId) }
+            }
+
+            pendingPhoto?.let { ref ->
+                Box(Modifier.padding(start = 16.dp, bottom = 4.dp)) {
+                    if (com.blaineam.haven.core.LocalMedia.isVideo(ref))
+                        Box(Modifier.size(56.dp).clip(RoundedCornerShape(10.dp)).background(HavenTheme.card),
+                            contentAlignment = Alignment.Center) { Icon(Icons.Filled.Videocam, null, tint = Color.White) }
+                    else MediaImage(circleId, ref, Modifier.size(56.dp).clip(RoundedCornerShape(10.dp)))
+                }
             }
 
             Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(40.dp).clip(CircleShape).clickable {
+                    picker.launch(androidx.activity.result.PickVisualMediaRequest(
+                        androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageAndVideo))
+                }, contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.AddPhotoAlternate, "Photo", tint = HavenTheme.pink)
+                }
                 OutlinedTextField(
                     value = draft, onValueChange = { draft = it },
                     placeholder = { Text("Message…") },
@@ -141,10 +169,11 @@ fun DmThread(circleId: String, partner: Contact, onBack: () -> Unit) {
                         focusedBorderColor = HavenTheme.pink, cursorColor = HavenTheme.pink),
                 )
                 Spacer(Modifier.size(8.dp))
+                val canSend = draft.isNotBlank() || pendingPhoto != null
                 Box(
                     Modifier.size(48.dp).clip(CircleShape).background(HavenTheme.brandHorizontal)
-                        .clickable(enabled = draft.isNotBlank()) {
-                            HavenNet.sendDm(circleId, draft.trim()); draft = ""
+                        .clickable(enabled = canSend) {
+                            HavenNet.sendDm(circleId, draft.trim(), listOfNotNull(pendingPhoto)); draft = ""; pendingPhoto = null
                         },
                     contentAlignment = Alignment.Center,
                 ) { Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = Color.White) }
@@ -154,12 +183,20 @@ fun DmThread(circleId: String, partner: Contact, onBack: () -> Unit) {
 }
 
 @Composable
-private fun Bubble(text: String, mine: Boolean) {
+private fun Bubble(text: String, mine: Boolean, media: List<String> = emptyList(), circleId: String) {
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
-        Box(
+        Column(
             Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp))
                 .background(if (mine) HavenTheme.pink else HavenTheme.card)
                 .padding(horizontal = 14.dp, vertical = 10.dp),
-        ) { LinkedText(text, color = Color.White, fontSize = 15.sp) }
+        ) {
+            media.forEach { ref ->
+                if (com.blaineam.haven.core.LocalMedia.isVideo(ref))
+                    VideoTile(circleId, ref, Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)))
+                else MediaImage(circleId, ref, Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)))
+                if (text.isNotBlank()) Spacer(Modifier.size(6.dp))
+            }
+            if (text.isNotBlank()) LinkedText(text, color = Color.White, fontSize = 15.sp)
+        }
     }
 }

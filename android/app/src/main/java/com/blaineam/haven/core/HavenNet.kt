@@ -128,6 +128,48 @@ object HavenNet : InboundListener {
     val nodeIdHex: String get() = core.nodeIdHex
     fun inviteUri(): String = core.inviteUri()
 
+    // ---- Multi-circle ----
+
+    val activeCircle = mutableStateOf(DEFAULT_CIRCLE)
+    var circlesVersion = mutableStateOf(0); private set
+
+    /** Non-DM circles, for the feed switcher. */
+    fun feedCircles(): List<uniffi.haven_ffi.CircleInfoFfi> =
+        runCatching { social.circles().filter { !it.id.startsWith("dm:") } }.getOrDefault(emptyList())
+
+    fun circleName(id: String): String =
+        runCatching { social.circles().firstOrNull { it.id == id }?.name }.getOrNull() ?: "My Circle"
+
+    fun createCircle(name: String): String {
+        val id = "circle-${nodeIdHex.take(8)}-${System.nanoTime()}"
+        runCatching { social.createCircle(id, name) }
+        persist(); bumpCircles()
+        activeCircle.value = id
+        return id
+    }
+
+    fun renameCircle(id: String, name: String) {
+        runCatching { social.renameCircle(id, name) }; persist(); bumpCircles()
+    }
+
+    fun leaveCircle(id: String) {
+        if (id == DEFAULT_CIRCLE) return
+        runCatching { social.leaveCircle(id) }
+        if (activeCircle.value == id) activeCircle.value = DEFAULT_CIRCLE
+        persist(); bumpCircles()
+    }
+
+    /** Add an existing contact to a circle + greet them there so it forms on their side. */
+    fun addToCircle(circleId: String, contactIdHex: String) {
+        runCatching { social.addExistingToCircle(circleId, contactIdHex) }
+        persist(); bumpCircles()
+        sendHello(circleId, contactIdHex)
+    }
+
+    fun setActiveCircle(id: String) { activeCircle.value = id }
+
+    private fun bumpCircles() { scope.launch(Dispatchers.Main) { circlesVersion.value++ } }
+
     /** Resolve a feed item's short author id (8 hex) to a contact's display name. */
     fun displayName(authorShort: String): String =
         contacts.firstOrNull { it.idHex.startsWith(authorShort) }?.name
@@ -236,12 +278,13 @@ object HavenNet : InboundListener {
         runCatching { social.feed(circleId, nowMs(), null) }.getOrDefault(emptyList()).sortedBy { it.createdAt }
 
     /** Send a text DM into a circle and deliver it to the partner. */
-    fun sendDm(circleId: String, body: String) {
-        if (body.isBlank()) return
+    fun sendDm(circleId: String, body: String, media: List<String> = emptyList()) {
+        if (body.isBlank() && media.isEmpty()) return
         val env = runCatching {
-            social.post(circleId, body, emptyList(), null, null, false, false, nowMs())
+            social.post(circleId, body, media, null, null, false, false, nowMs())
         }.getOrNull() ?: return
         afterAuthor(circleId, env)
+        scope.launch { media.forEach { uploadMedia(circleId, it) } }
     }
 
     private fun handleEvent(payload: ByteArray) {
@@ -334,7 +377,7 @@ object HavenNet : InboundListener {
         val name = profile.displayName.ifBlank { "Someone" }
         val circleName = social.circles().firstOrNull { it.id == circleId }?.name ?: "My Circle"
         val bundle = social.myBundle()
-        val signed = social.mySignedProfile(name, profile.bio, "", "", profile.emoji)
+        val signed = social.mySignedProfile(name, profile.bio, profile.link, "", profile.emoji)
         return Wire.helloPayload(circleId, circleName, bundle, signed)
     }
 
@@ -380,6 +423,20 @@ object HavenNet : InboundListener {
     fun comment(circleId: String, postId: String, body: String) {
         if (body.isBlank()) return
         val env = runCatching { social.comment(circleId, postId, body, emptyList(), nowMs()) }.getOrNull() ?: return
+        afterAuthor(circleId, env)
+    }
+
+    /** Edit your own post's text; broadcasts the edit event. */
+    fun editPost(circleId: String, postId: String, body: String) {
+        val env = runCatching {
+            social.edit(circleId, postId, body, emptyList(), null, false, nowMs())
+        }.getOrNull() ?: return
+        afterAuthor(circleId, env)
+    }
+
+    /** Unsend (delete) your own post; broadcasts the unsend event. */
+    fun unsendPost(circleId: String, postId: String) {
+        val env = runCatching { social.unsend(circleId, postId, nowMs()) }.getOrNull() ?: return
         afterAuthor(circleId, env)
     }
 
@@ -772,6 +829,7 @@ object HavenNet : InboundListener {
         relayNodes.clear(); relayClients.clear(); seenMailbox.clear()
         Presign.reset()
         relayActive.value = false
+        activeCircle.value = DEFAULT_CIRCLE
         prefs.edit().clear().apply()
         runCatching { stateFile.delete() }
         feedVersion.value++

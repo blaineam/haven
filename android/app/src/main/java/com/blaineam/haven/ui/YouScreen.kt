@@ -101,6 +101,11 @@ fun YouScreen(onAddFriend: () -> Unit) {
                 Text(profile.bio, color = HavenTheme.textSecondary, fontSize = 14.sp,
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center)
             }
+            if (profile.link.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text("🔗 ${profile.link}", color = HavenTheme.pink, fontSize = 13.sp, maxLines = 1,
+                    modifier = Modifier.clickable { openInApp(context, profile.link) })
+            }
             Spacer(Modifier.height(4.dp))
             Text(
                 if (contactCount == 0) "This is just for the people you choose."
