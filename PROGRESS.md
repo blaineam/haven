@@ -6,6 +6,15 @@ Updated continuously. (Times in your local day.)
 ---
 
 ## 🆕 Latest wave (built, batched for next upload)
+- **Linux, first-class**: the Tauri desktop client + the headless `haven-relay` daemon now
+  target **Ubuntu, Debian, Raspberry Pi OS, Arch, and SteamOS/Steam Deck**. GUI ships as
+  `.deb`/`.rpm`/AppImage, an **AUR** package (Arch), and a **Flatpak** (Steam Deck, via
+  Discover); the relay cross-builds as a musl static binary for x86_64/aarch64/**armv7/armv6**
+  (every Raspberry Pi) with a hardened systemd **system** service + `.deb`/AUR. New
+  `relay-release` CI publishes the `haven-relay-<target>` assets the installer downloads, and
+  the desktop CI now also bundles the Flatpak. Added **screen share** to desktop calls
+  (`getDisplayMedia` → mesh `replaceTrack`, via the Wayland ScreenCast portal). See
+  [`docs/LINUX.md`](docs/LINUX.md).
 - **Group calls**: WebRTC calls went from 1:1 to **full-mesh group** (audio+video, E2EE
   DTLS-SRTP), every participant opening one peer connection to every other; signaling
   (SDP/ICE/invite/accept/hangup) still rides the sealed iroh channel — no call server.

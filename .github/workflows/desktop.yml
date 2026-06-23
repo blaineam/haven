@@ -77,5 +77,48 @@ jobs:
             desktop/src-tauri/target/release/bundle/**/*.msi
             desktop/src-tauri/target/release/bundle/**/*.exe
             desktop/src-tauri/target/release/bundle/**/*.deb
+            desktop/src-tauri/target/release/bundle/**/*.rpm
             desktop/src-tauri/target/release/bundle/**/*.AppImage
+          if-no-files-found: ignore
+
+  # SteamOS / Steam Deck (and any Flatpak distro). Builds the Flatpak from the .deb the
+  # Linux build job just produced, so the artifact matches what users sideload via Discover.
+  flatpak:
+    needs: build
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-47
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch the Linux build (.deb)
+        uses: actions/download-artifact@v4
+        with:
+          name: haven-linux
+          path: linux-build
+      - name: Point the manifest at the local .deb
+        run: |
+          deb=$(find linux-build -name '*.deb' | head -n1)
+          cp "$deb" desktop/flatpak/haven.deb
+          python3 - <<'PY'
+          import re, pathlib
+          m = pathlib.Path("desktop/flatpak/com.blaineam.haven.yml")
+          t = m.read_text()
+          # Replace the remote .deb source (url+sha+dest-filename) with a local file source.
+          t = re.sub(
+              r"      - type: file\n        # CI uploads.*?\n        url:.*?\n        sha256:.*?\n        dest-filename: haven\.deb",
+              "      - type: file\n        path: haven.deb",
+              t, flags=re.S)
+          m.write_text(t)
+          PY
+      - name: Build Flatpak bundle
+        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: haven.flatpak
+          manifest-path: desktop/flatpak/com.blaineam.haven.yml
+          cache-key: flatpak-${{ github.sha }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: haven-steamos-flatpak
+          path: haven.flatpak
           if-no-files-found: ignore

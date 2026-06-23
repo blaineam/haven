@@ -1,0 +1,24 @@
+#!/bin/sh
+# Create the locked-down system account the haven-relay.service runs as.
+# (cargo-deb appends its systemd register/enable fragments below this on package build.)
+set -e
+
+if [ "$1" = "configure" ]; then
+    if ! getent group haven-relay >/dev/null 2>&1; then
+        addgroup --system haven-relay >/dev/null 2>&1 || groupadd --system haven-relay
+    fi
+    if ! getent passwd haven-relay >/dev/null 2>&1; then
+        adduser --system --home /var/lib/haven-relay --no-create-home \
+                --ingroup haven-relay --disabled-password --shell /usr/sbin/nologin \
+                haven-relay >/dev/null 2>&1 \
+            || useradd --system --home-dir /var/lib/haven-relay --no-create-home \
+                       --gid haven-relay --shell /usr/sbin/nologin haven-relay
+    fi
+    mkdir -p /var/lib/haven-relay
+    chown haven-relay:haven-relay /var/lib/haven-relay
+    chmod 0750 /var/lib/haven-relay
+
+    echo "haven-relay installed. Attach it to a circle once, then enable it:"
+    echo "  sudo -u haven-relay HOME=/var/lib/haven-relay haven-relay run --link \"<code>\""
+    echo "  sudo systemctl enable --now haven-relay"
+fi

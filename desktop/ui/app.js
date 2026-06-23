@@ -605,6 +605,7 @@ const call = {
   session: "", me: "", name: "", roster: new Set(), pcs: new Map(),
   localStream: null, micOn: true, camOn: true,
   ringing: false, connecting: false, inCall: false, video: true,
+  screenOn: false, screenStream: null, camTrack: null,
 };
 
 const invitees = () => [...call.roster].filter((h) => h !== call.me).sort();
@@ -731,6 +732,8 @@ function displayNameFor(hex) {
 }
 
 function teardownCall() {
+  if (call.screenStream) { call.screenStream.getTracks().forEach((t) => t.stop()); call.screenStream = null; }
+  call.screenOn = false; call.camTrack = null;
   call.pcs.forEach((pc) => pc.close()); call.pcs.clear();
   if (call.localStream) call.localStream.getTracks().forEach((t) => t.stop());
   call.localStream = null; call.remote = {};
@@ -740,6 +743,50 @@ function teardownCall() {
 
 function toggleMic() { call.micOn = !call.micOn; if (call.localStream) call.localStream.getAudioTracks().forEach((t) => (t.enabled = call.micOn)); renderCallOverlay(); }
 function toggleCam() { call.camOn = !call.camOn; if (call.localStream) call.localStream.getVideoTracks().forEach((t) => (t.enabled = call.camOn)); renderCallOverlay(); }
+
+// Swap the outgoing video track on every peer connection without renegotiating (replaceTrack).
+function replaceOutgoingVideo(track) {
+  call.pcs.forEach((pc) => {
+    const sender = pc.getSenders().find((s) => s.track && s.track.kind === "video");
+    if (sender) sender.replaceTrack(track).catch(() => {});
+  });
+}
+
+// Screen share: getDisplayMedia → on Wayland/SteamOS this goes through the xdg-desktop-portal
+// ScreenCast picker (PipeWire). Replaces the camera track for everyone; stopping (or the OS
+// "stop sharing") restores the camera.
+async function toggleScreen() {
+  if (!call.localStream) return;
+  if (call.screenOn) { stopScreenShare(); renderCallOverlay(); return; }
+  let display;
+  try {
+    display = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+  } catch (e) { toast("Screen share unavailable: " + e); return; }
+  const screenTrack = display.getVideoTracks()[0];
+  if (!screenTrack) { toast("No screen selected"); return; }
+  // Remember the camera track so we can swap back.
+  call.camTrack = call.localStream.getVideoTracks()[0] || call.camTrack;
+  call.screenStream = display;
+  call.screenOn = true;
+  replaceOutgoingVideo(screenTrack);
+  // Show the shared screen in the local preview too.
+  if (call.camTrack) { try { call.localStream.removeTrack(call.camTrack); } catch (_) {} }
+  call.localStream.addTrack(screenTrack);
+  screenTrack.onended = () => { stopScreenShare(); renderCallOverlay(); }; // OS "stop sharing"
+  renderCallOverlay();
+}
+
+function stopScreenShare() {
+  if (!call.screenOn) return;
+  call.screenOn = false;
+  if (call.screenStream) { call.screenStream.getTracks().forEach((t) => t.stop()); call.screenStream = null; }
+  const back = call.camTrack && call.camTrack.readyState === "live" ? call.camTrack : null;
+  replaceOutgoingVideo(back);
+  if (call.localStream) {
+    call.localStream.getVideoTracks().forEach((t) => { if (t.readyState !== "live") { try { call.localStream.removeTrack(t); } catch (_) {} } });
+    if (back && !call.localStream.getVideoTracks().includes(back)) call.localStream.addTrack(back);
+  }
+}
 
 function renderCallOverlay() {
   const root = $("#modal-root");
@@ -777,6 +824,7 @@ function renderCallOverlay() {
     el("div", { class: "call-controls" },
       el("button", { class: "btn " + (call.micOn ? "" : "danger"), onclick: toggleMic }, call.micOn ? "🎤 Mute" : "🔇 Unmute"),
       call.video ? el("button", { class: "btn " + (call.camOn ? "" : "danger"), onclick: toggleCam }, call.camOn ? "📹 Camera off" : "📷 Camera on") : null,
+      el("button", { class: "btn " + (call.screenOn ? "primary" : ""), onclick: toggleScreen }, call.screenOn ? "🛑 Stop sharing" : "🖥️ Share screen"),
       el("button", { class: "btn danger", onclick: () => callHangup() }, "📞 Hang up"),
     ))));
 }

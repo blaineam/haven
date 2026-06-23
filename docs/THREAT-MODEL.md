@@ -10,7 +10,7 @@ protect **content confidentiality, content integrity, and user anonymity** again
 | Relay operator / network observer | See traffic timing & size; store ciphertext | Everything is E2E hybrid-PQ encrypted; relays never hold plaintext or PII |
 | **Future quantum adversary** ("harvest now, decrypt later") | Store today's ciphertext, decrypt later | Hybrid X25519 + ML-KEM-768 key establishment — must break *both* |
 | Active MITM on a shared link | Substitute their keys for the real recipient's | Link carries a verification hash; in-person QR is the strong anchor; new contacts are *approved*, with safety-phrase confirmation |
-| Lost/stolen device | Read local content & keys | Keys in Secure Enclave; passphrase-encrypted backup; (planned) at-rest encryption + remote disavow |
+| Lost/stolen device | Read local content & keys | **Every on-device copy of the master seed is Secure-Enclave-wrapped** — the active seed, the NSE's shared-group push-decrypt mirror, and the device-local identity-recovery archive are each ECIES-sealed to a non-extractable P-256 Enclave key, so a raw Keychain dump yields nothing without the Enclave. (The one unsealed copy is the *opt-in* iCloud-synced archive, which must travel between devices and is protected by Apple's E2E iCloud Keychain instead.) Passphrase-encrypted backup; (planned) at-rest content encryption + remote disavow |
 | Spammer using a public link | Flood connect requests | Requests are inert until approved; per-link expiring/single-use tokens; block list |
 | A blocked user | Keep contacting you | Client-side refusal + removal from shared groups; no central account to reach you through |
 

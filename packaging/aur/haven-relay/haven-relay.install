@@ -1,0 +1,20 @@
+post_install() {
+    systemd-sysusers haven-relay.conf >/dev/null 2>&1 || true
+    systemd-tmpfiles --create haven-relay.conf >/dev/null 2>&1 || true
+    cat <<'EOF'
+==> haven-relay installed.
+    Attach it to a circle once (saves the link), then enable the service:
+      sudo -u haven-relay HOME=/var/lib/haven-relay haven-relay run --link "<code>"
+      sudo systemctl enable --now haven-relay
+    The relay node id is printed to the journal: journalctl -u haven-relay
+EOF
+}
+
+post_upgrade() {
+    systemd-sysusers haven-relay.conf >/dev/null 2>&1 || true
+    systemd-tmpfiles --create haven-relay.conf >/dev/null 2>&1 || true
+}
+
+pre_remove() {
+    systemctl disable --now haven-relay.service >/dev/null 2>&1 || true
+}

@@ -188,9 +188,22 @@ app); the WASM client and `web/engine/` were removed.
 - ✅ **macOS** ships today via **Mac Catalyst** from the SwiftUI codebase; a **native
   AppKit/SwiftUI port is in progress** (Phase 0 underway — native-macOS FFI slice added,
   `HavenMac` target — see `MACOS-NATIVE-PORT.md`).
-- ⏭️ **Windows / Linux desktop** — native client reusing the Rust core.
-- ⏭️ **Apple Watch** companion (scoped: messages/photos/reactions/notifications/quick
-  replies/audio; *not* bulk video/large files) — see DECISIONS D13.
+- 🟡 **Windows / Linux desktop** — **in progress** (`desktop/`, Tauri 2; the Rust backend
+  links the core directly — a real iroh peer, not a web client). GUI at near-parity (feed,
+  circles, DMs, stories, camera, media, WebRTC group calls + **screen share**, tray,
+  notifications, BYO storage) plus a headless relay in the same binary. Linux ships across
+  Ubuntu/Debian/Raspbian (`.deb`/AppImage/`.rpm`), Arch (AUR), and SteamOS/Steam Deck
+  (Flatpak); the `haven-relay` daemon cross-builds for x86_64/aarch64/armv7/armv6 (Pi). See
+  [`WINDOWS-PORT.md`](WINDOWS-PORT.md) + [`LINUX.md`](LINUX.md). Remaining: MSIX/Store
+  packaging, on-device sensitive-content classifier, live multi-machine media/call tests.
+- 🟡 **Apple Watch** companion — **in progress** (`apple/HavenWatch`). A standalone
+  single-target SwiftUI watchOS app (`com.blaineam.kith.watchkitapp`, embedded in the iOS
+  app) that is a **thin WCSession client** — the iPhone keeps the iroh node + identity; the
+  Watch links NEITHER HavenFFI NOR WebRTC. Shows recent DM threads / circle posts + reactions,
+  opens a thread, sends quick replies (dictation / Scribble / canned) and tap-to-react, and
+  mirrors the phone's local notifications. Scoped per DECISIONS D13: messages/reactions/
+  notifications/quick replies — *not* bulk video/large files. Bridge: `WatchSessionManager`
+  (phone) ↔ `WatchConnectivityClient` (watch) over FFI-free `WatchShared` Codable models.
 
 ## 🟡 M9 — Launch surface
 

@@ -1,0 +1,109 @@
+name: relay-release
+
+# Cross-builds the headless `haven-relay` static binary for every Linux arch the installer
+# knows about, plus macOS, and publishes them as release assets named exactly what
+# `relay/install.sh` downloads: `haven-relay-<target>`. Also builds .deb packages
+# (Debian/Ubuntu/Raspbian) via cargo-deb. Triggered on a `relay-v*` tag or manually.
+
+on:
+  push:
+    tags: ["relay-v*", "v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            deb: true
+          - target: aarch64-unknown-linux-musl   # 64-bit Raspberry Pi OS / Arm servers
+            deb: true
+          - target: armv7-unknown-linux-musleabihf # 32-bit Raspbian, Pi 2/3/4
+            deb: true
+          - target: arm-unknown-linux-musleabihf   # Pi Zero / Pi 1
+            deb: false
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+
+      # zig gives painless musl + Arm cross-compilation from a single x86_64 runner.
+      - uses: mlugg/setup-zig@v1
+      - name: Install cargo-zigbuild + cargo-deb
+        run: cargo install cargo-zigbuild cargo-deb --locked
+
+      - name: Build haven-relay (${{ matrix.target }})
+        working-directory: core
+        run: cargo zigbuild --release -p haven-relay --target ${{ matrix.target }}
+
+      - name: Stage binary as haven-relay-<target>
+        run: |
+          mkdir -p dist
+          cp "core/target/${{ matrix.target }}/release/haven-relay" \
+             "dist/haven-relay-${{ matrix.target }}"
+
+      - name: Build .deb (${{ matrix.target }})
+        if: matrix.deb
+        working-directory: core
+        run: |
+          cargo deb -p haven-relay --no-build --target ${{ matrix.target }} --output ../dist/
+        # --no-build reuses the zigbuild artifact above; cargo-deb maps the .deb arch
+        # (amd64/arm64/armhf) from the target triple automatically.
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: relay-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    strategy:
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - name: Build haven-relay (${{ matrix.target }})
+        working-directory: core
+        run: cargo build --release -p haven-relay --target ${{ matrix.target }}
+      - name: Stage binary
+        run: |
+          mkdir -p dist
+          cp "core/target/${{ matrix.target }}/release/haven-relay" \
+             "dist/haven-relay-${{ matrix.target }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: relay-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    needs: [build, macos]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true

@@ -49,5 +49,10 @@ audio/video/group calls** (full mesh in the WebView, signaling on the sealed cha
 mailbox via the shared `core/haven-s3` SigV4 client; and **CI** building Windows + Linux
 installers.
 
+Also done: **screen share** in calls (`getDisplayMedia` → `replaceTrack` across the mesh;
+routes through the Wayland/SteamOS ScreenCast portal); **Linux packaging** for every target
+distro — `.deb`/`.rpm`/AppImage (Ubuntu/Debian/Raspbian), AUR (Arch), and **Flatpak**
+(SteamOS / Steam Deck). See [`../docs/LINUX.md`](../docs/LINUX.md).
+
 Live-device-test pending: cross-device media-byte chunks, calls, and a real S3 bucket.
-Not yet: screen share, MSIX/Microsoft Store packaging, on-device sensitive-content classifier.
+Not yet: MSIX/Microsoft Store packaging, on-device sensitive-content classifier.

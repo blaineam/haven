@@ -4,10 +4,46 @@ version = "0.0.1"
 edition = "2021"
 publish = false
 description = "Haven easy circle relay: an always-on, single-binary connection relay + media store-and-forward that links to a circle and only ever moves ciphertext."
+license = "PolyForm-Noncommercial-1.0.0"
+homepage = "https://wemiller.com/apps/haven"
+repository = "https://github.com/blaineam/haven"
 
 [[bin]]
 name = "haven-relay"
 path = "src/main.rs"
+
+# ── Debian/Ubuntu/Raspbian package (cargo-deb) ─────────────────────────────────────────
+# Builds a tiny, dependency-free .deb for the headless relay daemon — NOT the webkit GUI.
+#   cargo install cargo-deb
+#   cargo deb -p haven-relay --target x86_64-unknown-linux-musl
+# Ships the systemd *system* service; `systemctl enable --now haven-relay` after attaching
+# a circle once with `haven-relay run --link <code>`.
+[package.metadata.deb]
+name = "haven-relay"
+maintainer = "Blaine Miller <blaine@wemiller.com>"
+copyright = "2026, Blaine Miller"
+section = "net"
+priority = "optional"
+extended-description = """\
+Haven relay is an always-on, single static binary that links to one of your Haven \
+circles and serves both roles for it: a live connection relay and a sealed-media \
+store-and-forward mailbox. It only ever moves ciphertext — it can never read your \
+circle's content. No public host, port, domain, or cloud account required."""
+assets = [
+    ["target/release/haven-relay", "usr/bin/", "755"],
+    ["../../relay/README.md", "usr/share/doc/haven-relay/README.md", "644"],
+]
+# postinst creates the locked-down `haven-relay` system user; cargo-deb appends the
+# systemd register/enable fragments to it automatically.
+maintainer-scripts = "../../relay/debian"
+
+# Installs ../../relay/debian/haven-relay.service to /lib/systemd/system (without
+# auto-enabling — the operator attaches a circle with `run --link` first).
+[package.metadata.deb.systemd-units]
+unit-name = "haven-relay"
+unit-scripts = "../../relay/debian"
+enable = false
+start = false
 
 [dependencies]
 haven-net = { path = "../haven-net" }

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.blaineam.haven</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary=https://github.com/blaineam/haven/blob/main/LICENSE</project_license>
+  <name>Haven</name>
+  <summary>Private, post-quantum, peer-to-peer social</summary>
+  <description>
+    <p>
+      Haven is a serverless, end-to-end encrypted social network for the people you
+      actually know — photos, video, music, messages, and calls shared inside small
+      circles of friends and family. No central server holds your content. No phone
+      number or email. No tracking, no ads, no infinite feed.
+    </p>
+    <p>
+      Every content key is derived from a hybrid of classical (X25519) and post-quantum
+      (ML-KEM-768) key exchange, so stored ciphertext resists harvest-now-decrypt-later
+      attacks. This desktop app is a real peer and can also act as your circle's
+      always-on relay/mailbox.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.blaineam.haven.desktop</launchable>
+  <categories>
+    <category>Network</category>
+    <category>InstantMessaging</category>
+  </categories>
+  <url type="homepage">https://wemiller.com/apps/haven</url>
+  <url type="bugtracker">https://github.com/blaineam/haven/issues</url>
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">intense</content_attribute>
+    <content_attribute id="social-audio">intense</content_attribute>
+  </content_rating>
+  <releases>
+    <release version="0.1.0" date="2026-06-23"/>
+  </releases>
+</component>

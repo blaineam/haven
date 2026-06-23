@@ -1,0 +1,49 @@
+# Haven relay as a Linux *system* service (runs at boot, no login required).
+#
+# This unit ships inside the haven-relay .deb (Debian/Ubuntu/Raspbian) and is installed to
+# /lib/systemd/system/haven-relay.service. It runs the relay as a dedicated, locked-down
+# `haven-relay` system user storing its state under /var/lib/haven-relay.
+#
+# First-time setup (attach to your circle once — saves the link, then enable the service):
+#   sudo -u haven-relay HOME=/var/lib/haven-relay haven-relay run --link "<code>"   # Ctrl-C after "saved"
+#   sudo systemctl enable --now haven-relay
+#   systemctl status haven-relay        # the relay node id is printed in the log
+#
+# Prefer a per-user service instead (no root)? Use ../haven-relay.service.
+#
+[Unit]
+Description=Haven relay (always-on circle mailbox, ciphertext only)
+Documentation=https://github.com/blaineam/haven/blob/main/relay/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Dedicated unprivileged service account (created by the package postinst).
+User=haven-relay
+Group=haven-relay
+Environment=HOME=/var/lib/haven-relay
+WorkingDirectory=/var/lib/haven-relay
+StateDirectory=haven-relay
+ExecStart=/usr/bin/haven-relay run
+Restart=always
+RestartSec=5
+
+# ── Hardening: the relay only ever moves ciphertext; lock it down accordingly. ──────────
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ReadWritePaths=/var/lib/haven-relay
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

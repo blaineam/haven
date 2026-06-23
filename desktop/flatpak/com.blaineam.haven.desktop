@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Haven
+GenericName=Private Social Network
+Comment=Serverless, post-quantum, peer-to-peer social for friends and family
+Exec=haven-desktop
+Icon=com.blaineam.haven
+Terminal=false
+Categories=Network;InstantMessaging;
+Keywords=social;chat;private;encrypted;p2p;
+StartupWMClass=Haven

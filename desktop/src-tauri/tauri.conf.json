@@ -32,7 +32,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["msi", "nsis", "deb", "appimage"],
+    "targets": ["msi", "nsis", "deb", "rpm", "appimage"],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -42,6 +42,19 @@
     ],
     "windows": {
       "webviewInstallMode": { "type": "embedBootstrapper" }
+    },
+    "linux": {
+      "deb": {
+        "depends": [
+          "libwebkit2gtk-4.1-0",
+          "libgtk-3-0",
+          "libayatana-appindicator3-1"
+        ],
+        "recommends": ["pipewire", "xdg-desktop-portal"]
+      },
+      "rpm": {
+        "depends": ["webkit2gtk4.1", "gtk3", "libappindicator-gtk3"]
+      }
     },
     "category": "SocialNetworking",
     "shortDescription": "Private post-quantum P2P social.",

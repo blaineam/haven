@@ -1,0 +1,67 @@
+# Flatpak manifest for Haven on SteamOS / Steam Deck (and any Flatpak distro).
+#
+# SteamOS has an immutable root filesystem, so a .deb/AppImage is awkward there — Flatpak is
+# the first-class path (installable from Desktop Mode → Discover, or `flatpak install`).
+#
+# This builds from the .deb that CI already produces (the GNOME runtime ships WebKitGTK, which
+# the Tauri WebView needs). To rebuild locally:
+#
+#   flatpak install -y flathub org.gnome.Platform//47 org.gnome.Sdk//47
+#   flatpak-builder --user --install --force-clean build desktop/flatpak/com.blaineam.haven.yml
+#
+# For a Flathub *submission* you must build from source instead (flatpak-cargo-generator to
+# vendor the crates offline) — see desktop/flatpak/README.md.
+app-id: com.blaineam.haven
+runtime: org.gnome.Platform
+runtime-version: "47"
+sdk: org.gnome.Sdk
+command: haven-desktop
+
+finish-args:
+  # P2P / iroh needs the network.
+  - --share=network
+  - --share=ipc
+  # Display (Wayland first on the Deck, X11 fallback) + GPU.
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # Audio (calls, music, voice notes).
+  - --socket=pulseaudio
+  # Camera + screen share go through the desktop portals (PipeWire); no raw /dev/video grab.
+  - --talk-name=org.freedesktop.portal.Camera
+  - --talk-name=org.freedesktop.portal.ScreenCast
+  - --talk-name=org.freedesktop.portal.Desktop
+  # Secret Service for the identity seed (same "keys never leave device" rule as iOS).
+  - --talk-name=org.freedesktop.secrets
+  # System tray on the Deck desktop.
+  - --talk-name=org.kde.StatusNotifierWatcher
+  # Save/pick media via portals; persistent app data.
+  - --filesystem=xdg-download
+  - --persist=.local/share/haven
+
+modules:
+  - name: haven-desktop
+    buildsystem: simple
+    build-commands:
+      - ar x haven.deb
+      - tar -xf data.tar.* -C .
+      - install -Dm755 usr/bin/haven-desktop /app/bin/haven-desktop
+      # Icon → hicolor under the app-id.
+      - |
+        for px in 32 128 256; do
+          src=$(find usr/share/icons -name '*.png' -path "*${px}x${px}*" | head -n1 || true)
+          [ -n "$src" ] && install -Dm644 "$src" \
+            "/app/share/icons/hicolor/${px}x${px}/apps/com.blaineam.haven.png" || true
+        done
+      - install -Dm644 com.blaineam.haven.desktop /app/share/applications/com.blaineam.haven.desktop
+      - install -Dm644 com.blaineam.haven.metainfo.xml /app/share/metainfo/com.blaineam.haven.metainfo.xml
+    sources:
+      - type: file
+        # CI uploads this asset; pin the sha256 when cutting a release.
+        url: https://github.com/blaineam/haven/releases/latest/download/haven_amd64.deb
+        sha256: 0000000000000000000000000000000000000000000000000000000000000000
+        dest-filename: haven.deb
+      - type: file
+        path: com.blaineam.haven.desktop
+      - type: file
+        path: com.blaineam.haven.metainfo.xml

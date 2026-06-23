@@ -91,9 +91,12 @@ One Rust core (`p2pcore`) powers every client, so new platforms are mostly UI:
 - **iOS / macOS** — SwiftUI + UniFFI (primary; macOS ships today via Mac Catalyst, with
   a native AppKit/SwiftUI port in progress)
 - **Android** — native Jetpack Compose + the same core via UniFFI→Kotlin (in progress)
-- **Windows / Linux** — Tauri 2 (Rust backend links the core directly; WebView2 UI). GUI
-  client *and* a headless circle-relay in one binary (in progress — see
-  [`docs/WINDOWS-PORT.md`](docs/WINDOWS-PORT.md))
+- **Windows / Linux** — Tauri 2 (Rust backend links the core directly; WebView2/WebKitGTK
+  UI). GUI client *and* a headless circle-relay in one binary (in progress). Linux ships on
+  **Ubuntu / Debian / Raspberry Pi OS** (`.deb`/AppImage/`.rpm`), **Arch** (AUR), and
+  **SteamOS / Steam Deck** (Flatpak); the `haven-relay` daemon cross-builds for
+  x86_64/aarch64/armv7/armv6. See [`docs/LINUX.md`](docs/LINUX.md) and
+  [`docs/WINDOWS-PORT.md`](docs/WINDOWS-PORT.md)
 - **Apple Watch** — glanceable companion (messages/photos/reactions/quick replies;
   not bulk video)
 
@@ -123,5 +126,6 @@ noncommercial restriction is the difference). Contributions require a CLA/DCO.
 - [`docs/MACOS-NATIVE-PORT.md`](docs/MACOS-NATIVE-PORT.md) — Mac Catalyst → native AppKit/SwiftUI port
 - [`docs/ANDROID-PARITY.md`](docs/ANDROID-PARITY.md) — the native Android client plan + status
 - [`docs/WINDOWS-PORT.md`](docs/WINDOWS-PORT.md) — the Windows/Linux Tauri desktop client plan + status
+- [`docs/LINUX.md`](docs/LINUX.md) — Linux GUI + headless relay: per-distro install (Ubuntu/Debian/Raspbian/Arch/SteamOS), packaging, parity
 - [`docs/WEB-PARITY.md`](docs/WEB-PARITY.md) — why the web client was abandoned
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — milestones and prerequisites

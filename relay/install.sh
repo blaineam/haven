@@ -50,8 +50,10 @@ ARCH="$(uname -m 2>/dev/null || echo unknown)"
 # ─────────────────────────────────────────────────────────────────────────────────────
 install_relay() {
   case "$OS-$ARCH" in
-    Linux-x86_64)   TARGET="x86_64-unknown-linux-musl" ;;
-    Linux-aarch64)  TARGET="aarch64-unknown-linux-musl" ;;
+    Linux-x86_64)              TARGET="x86_64-unknown-linux-musl" ;;
+    Linux-aarch64|Linux-arm64) TARGET="aarch64-unknown-linux-musl" ;;   # 64-bit Raspberry Pi OS / Arm servers
+    Linux-armv7l)              TARGET="armv7-unknown-linux-musleabihf" ;; # 32-bit Raspbian, Pi 2/3/4
+    Linux-armv6l)              TARGET="arm-unknown-linux-musleabihf" ;;   # Pi Zero / Pi 1
     Darwin-arm64)   TARGET="aarch64-apple-darwin" ;;
     Darwin-x86_64)  TARGET="x86_64-apple-darwin" ;;
     *) echo "✗ No prebuilt haven-relay for $OS-$ARCH."
