@@ -4,408 +4,125 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#0b0b10" />
-<title>Haven</title>
+<title>Haven — your friends and your family</title>
+<meta name="description" content="Haven is a private, peer-to-peer social app for your circle. End-to-end encrypted, no servers, no ads, no tracking. Get the app." />
 <style>
   :root{
     --violet:#7C3AED; --pink:#EC4899; --amber:#F59E0B;
     --brand:linear-gradient(135deg,var(--violet),var(--pink),var(--amber));
-    --bg:#0b0b10; --card:rgba(255,255,255,.055); --card-border:rgba(255,255,255,.08);
-    --text:#f5f5f7; --text2:rgba(245,245,247,.62); --text3:rgba(245,245,247,.38);
-    --radius:20px; --shadow:0 10px 30px rgba(0,0,0,.35);
+    --bg:#0b0b10; --card:rgba(255,255,255,.055); --card-border:rgba(255,255,255,.10);
+    --text:#f5f5f7; --text2:rgba(245,245,247,.66); --text3:rgba(245,245,247,.42);
+    --radius:22px;
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-  html,body{margin:0;height:100%}
+  html,body{margin:0;min-height:100%}
   body{
     font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,system-ui,sans-serif;
-    color:var(--text); background:var(--bg); overflow:hidden;
+    color:var(--text); background:var(--bg); line-height:1.5;
     background-image:
-      radial-gradient(60% 40% at 80% -5%, rgba(236,72,153,.20), transparent 60%),
-      radial-gradient(55% 40% at 0% 8%, rgba(124,58,237,.20), transparent 60%);
+      radial-gradient(60% 40% at 85% -8%, rgba(236,72,153,.20), transparent 60%),
+      radial-gradient(55% 40% at -5% 6%, rgba(124,58,237,.22), transparent 60%);
+    display:flex; flex-direction:column; align-items:center; padding:32px 20px 48px;
   }
-  /* phone column on desktop, full-bleed on mobile */
-  #app{position:relative;max-width:480px;height:100dvh;margin:0 auto;display:flex;flex-direction:column;
-       border-left:1px solid var(--card-border);border-right:1px solid var(--card-border)}
-  header.bar{display:flex;align-items:center;justify-content:space-between;padding:14px 18px 8px;}
-  .logo{font-weight:800;font-size:26px;letter-spacing:-.5px;
-        background:var(--brand);-webkit-background-clip:text;background-clip:text;color:transparent}
-  .circlepill{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--text2);
-        background:var(--card);border:1px solid var(--card-border);padding:6px 12px;border-radius:999px;cursor:pointer}
-  .iconbtn{width:38px;height:38px;border-radius:999px;border:1px solid var(--card-border);background:var(--card);
-        color:var(--text);font-size:16px;display:grid;place-items:center;cursor:pointer}
-  main{flex:1;overflow-y:auto;overflow-x:hidden;padding:6px 14px 90px;-webkit-overflow-scrolling:touch}
-  main::-webkit-scrollbar{display:none}
-
-  /* stories */
-  .stories{display:flex;gap:14px;overflow-x:auto;padding:8px 2px 14px;scrollbar-width:none}
-  .stories::-webkit-scrollbar{display:none}
-  .story{flex:0 0 auto;text-align:center;cursor:pointer;width:66px}
-  .ring{width:64px;height:64px;border-radius:999px;padding:3px;background:var(--brand);margin:0 auto}
-  .ring.add{background:none;border:2px solid transparent;
-        background-image:linear-gradient(var(--bg),var(--bg)),var(--brand);
-        background-origin:border-box;background-clip:content-box,border-box;display:grid;place-items:center}
-  .ring img,.ring .ph{width:100%;height:100%;border-radius:999px;object-fit:cover;display:block;background:#222}
-  .ring-fallback{width:100%;height:100%;border-radius:999px;display:grid;place-items:center;
-        background:var(--brand);color:#fff;font-weight:800;font-size:22px;text-transform:uppercase}
-  .vmedia-fallback{position:absolute;inset:0;display:grid;place-items:center;padding:32px;text-align:center;
-        background:var(--brand);color:#fff;font-weight:700;font-size:22px;line-height:1.4}
-  .story .add-plus{font-size:22px;color:var(--pink)}
-  .story small{display:block;margin-top:6px;font-size:11px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-
-  /* compose */
-  .compose{display:flex;gap:10px;align-items:center;background:var(--card);border:1px solid var(--card-border);
-        border-radius:var(--radius);padding:10px 12px;margin:4px 2px 16px;box-shadow:var(--shadow)}
-  .compose input{flex:1;background:none;border:none;color:var(--text);font-size:15px;outline:none}
-  .compose input::placeholder{color:var(--text3)}
-  .send{border:none;background:var(--brand);color:#fff;font-weight:700;border-radius:999px;padding:9px 16px;cursor:pointer;font-size:14px}
-
-  /* post card */
+  .wrap{width:100%;max-width:560px;text-align:center}
+  .logo{font-weight:800;font-size:40px;letter-spacing:-1px;
+    background:var(--brand);-webkit-background-clip:text;background-clip:text;color:transparent;margin-bottom:6px}
+  .tag{color:var(--text2);font-size:17px;margin:0 auto 28px;max-width:34ch}
   .card{background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);
-        padding:14px;margin-bottom:16px;box-shadow:var(--shadow)}
-  .phead{display:flex;align-items:center;gap:10px;margin-bottom:10px}
-  .avatar{width:38px;height:38px;border-radius:999px;background:var(--brand);display:grid;place-items:center;
-        color:#fff;font-weight:700;font-size:15px;flex:0 0 auto}
-  .pname{font-weight:600;font-size:15px}
-  .ptime{font-size:12px;color:var(--text3)}
-  .pbody{font-size:15px;line-height:1.45;margin:2px 0 10px;white-space:pre-wrap}
-  .pmedia{border-radius:14px;overflow:hidden;margin-bottom:10px;background:#15151c}
-  .pmedia img{width:100%;display:block}
-  .react{display:flex;gap:8px;flex-wrap:wrap}
-  .chip{font-size:13px;background:rgba(255,255,255,.06);border:1px solid var(--card-border);
-        border-radius:999px;padding:5px 10px;cursor:pointer;user-select:none}
-  .chip.hearted{background:rgba(236,72,153,.18);border-color:rgba(236,72,153,.5)}
-
-  /* messages */
-  .mrow{display:flex;align-items:center;gap:12px;padding:12px 4px;border-bottom:1px solid var(--card-border);cursor:pointer}
-  .mrow .meta{flex:1;min-width:0}
-  .mrow .nm{font-weight:600;font-size:15px}
-  .mrow .pv{font-size:13px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .bubbles{display:flex;flex-direction:column;gap:8px;padding:8px 2px}
-  .bub{max-width:78%;padding:9px 13px;border-radius:18px;font-size:15px;line-height:1.35}
-  .bub.me{align-self:flex-end;background:var(--brand);color:#fff}
-  .bub.them{align-self:flex-start;background:rgba(255,255,255,.08)}
-  .bubtime{font-size:10px;color:var(--text3);margin-top:2px}
-
-  /* you page */
-  .you-head{text-align:center;padding:12px 0 20px}
-  .you-av{width:92px;height:92px;border-radius:999px;background:var(--brand);display:grid;place-items:center;
-        color:#fff;font-weight:800;font-size:34px;margin:0 auto 12px;box-shadow:0 10px 24px rgba(236,72,153,.35)}
-  .you-name{font-size:22px;font-weight:700}
-  .you-sub{font-size:13px;color:var(--text2);margin-top:4px}
-  .listcard{background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);padding:4px 0;margin-bottom:14px;overflow:hidden}
-  .li{display:flex;align-items:center;gap:12px;padding:14px 16px;cursor:pointer;border-bottom:1px solid var(--card-border)}
-  .li:last-child{border-bottom:none}
-  .li .ic{color:var(--pink)} .li .gr{margin-left:auto;color:var(--text3)}
-  .privacy{display:flex;gap:12px;background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);padding:14px;margin-bottom:14px}
-  .privacy .lk{color:#34d399;font-size:22px}
-  .invite{display:block;width:100%;border:none;background:var(--brand);color:#fff;font-weight:700;
-        padding:15px;border-radius:999px;font-size:16px;cursor:pointer;margin-bottom:16px;box-shadow:0 10px 24px rgba(236,72,153,.35)}
-
-  /* tab bar */
-  nav.tabs{position:absolute;left:0;right:0;bottom:0;display:flex;background:rgba(11,11,16,.8);
-        backdrop-filter:blur(18px);border-top:1px solid var(--card-border);padding:8px 0 calc(8px + env(safe-area-inset-bottom))}
-  nav.tabs button{flex:1;background:none;border:none;color:var(--text3);font-size:11px;display:flex;flex-direction:column;
-        align-items:center;gap:3px;cursor:pointer}
-  nav.tabs button .ti{font-size:20px}
-  nav.tabs button.on{color:var(--pink)}
-
-  .title{font-size:20px;font-weight:700;padding:6px 2px 14px}
-  .backbtn{background:none;border:none;color:var(--pink);font-size:15px;cursor:pointer;padding:6px 0}
-
-  /* story viewer */
-  #viewer{position:fixed;inset:0;background:#000;z-index:50;display:none}
-  #viewer.show{display:block}
-  #viewer .vmedia{position:absolute;inset:0;display:grid;place-items:center}
-  #viewer .vmedia img{max-width:100%;max-height:100%}
-  #viewer .vbars{position:absolute;top:0;left:0;right:0;display:flex;gap:4px;padding:14px 14px 0}
-  #viewer .vbar{flex:1;height:3px;background:rgba(255,255,255,.3);border-radius:2px;overflow:hidden}
-  #viewer .vbar i{display:block;height:100%;width:0;background:#fff}
-  #viewer .vhead{position:absolute;top:26px;left:16px;right:16px;display:flex;align-items:center;gap:8px;color:#fff}
-  #viewer .vcap{position:absolute;left:24px;right:24px;bottom:80px;text-align:center;color:#fff;font-weight:600;
-        font-size:20px;text-shadow:0 1px 8px rgba(0,0,0,.5)}
-  #viewer .vsong{position:absolute;left:0;right:0;bottom:36px;text-align:center;color:#fff;font-size:13px;opacity:.9}
-  #viewer .vclose{position:absolute;top:24px;right:18px;color:#fff;font-size:22px;background:none;border:none;cursor:pointer;z-index:2}
-  .hidden{display:none!important}
-  .heartpop{position:fixed;font-size:90px;color:var(--pink);pointer-events:none;z-index:60;
-        animation:hp .8s ease forwards;text-shadow:0 4px 20px rgba(0,0,0,.4)}
-  @keyframes hp{0%{transform:scale(.2);opacity:0}30%{transform:scale(1.1);opacity:1}100%{transform:scale(1);opacity:0}}
+    padding:26px 22px;margin:0 auto 18px;text-align:left}
+  .btn{display:block;width:100%;border:none;border-radius:999px;padding:15px 18px;font-size:16px;font-weight:700;
+    cursor:pointer;text-align:center;text-decoration:none;color:#fff;background:var(--brand);margin-top:6px}
+  .btn.ghost{background:transparent;border:1.5px solid rgba(255,255,255,.22);color:var(--text);margin-top:12px}
+  .muted{color:var(--text3);font-size:13px;margin-top:14px;text-align:center}
+  h2{margin:0 0 6px;font-size:22px}
+  ul.points{list-style:none;padding:0;margin:14px 0 0}
+  ul.points li{display:flex;gap:10px;align-items:flex-start;margin:10px 0;color:var(--text2);font-size:15px}
+  ul.points li b{color:var(--text)}
+  .dot{flex:0 0 auto;width:8px;height:8px;border-radius:999px;margin-top:8px;background:var(--brand)}
+  .platforms{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:10px}
+  .pill{font-size:13px;color:var(--text2);background:var(--card);border:1px solid var(--card-border);
+    border-radius:999px;padding:7px 13px}
+  a.inline{color:var(--pink);text-decoration:none}
+  #status{min-height:18px}
 </style>
 </head>
 <body>
-<div id="app">
-  <header class="bar" id="topbar">
+  <div class="wrap" id="app">
     <div class="logo">Haven</div>
-    <div style="display:flex;gap:10px;align-items:center">
-      <div class="circlepill" id="circlepill">✨ Family ▾</div>
-      <button class="iconbtn" id="silentBtn" title="Silent">🔔</button>
-    </div>
-  </header>
-  <main id="screen"></main>
-  <nav class="tabs">
-    <button data-tab="feed" class="on"><span class="ti">✨</span>Circle</button>
-    <button data-tab="messages"><span class="ti">💬</span>Messages</button>
-    <button data-tab="you"><span class="ti">👤</span>You</button>
-  </nav>
-</div>
-
-<div id="viewer">
-  <div class="vbars" id="vbars"></div>
-  <button class="vclose" onclick="closeViewer()">✕</button>
-  <div class="vhead" id="vhead"></div>
-  <div class="vmedia" id="vmedia"></div>
-  <div class="vcap" id="vcap"></div>
-  <div class="vsong" id="vsong"></div>
-  <div style="position:absolute;inset:0;display:flex">
-    <div style="flex:1" onclick="viewerPrev()"></div>
-    <div style="flex:1" onclick="viewerNext()"></div>
+    <p class="tag">Your friends <i>and</i> your family. A private, end-to-end-encrypted circle — no servers, no ads, no tracking.</p>
+    <div id="content"></div>
   </div>
-</div>
 
-<script type="module">
-// The REAL Haven engine, compiled from the same Rust core (p2pcore) the phone runs,
-// loaded here as WebAssembly. Identity, post-quantum sealing, and feed reduction all
-// happen in your browser — no mock data, no server. (Networking to your circle over
-// iroh-in-browser is the next layer; until then the feed shows your own real, sealed
-// posts + anything synced in.)
-// The wasm class keeps its internal name (HavenEngine) — bundle id + internal identifiers
-// HavenEngine identity, persisted in localStorage.
-import init, { HavenEngine } from "./engine/haven_wasm.js";
-let engine = null;
+<script>
+// Honest, server-free landing page. Haven is a NATIVE app (iOS/macOS, with Linux/Windows relay
+// + desktop on the way). The browser can't be a peer on Haven's peer-to-peer network, so this
+// page's only job is to open the app — and to carry invite links to it.
+const APP_STORE_URL = "";   // set when live on the App Store
+const LEARN_URL = "https://wemiller.com/apps/haven/";
 
-async function boot(){
-  try{
-    await init();
-    const saved = localStorage.getItem("haven.seed") || undefined;
-    engine = new HavenEngine(saved);
-    localStorage.setItem("haven.seed", engine.seed_hex());   // persist identity
-    window.havenEngine = engine;   // handle for the mesh/relay layer (and debugging)
-  }catch(e){
-    console.error("engine init failed", e);
-  }
-  const inv = detectInvite();
-  if(inv){ renderInvite(inv); return; }   // landed on an invite link → show the invite flow
-  render();
-}
-
-// An invite payload "<id>.<verify>" rides in the URL fragment (works on any static host).
+// An invite payload "<id>.<verify>" rides in the URL fragment.
 function detectInvite(){
   const h = location.hash.replace(/^#/, "");
   const dot = h.indexOf(".");
   if(dot < 1) return null;
   const id = h.slice(0, dot), verify = h.slice(dot + 1);
   if(!id || !verify) return null;
-  return { id, verify, app: `haven://invite#${id}.${verify}`, full: location.href };
+  return { appUrl: `haven://invite#${id}.${verify}` };
 }
 
-// Launch the native app via its haven:// scheme. A top-level navigation on the user's tap is
-// the reliable way to open a registered custom scheme (modern Safari blocks iframe launches).
-// If the app isn't installed we surface a gentle hint to use the browser option instead.
+// Open the native app via its custom scheme (a top-level navigation on the user's tap is the
+// reliable way; modern browsers block silent/iframe launches).
 function openInApp(appUrl){
-  const status = document.getElementById("inv-status");
+  const status = document.getElementById("status");
   let left = false;
   const onHide = () => { left = true; };
   document.addEventListener("visibilitychange", onHide, { once:true });
   setTimeout(() => {
     document.removeEventListener("visibilitychange", onHide);
-    if(!left && status) status.textContent = "Don't have Haven installed? Continue in this browser below.";
+    if(!left && status) status.textContent = "Don't have Haven yet? Install it, then tap the invite link again.";
   }, 1500);
-  window.location.href = appUrl;   // opens the app if haven:// is registered
+  window.location.href = appUrl;
 }
 
-function renderInvite(inv){
-  const root = document.getElementById("app") || document.body;
-  root.innerHTML = `
-    <div style="max-width:420px;margin:8vh auto;padding:28px 22px;text-align:center;
-                background:var(--card,#16131f);border-radius:22px">
-      <div style="font-size:40px">👋</div>
-      <h2 style="margin:10px 0 4px">You've been invited to Haven</h2>
-      <p style="opacity:.7;margin:0 0 22px">A private, peer-to-peer circle. Open it in the app, or continue right here in your browser.</p>
-      <button id="inv-open" class="invite">Open in the Haven app</button>
-      <button id="inv-web" class="invite" style="background:transparent;border:1px solid var(--brand,#7C3AED);color:var(--brand,#7C3AED);margin-top:10px">Continue in this browser</button>
-      <div id="inv-status" style="opacity:.7;margin-top:14px;font-size:14px"></div>
-    </div>`;
-  document.getElementById("inv-open").onclick = () => openInApp(inv.app);
-  document.getElementById("inv-web").onclick = () => {
-    const s = document.getElementById("inv-status");
-    try {
-      if(!engine){ s.textContent = "Engine still loading — try again in a moment."; return; }
-      engine.add_contact(inv.full);                 // the link is scheme-agnostic
-      s.textContent = "Added! Opening your circle…";
-      setTimeout(() => { history.replaceState(null, "", "./"); location.reload(); }, 700);
-    } catch(e){
-      s.textContent = "Couldn't add from this link: " + (e && e.message ? e.message : e);
-    }
-  };
+function getAppButtons(){
+  if(APP_STORE_URL) return `<a class="btn" href="${APP_STORE_URL}">Get Haven on the App Store</a>`;
+  return `<a class="btn" href="${LEARN_URL}">Learn more &amp; get Haven</a>`;
 }
-
-function feedPosts(){
-  if(!engine) return [];
-  let items = [];
-  try{ items = JSON.parse(engine.feed_json(BigInt(Date.now()))); }catch(e){ items = []; }
-  const myId = engine.node_id_hex();
-  return items
-    .filter(it => !it.unsent && !it.story)
-    .sort((a,b)=> b.created_at - a.created_at)
-    .map(it => ({
-      who: it.author === myId ? "You" : (it.author.slice(0,6)),
-      initial: (it.author === myId ? "Y" : it.author.slice(0,1).toUpperCase()),
-      time: relTime(it.created_at),
-      body: it.body, media:"",
-      hearts: 0, reacts: (it.reactions||[]).map(r=>[r.emoji, (r.authors||[]).length]),
-      hearted:false, id: it.id,
-    }));
-}
-function relTime(ms){
-  const s = Math.max(1, Math.floor((Date.now()-ms)/1000));
-  if(s<60) return s+"s"; if(s<3600) return Math.floor(s/60)+"m";
-  if(s<86400) return Math.floor(s/3600)+"h"; return Math.floor(s/86400)+"d";
-}
-
-const me = { name:"You", initial:"Y" };
-const C = { violet:"#7C3AED", pink:"#EC4899", amber:"#F59E0B" };
-
-// No sample data — everything below comes from the real engine. The browser holds your
-// identity + sealed posts/stories; media bytes and DM threads live on the phone until the
-// networking layer (see docs/HAVEN-NET-RELAY.md) syncs them here.
-let state = { tab:"feed", thread:null, silent:false };
-let currentStories = [];
-
-/// Real stories reduced from the engine's feed (story==true), newest first.
-function feedStories(){
-  if(!engine) return [];
-  let items=[];
-  try{ items=JSON.parse(engine.feed_json(BigInt(Date.now()))); }catch(e){ items=[]; }
-  const myId=engine.node_id_hex();
-  return items.filter(it=>it.story && !it.unsent)
-    .sort((a,b)=>b.created_at-a.created_at)
-    .map(it=>({
-      who: it.author===myId ? "You" : it.author.slice(0,6),
-      initial: it.author===myId ? "Y" : it.author.slice(0,1).toUpperCase(),
-      caption: it.body||"", media:"", song:"",
-    }));
-}
-
-const el = (id)=>document.getElementById(id);
-const screen = ()=>el("screen");
 
 function render(){
-  document.querySelectorAll("nav.tabs button").forEach(b=>b.classList.toggle("on", b.dataset.tab===state.tab));
-  el("topbar").style.display = (state.tab==="feed") ? "flex" : "flex";
-  if(state.tab==="feed") renderFeed();
-  else if(state.tab==="messages") renderMessages();
-  else renderYou();
-}
-
-function renderFeed(){
-  currentStories = feedStories();
-  let h = `<div class="stories">`;
-  h += `<div class="story" onclick="alert('Open the iOS/macOS app to capture a story 📸')">
-          <div class="ring add"><span class="add-plus">＋</span></div><small>Add</small></div>`;
-  currentStories.forEach((s,i)=>{
-    const face = s.media ? `<img src="${s.media}" alt="">`
-      : `<div class="ring-fallback">${esc((s.caption||s.who).slice(0,1))}</div>`;
-    h += `<div class="story" onclick="openViewer(${i})">
-            <div class="ring">${face}</div><small>${esc(s.who)}</small></div>`;
-  });
-  h += `</div>`;
-  h += `<div class="compose">
-          <input id="composeInput" placeholder="Share something with your circle…" onkeydown="if(event.key==='Enter')postNow()">
-          <button class="send" onclick="postNow()">Post</button></div>`;
-  const posts = feedPosts();
-  if(posts.length===0){
-    h += `<div class="card" style="text-align:center;color:var(--text2)">
-            Your real Haven identity is live in this browser 🔐<br>
-            <span style="font-size:13px">Posts you write are sealed by the real engine. They'll sync to your circle once the web client connects (networking, next).</span></div>`;
+  const inv = detectInvite();
+  const el = document.getElementById("content");
+  if(inv){
+    el.innerHTML = `
+      <div class="card" style="text-align:center">
+        <div style="font-size:42px">👋</div>
+        <h2>You've been invited to Haven</h2>
+        <p style="color:var(--text2);margin:6px 0 4px">Open the invite in the Haven app to join the circle securely.</p>
+        <button class="btn" id="open">Open in the Haven app</button>
+        ${getAppButtons().replace('class="btn"','class="btn ghost"')}
+        <div id="status" class="muted"></div>
+      </div>`;
+    document.getElementById("open").onclick = () => openInApp(inv.appUrl);
+  } else {
+    el.innerHTML = `
+      <div class="card">
+        <h2>A social app just for your people</h2>
+        <ul class="points">
+          <li><span class="dot"></span><span><b>End-to-end, post-quantum encrypted.</b> Only your circle can read what you share.</span></li>
+          <li><span class="dot"></span><span><b>No servers, no accounts, no tracking.</b> Your posts move peer-to-peer between your devices.</span></li>
+          <li><span class="dot"></span><span><b>Photos, videos, stories, messages &amp; calls</b> — shared privately with the people you choose.</span></li>
+        </ul>
+        ${getAppButtons()}
+        <div class="platforms">
+          <span class="pill">iPhone &amp; iPad</span><span class="pill">Mac</span>
+          <span class="pill">Linux / Windows relay</span>
+        </div>
+        <div id="status" class="muted">Have an invite link? Open it on your phone to join a circle.</div>
+      </div>`;
   }
-  posts.forEach((p,i)=> h += postCard(p,i));
-  screen().innerHTML = h;
 }
-
-function postCard(p,i){
-  const media = p.media ? `<div class="pmedia" ondblclick="heart(${i},event)"><img src="${p.media}" alt=""></div>` : "";
-  const chips = p.reacts.map(r=>`<span class="chip">${r[0]} ${r[1]}</span>`).join("")
-    + `<span class="chip ${p.hearted?'hearted':''}" onclick="heart(${i},event)">❤️ ${p.hearts}</span>`;
-  return `<div class="card">
-    <div class="phead"><div class="avatar">${p.initial}</div>
-      <div><div class="pname">${p.who}</div><div class="ptime">${p.time} ago</div></div></div>
-    ${p.body?`<div class="pbody">${esc(p.body)}</div>`:""}
-    ${media}
-    <div class="react">${chips}</div></div>`;
-}
-
-function renderMessages(){
-  // DMs are private 1:1 threads that live on your phone; they reach the web client with
-  // the networking layer (docs/HAVEN-NET-RELAY.md). No fake threads here — honest empty state.
-  screen().innerHTML = `<div class="title">Messages</div>
-    <div class="card" style="text-align:center;color:var(--text2)">
-      💬<br><b>Your conversations live on your phone</b><br>
-      <span style="font-size:13px">Direct messages are end-to-end sealed to each person. They'll
-      appear here once the web client syncs with your circle (networking, next).</span></div>`;
-}
-
-function renderYou(){
-  const nodeId = engine ? engine.node_id_hex() : "…";
-  const link = engine ? engine.invite_link("wemiller.com/apps/haven") : "";
-  const ok = engine ? engine.self_test() : false;
-  screen().innerHTML = `
-    <div class="you-head"><div class="you-av">Y</div>
-      <div class="you-name">You</div><div class="you-sub">This is just for the people you choose.</div></div>
-    <div class="listcard" style="padding:14px">
-      <div style="font-weight:600;margin-bottom:6px">Your Haven id</div>
-      <div style="font-family:monospace;font-size:12px;color:var(--text2);word-break:break-all">${nodeId.slice(0,32)}…</div>
-      <div style="font-weight:600;margin:12px 0 6px">Your invite link</div>
-      <div style="font-size:12px;color:var(--text2);word-break:break-all">${esc(link)}</div>
-    </div>
-    <div class="privacy"><div class="lk">${ok?"🔒":"⚠️"}</div>
-      <div><div style="font-weight:600">${ok?"Real post-quantum encryption — verified in this browser":"Running privacy check…"}</div>
-      <div style="font-size:13px;color:var(--text2);margin-top:3px">A live seal → open round-trip just passed with your hybrid keys (X25519 + ML-KEM-768, Ed25519 + ML-DSA). Same engine as the phone, running as WebAssembly. No ads, no tracking, no server.</div></div></div>
-    <div class="listcard">
-      <div class="li" onclick="state.tab='messages';state.thread=null;render()"><span class="ic">💬</span> Messages <span class="gr">›</span></div>
-    </div>
-    <div style="text-align:center;font-size:12px;color:var(--text3);margin-top:10px">Real engine · local · networking to your circle is the next step</div>`;
-}
-
-// actions
-window.postNow = function(){
-  const inp = el("composeInput"); const t=(inp.value||"").trim(); if(!t || !engine) return;
-  engine.post(t, BigInt(Date.now()));  // REAL: sealed by the engine, stored, reduced into the feed
-  render();
-};
-window.heart = function(i,e){
-  if(e) e.stopPropagation();
-  if(e){ const h=document.createElement("div"); h.className="heartpop"; h.textContent="❤️";
-    h.style.left=(e.clientX-45)+"px"; h.style.top=(e.clientY-60)+"px"; document.body.appendChild(h);
-    setTimeout(()=>h.remove(),800); }
-};
-el("silentBtn").onclick=()=>{ state.silent=!state.silent; el("silentBtn").textContent=state.silent?"🔕":"🔔"; };
-
-// story viewer
-let vIdx=0, vTimer=null, vProg=0;
-function openViewer(i){ vIdx=i; el("viewer").classList.add("show"); showStory(); }
-function closeViewer(){ el("viewer").classList.remove("show"); clearInterval(vTimer); }
-function showStory(){
-  const s=currentStories[vIdx]; if(!s){ closeViewer(); return; }
-  el("vmedia").innerHTML = s.media ? `<img src="${s.media}" alt="">`
-    : `<div class="vmedia-fallback">${esc(s.caption||s.who)}</div>`;
-  el("vhead").innerHTML=`<div class="avatar" style="width:30px;height:30px;font-size:13px">${s.initial}</div>
-        <b>${esc(s.who)}</b><span style="opacity:.7;font-size:12px">· now</span>`;
-  el("vcap").textContent=s.caption||"";
-  el("vsong").innerHTML=s.song?`🎵 ${esc(s.song)}`:"";
-  let bars=""; currentStories.forEach((_,i)=>bars+=`<div class="vbar"><i id="vb${i}"></i></div>`);
-  el("vbars").innerHTML=bars;
-  for(let i=0;i<vIdx;i++) el("vb"+i).style.width="100%";
-  clearInterval(vTimer); vProg=0;
-  vTimer=setInterval(()=>{ vProg+=0.02; const b=el("vb"+vIdx); if(b) b.style.width=(vProg*100)+"%";
-        if(vProg>=1) viewerNext(); },100);
-}
-function viewerNext(){ if(vIdx+1<currentStories.length){vIdx++;showStory();} else closeViewer(); }
-function viewerPrev(){ if(vIdx>0){vIdx--;showStory();} }
-
-function esc(s){ return (s||"").replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-
-// Inline onclick handlers in the rendered HTML run in global scope, so expose them.
-Object.assign(window, { render, state, openViewer, viewerPrev, viewerNext, closeViewer });
-document.querySelectorAll("nav.tabs button").forEach(b=>b.onclick=()=>{ state.tab=b.dataset.tab; state.thread=null; render(); });
-boot();
+render();
+window.addEventListener("hashchange", render);
 </script>
 </body>
 </html>
