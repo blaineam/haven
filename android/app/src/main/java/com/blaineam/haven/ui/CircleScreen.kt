@@ -525,6 +525,11 @@ fun PostCard(item: FeedItemFfi, circleId: String = DEFAULT_CIRCLE) {
                 if (item.isMe) "You" else HavenNet.displayName(item.authorShort),
                 color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.SemiBold,
             )
+            Spacer(Modifier.weight(1f))
+            Text(
+                relativeTime(item.createdAt) + if (item.edited) " · edited" else "",
+                color = Color.White.copy(alpha = 0.5f), fontSize = 12.sp,
+            )
         }
         if (item.body.isNotBlank()) {
             Spacer(Modifier.height(10.dp))
@@ -655,5 +660,19 @@ fun PostCard(item: FeedItemFfi, circleId: String = DEFAULT_CIRCLE) {
                     }.padding(10.dp))
             }
         }
+    }
+}
+
+/** Compact relative timestamp for the feed (now / 5m / 3h / 2d / 1w), like the iOS feed. */
+private fun relativeTime(createdAtMs: kotlin.ULong): String {
+    val diff = System.currentTimeMillis() - createdAtMs.toLong()
+    if (diff < 0) return "now"
+    val s = diff / 1000
+    return when {
+        s < 45 -> "now"
+        s < 3600 -> "${s / 60}m"
+        s < 86_400 -> "${s / 3600}h"
+        s < 604_800 -> "${s / 86_400}d"
+        else -> "${s / 604_800}w"
     }
 }
