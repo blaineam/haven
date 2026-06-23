@@ -1,9 +1,29 @@
 # Android Parity Plan
 
-How each Haven capability reaches the Android app, and at what parity. Android is
-explicitly sequenced **after the web client works properly** — this is the map for when we
-start, not a commitment to start now. Targets the user's old device: **Android 10/11
-(API 29/30)**, so every choice below is checked against API 29.
+How each Haven capability reaches the Android app, and at what parity. Targets the user's old
+device: **Android 10/11 (API 29/30)**, so every choice below is checked against API 29.
+
+## Implementation status (in progress — native `android/`)
+
+The native client is underway in `android/` (Jetpack Compose + Material 3, minSdk 29), sharing
+the Rust core via UniFFI Kotlin bindings (`android/build-rust.sh` mirrors the Apple xcframework
+script). Verified on a physical **Nokia 6.1 (Android 15)**.
+
+- ✅ **Done + on-device verified:** toolchain + Rust→Kotlin FFI; theme/nav/onboarding; identity
+  in the Android Keystore; QR invite show/scan + MITM-guarded handshake; circle feed + composer;
+  reactions + comments; DMs (deterministic `dm:` circle); photo attach (sealed-at-rest local
+  store); profile editing; settings (retention, block list, start over); stories (tray + viewer).
+- 🧪 **Tests:** byte-exact wire-format unit tests + a 10-case on-device instrumented suite
+  (handshake, post/DM exchange, persistence, sealed-media round-trip, story flag).
+- 🚧 **Remaining:** cross-device media bytes (type-3/5 MediaReq/Chunk) + the offline mailbox;
+  in-app browser for links; **video/audio calls (Wave 5)**; music redesign, Nearby, notifications.
+
+Direct P2P over iroh works when both peers are online + handshaked; text posts/DMs/reactions/
+comments already flow peer-to-peer. Photo *bytes* and offline delivery are the next infra piece.
+
+---
+
+The original plan (still the map for the rest):
 
 ## The big lever: the core is already portable
 
