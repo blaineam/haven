@@ -59,7 +59,8 @@ object HavenNet : InboundListener {
     var internetActive = mutableStateOf(false); private set
     var started = mutableStateOf(false); private set
     var feedVersion = mutableStateOf(0); private set   // bump to recompose the feed
-    var relayActive = mutableStateOf(false); private set   // true once a mailbox put/get succeeds
+    var relayActive = mutableStateOf(false); private set
+    @Volatile var isForeground = false   // set by the UI lifecycle; suppresses notifications when open   // true once a mailbox put/get succeeds
 
     // Circle relay/mailbox: circleId -> relay node hex (the "circle supplied relay").
     private val relayNodes = HashMap<String, String>()
@@ -128,7 +129,7 @@ object HavenNet : InboundListener {
         val type = payload[0].toInt() and 0xFF
         val body = payload.copyOfRange(1, payload.size)
         // Call frames lead with a 64-char sender hex — drop blocked senders early (parity with iOS).
-        if (type in intArrayOf(CallWire.INVITE, CallWire.ACCEPT, CallWire.HANGUP, CallWire.OFFER,
+        if (type in intArrayOf(Wire.MEDIA_REQ, CallWire.INVITE, CallWire.ACCEPT, CallWire.HANGUP, CallWire.OFFER,
                 CallWire.ANSWER, CallWire.ICE, CallWire.GROUP_INVITE)) {
             if (body.size >= 64) {
                 val head = String(body.copyOfRange(0, 64), Charsets.UTF_8)
@@ -141,6 +142,8 @@ object HavenNet : InboundListener {
                 Wire.HELLO -> handleHello(body)
                 Wire.EVENT -> handleEvent(body)
                 Wire.RELAY_NODE -> handleRelayNode(body)
+                Wire.MEDIA_REQ -> handleMediaRequest(body)
+                Wire.MEDIA_CHUNK -> handleMediaChunk(body)
                 CallWire.INVITE, CallWire.ACCEPT, CallWire.HANGUP, CallWire.OFFER,
                 CallWire.ANSWER, CallWire.ICE, CallWire.GROUP_INVITE ->
                     withContext(Dispatchers.Main) { callRouter?.invoke(type, body) }
@@ -235,7 +238,20 @@ object HavenNet : InboundListener {
         if (changed) {
             persist()
             scope.launch(Dispatchers.Main) { feedVersion.value++ }
+            requestMissingMedia()   // fetch any photos/videos the new post references
+            notifyInbound(ev.circleId)
         }
+    }
+
+    /** Post a local notification for new inbound content when the app isn't foreground. */
+    private fun notifyInbound(circleId: String) {
+        if (isForeground) return
+        val isDm = circleId.startsWith("dm:")
+        Notifications.notify(
+            appContext,
+            title = if (isDm) "New message" else "New in your circle",
+            body = if (isDm) "You have a new Haven message" else "Someone posted in your circle",
+        )
     }
 
     // ---- Outbound ------------------------------------------------------------------------
@@ -470,12 +486,106 @@ object HavenNet : InboundListener {
                 if (seenMailbox.contains(key)) continue
                 val env = runCatching { client.get(key) }.getOrNull() ?: continue
                 seenMailbox.add(key)
-                if (runCatching { social.receive(circleId, env) }.getOrDefault(false)) changed = true
+                if (runCatching { social.receive(circleId, env) }.getOrDefault(false)) {
+                    changed = true
+                    notifyInbound(circleId)
+                }
             }
         }
         if (changed) {
             persist()
             withContext(Dispatchers.Main) { feedVersion.value++ }
+            requestMissingMedia()
+        }
+    }
+
+    // ---- Cross-device media bytes (frame 3 request / frame 5 sealed chunks), like iOS ----
+
+    private val mediaChunkSize = 512 * 1024
+    private class IncomingMedia(val total: Int) { val chunks = HashMap<Int, ByteArray>() }
+    private val incomingMedia = HashMap<String, IncomingMedia>()
+    private val requestedRefs = HashSet<String>()
+
+    /** Ask contacts for any media refs in the feed we don't have yet (frame 3). */
+    fun requestMissingMedia() {
+        val myHex = nodeIdHex
+        val refs = LinkedHashSet<String>()
+        for (c in social.circles()) {
+            val feed = runCatching { social.feed(c.id, nowMs(), null) }.getOrDefault(emptyList())
+            for (item in feed) {
+                item.media.forEach { if (!LocalMedia.has(it)) refs.add(it) }
+                item.comments.forEach { cm -> cm.media.forEach { if (!LocalMedia.has(it)) refs.add(it) } }
+            }
+        }
+        for (ref in refs) {
+            if (!requestedRefs.add(ref)) continue   // ask once per session per ref
+            val payload = myHex.toByteArray(Charsets.UTF_8) + ref.toByteArray(Charsets.UTF_8)
+            for (idHex in contacts.map { it.idHex }) sendFrame(Wire.MEDIA_REQ, payload, idHex)
+        }
+    }
+
+    /** Frame 3: [hex64 requester][ref]. If we hold the bytes, stream them back as sealed chunks. */
+    private fun handleMediaRequest(body: ByteArray) {
+        if (body.size <= 64) return
+        val requester = String(body.copyOfRange(0, 64), Charsets.UTF_8)
+        if (requester.length != 64) return
+        val ref = String(body.copyOfRange(64, body.size), Charsets.UTF_8)
+        if (ref.isEmpty() || !LocalMedia.has(ref)) return
+        val bytes = LocalMedia.loadAnyCircle(ref) ?: return
+        scope.launch { sendMediaChunks(ref, bytes, requester) }
+    }
+
+    private suspend fun sendMediaChunks(ref: String, bytes: ByteArray, requesterHex: String) {
+        val total = maxOf(1, (bytes.size + mediaChunkSize - 1) / mediaChunkSize)
+        val refBytes = ref.toByteArray(Charsets.UTF_8)
+        var index = 0
+        var offset = 0
+        while (offset < bytes.size) {
+            val end = minOf(offset + mediaChunkSize, bytes.size)
+            val chunk = bytes.copyOfRange(offset, end)
+            val sealed = runCatching { social.sealMedia(requesterHex, chunk) }.getOrNull() ?: return
+            sendFrame(Wire.MEDIA_CHUNK, chunkFrame(refBytes, index, total, sealed), requesterHex)
+            offset = end; index++
+        }
+    }
+
+    private fun chunkFrame(refBytes: ByteArray, index: Int, total: Int, sealed: ByteArray): ByteArray {
+        val out = ArrayList<Byte>(2 + refBytes.size + 8 + sealed.size)
+        out.add((refBytes.size and 0xFF).toByte()); out.add(((refBytes.size ushr 8) and 0xFF).toByte())
+        refBytes.forEach { out.add(it) }
+        for (v in intArrayOf(index, total)) {
+            out.add((v and 0xFF).toByte()); out.add(((v ushr 8) and 0xFF).toByte())
+            out.add(((v ushr 16) and 0xFF).toByte()); out.add(((v ushr 24) and 0xFF).toByte())
+        }
+        sealed.forEach { out.add(it) }
+        return out.toByteArray()
+    }
+
+    /** Frame 5: reassemble sealed chunks; store the media when complete. */
+    private fun handleMediaChunk(body: ByteArray) {
+        if (body.size < 2) return
+        val refLen = (body[0].toInt() and 0xFF) or ((body[1].toInt() and 0xFF) shl 8)
+        if (body.size < 2 + refLen + 8) return
+        val ref = String(body.copyOfRange(2, 2 + refLen), Charsets.UTF_8)
+        var off = 2 + refLen
+        fun u32(): Int {
+            val v = (body[off].toInt() and 0xFF) or ((body[off + 1].toInt() and 0xFF) shl 8) or
+                ((body[off + 2].toInt() and 0xFF) shl 16) or ((body[off + 3].toInt() and 0xFF) shl 24)
+            off += 4; return v
+        }
+        val index = u32(); val total = u32()
+        val sealed = body.copyOfRange(off, body.size)
+        if (ref.isEmpty() || total <= 0 || LocalMedia.has(ref)) return
+        val plain = runCatching { social.openMedia(sealed) }.getOrNull() ?: return
+        val entry = incomingMedia.getOrPut(ref) { IncomingMedia(total) }
+        entry.chunks[index] = plain
+        if (entry.chunks.size >= entry.total) {
+            val full = ByteArray(entry.chunks.values.sumOf { it.size })
+            var p = 0
+            for (i in 0 until entry.total) { val c = entry.chunks[i] ?: continue; c.copyInto(full, p); p += c.size }
+            LocalMedia.storeUnderRef(DEFAULT_CIRCLE, ref, full.copyOf(p))
+            incomingMedia.remove(ref)
+            scope.launch(Dispatchers.Main) { feedVersion.value++ }
         }
     }
 

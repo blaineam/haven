@@ -78,6 +78,15 @@ fun CircleScreen(onAddFriend: () -> Unit) {
     val storyGroups = remember(items) { groupStories(items) }
     val posts = remember(items) { items.filter { !it.story } }
     var viewingStory by remember { mutableStateOf<Int?>(null) }
+    var showStoryCamera by remember { mutableStateOf(false) }
+    val camPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) showStoryCamera = true
+    }
+    fun openStoryCamera() {
+        if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.CAMERA)
+            == android.content.pm.PackageManager.PERMISSION_GRANTED) showStoryCamera = true
+        else camPermission.launch(android.Manifest.permission.CAMERA)
+    }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) {
             if (com.blaineam.haven.core.isVideoUri(context, uri)) {
@@ -87,12 +96,6 @@ fun CircleScreen(onAddFriend: () -> Unit) {
                 val bytes = loadAndDownscale(context, uri)
                 if (bytes != null) pendingPhoto = LocalMedia.store(DEFAULT_CIRCLE, bytes)
             }
-        }
-    }
-    val storyPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-        if (uri != null) {
-            val bytes = loadAndDownscale(context, uri)
-            if (bytes != null) HavenNet.postStory("", LocalMedia.store(DEFAULT_CIRCLE, bytes))
         }
     }
 
@@ -115,7 +118,7 @@ fun CircleScreen(onAddFriend: () -> Unit) {
             // Stories tray (rings) — always shown so you can add your own.
             StoriesTray(
                 groups = storyGroups,
-                onAddStory = { storyPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                onAddStory = { openStoryCamera() },
                 onOpen = { viewingStory = it },
             )
 
@@ -205,6 +208,10 @@ fun CircleScreen(onAddFriend: () -> Unit) {
         // Full-screen story viewer overlay.
         viewingStory?.let { start ->
             StoryViewer(groups = storyGroups, startGroup = start, onClose = { viewingStory = null })
+        }
+        // In-app story camera overlay.
+        if (showStoryCamera) {
+            StoryCameraScreen(onClose = { showStoryCamera = false })
         }
     }
 }
@@ -315,6 +322,7 @@ fun PostCard(item: FeedItemFfi, circleId: String = DEFAULT_CIRCLE) {
         if (item.body.isNotBlank()) {
             Spacer(Modifier.height(10.dp))
             LinkedText(item.body, color = Color.White, fontSize = 15.sp)
+            LinkPreviewCard(item.body, Modifier.padding(top = 10.dp))
         }
 
         // Attached photos / videos.

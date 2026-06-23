@@ -88,9 +88,13 @@ dependencies {
     implementation("androidx.camera:camera-camera2:1.3.4")
     implementation("androidx.camera:camera-lifecycle:1.3.4")
     implementation("androidx.camera:camera-view:1.3.4")
+    implementation("androidx.camera:camera-video:1.3.4")
 
     // In-app browser (Chrome Custom Tabs) for opening shared links inside Haven.
     implementation("androidx.browser:browser:1.8.0")
+
+    // Background sync (serverless, like the iOS BGAppRefreshTask) for local notifications.
+    implementation("androidx.work:work-runtime-ktx:2.9.1")
 
     // WebRTC (maintained libwebrtc fork, prebuilt .so) for mesh group calls — Android side of
     // the same DTLS-SRTP media + SDP/ICE-over-sealed-channel design as iOS.

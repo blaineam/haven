@@ -70,10 +70,20 @@ private fun MainScaffold() {
         HavenNet.start()
         com.blaineam.haven.core.CallManager.init(context, HavenNet.nodeIdHex)
     }
+    // Notification permission on Android 13+ (no-op below).
+    val notifPermission = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.RequestPermission()) {}
+    LaunchedEffect(Unit) {
+        if (android.os.Build.VERSION.SDK_INT >= 33) notifPermission.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+    }
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val obs = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) HavenNet.syncWithContacts()
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> { HavenNet.isForeground = true; HavenNet.syncWithContacts() }
+                Lifecycle.Event.ON_PAUSE -> HavenNet.isForeground = false
+                else -> {}
+            }
         }
         lifecycleOwner.lifecycle.addObserver(obs)
         onDispose { lifecycleOwner.lifecycle.removeObserver(obs) }

@@ -54,6 +54,23 @@ object LocalMedia {
 
     fun has(ref: String): Boolean = File(dir, bareId(ref)).exists()
 
+    /** Load decrypted bytes trying each circle's key (for serving a media request). */
+    fun loadAnyCircle(ref: String): ByteArray? {
+        val f = File(dir, bareId(ref))
+        if (!f.exists()) return null
+        val stored = f.readBytes()
+        for (c in HavenNet.engine.circles()) {
+            runCatching { HavenNet.engine.openCircleMedia(c.id, stored) }.getOrNull()?.let { return it }
+        }
+        return stored   // fall back to raw (was stored unsealed)
+    }
+
+    /** Store received plaintext bytes under an exact ref (sealed at rest to the circle). */
+    fun storeUnderRef(circleId: String, ref: String, bytes: ByteArray) {
+        val toWrite = runCatching { HavenNet.engine.sealCircleMedia(circleId, bytes) }.getOrNull() ?: bytes
+        runCatching { File(dir, bareId(ref)).writeBytes(toWrite) }
+    }
+
     /** Delete every stored media file (part of "start over"). */
     fun clear() {
         runCatching { dir.listFiles()?.forEach { it.delete() } }
