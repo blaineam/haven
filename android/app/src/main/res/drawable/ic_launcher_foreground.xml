@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Haven mark: a little constellation of connected people, centered in the
+     adaptive-icon safe zone. Mirrors ConstellationMark in the iOS Theme.swift. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- edges -->
+    <path
+        android:strokeColor="#A6FFFFFF"
+        android:strokeWidth="1.1"
+        android:pathData="M54,55.8 L54,38.4 M54,55.8 L37.8,51.6 M54,55.8 L70.2,51.6 M54,55.8 L44.4,69 M54,55.8 L63.6,69 M54,38.4 L37.8,51.6 M54,38.4 L70.2,51.6 M37.8,51.6 L44.4,69 M70.2,51.6 L63.6,69" />
+    <!-- nodes -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M49.8,55.8 a4.2,4.2 0 1,0 8.4,0 a4.2,4.2 0 1,0 -8.4,0
+                          M51,38.4 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0
+                          M34.8,51.6 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0
+                          M67.2,51.6 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0
+                          M41.4,69 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0
+                          M60.6,69 a3,3 0 1,0 6,0 a3,3 0 1,0 -6,0" />
+</vector>
