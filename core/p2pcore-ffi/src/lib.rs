@@ -9,6 +9,8 @@ use std::sync::{Arc, Mutex};
 use std::collections::HashSet;
 
 use haven_net::Node;
+use haven_net::blobstore::{BlobClient, BlobServer};
+use std::path::PathBuf;
 use p2pcore::crypto::{decapsulate, encapsulate_to, open, seal, Encapsulation};
 use p2pcore::identity::{Identity, HavenId};
 use p2pcore::link::HavenLink;
@@ -18,6 +20,31 @@ use p2pcore::social::{
 };
 
 uniffi::setup_scaffolding!();
+
+/// Android only: receive the app's `Context` (and, via it, the `JavaVM`) from Kotlin and hand
+/// both to `ndk-context`. iroh's TLS stack (rustls platform verifier) reads the system trust
+/// store through JNI, which panics with "android context was not initialized" if this isn't done.
+/// Called once at startup by `com.blaineam.haven.core.NativeBridge.nativeInitAndroidContext`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_com_blaineam_haven_core_NativeBridge_nativeInitAndroidContext<'local>(
+    env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    context: jni::objects::JObject<'local>,
+) {
+    if let Ok(vm) = env.get_java_vm() {
+        if let Ok(global) = env.new_global_ref(&context) {
+            unsafe {
+                ndk_context::initialize_android_context(
+                    vm.get_java_vm_pointer() as *mut std::ffi::c_void,
+                    global.as_obj().as_raw() as *mut std::ffi::c_void,
+                );
+            }
+            // Leak the global ref so the Context stays valid for the whole process.
+            std::mem::forget(global);
+        }
+    }
+}
 
 /// Errors crossing the FFI boundary.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -165,8 +192,154 @@ pub fn self_test() -> SelfTestReport {
     }
 }
 
+/// Open a blob sealed to us by `seal_media`, using ONLY our 32-byte master seed —
+/// no loaded circle/account state required. This is for the iOS Notification Service
+/// Extension, which runs in its own process (often on the lock screen) with nothing
+/// but the seed read from the shared Keychain: it must decrypt the push payload and
+/// rewrite the alert without spinning up the whole engine or touching disk.
+///
+/// The wire layout matches `seal_media` exactly:
+/// `[32 eph_x_pub][u32 LE pq_len][pq_ct][aes-gcm ciphertext]`. Returns the plaintext,
+/// or `None` if the seed is the wrong length, the blob is malformed, or it wasn't
+/// sealed to us (decapsulation/AEAD fails) — the NSE then shows a generic alert.
+#[uniffi::export]
+pub fn open_sealed_with_seed(seed: Vec<u8>, sealed: Vec<u8>) -> Option<Vec<u8>> {
+    let seed: [u8; 32] = seed.try_into().ok()?;
+    let me = Identity::from_seed(&seed);
+    if sealed.len() < 36 {
+        return None;
+    }
+    let eph_x_pub: [u8; 32] = sealed[0..32].try_into().ok()?;
+    let pq_len = u32::from_le_bytes(sealed[32..36].try_into().ok()?) as usize;
+    if sealed.len() < 36 + pq_len {
+        return None;
+    }
+    let pq_ct = sealed[36..36 + pq_len].to_vec();
+    let ct = &sealed[36 + pq_len..];
+    let enc = Encapsulation { eph_x_pub, pq_ct };
+    let key = decapsulate(&me, &enc).ok()?;
+    open(&key, ct).ok()
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+// ===== Circle relay / mailbox (haven-relay blob store over Haven Net) =====
+
+/// A parsed relay link: which circle, and the member node ids the relay serves.
+#[derive(uniffi::Record)]
+pub struct RelayLinkInfo {
+    pub circle: String,
+    pub members: Vec<String>,
+}
+
+/// Build a `haven-relay://circle#<base32(json)>` link to hand to a relay (the Mac app's
+/// built-in relay, or a standalone `haven-relay`). Mirrors `haven-relay`'s `RelayLink` format.
+#[uniffi::export]
+pub fn make_relay_link(circle: String, members: Vec<String>) -> String {
+    let v = serde_json::json!({ "v": 1, "c": circle, "m": members });
+    let json = serde_json::to_vec(&v).unwrap_or_default();
+    format!("haven-relay://circle#{}", data_encoding::BASE32_NOPAD.encode(&json))
+}
+
+/// Parse a relay link (the `haven-relay://` form or a bare base32 payload).
+#[uniffi::export]
+pub fn parse_relay_link(uri: String) -> Option<RelayLinkInfo> {
+    let s = uri.trim();
+    let payload = s.rsplit_once('#').map(|(_, f)| f).unwrap_or(s);
+    if payload.is_empty() {
+        return None;
+    }
+    let json = data_encoding::BASE32_NOPAD.decode(payload.as_bytes()).ok()?;
+    let v: serde_json::Value = serde_json::from_slice(&json).ok()?;
+    if v.get("v").and_then(|x| x.as_u64()) != Some(1) {
+        return None;
+    }
+    let circle = v.get("c")?.as_str()?.to_string();
+    let members = v
+        .get("m")?
+        .as_array()?
+        .iter()
+        .filter_map(|x| x.as_str().map(String::from))
+        .collect();
+    Some(RelayLinkInfo { circle, members })
+}
+
+/// Client to a circle's blob mailbox (a relay's local-disk store, reached over Haven Net /
+/// iroh). Used to upload a circle-sealed media blob and fetch it later — no shared bucket
+/// credentials, just the relay's node id. The relay never sees content (blobs are sealed).
+#[derive(uniffi::Object)]
+pub struct RelayClient {
+    inner: BlobClient,
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+impl RelayClient {
+    /// Connect to a relay by its node id (from the relay link). `seed` is this device's
+    /// 32-byte identity (its own transport key).
+    #[uniffi::constructor]
+    pub async fn connect(seed: Vec<u8>, relay_node_hex: String) -> Result<Arc<Self>, HavenError> {
+        let s: [u8; 32] = seed
+            .try_into()
+            .map_err(|_| HavenError::Invalid { msg: "seed must be 32 bytes".into() })?;
+        let inner = BlobClient::connect(s, &relay_node_hex)
+            .await
+            .map_err(|e| HavenError::Invalid { msg: format!("relay connect: {e}") })?;
+        Ok(Arc::new(Self { inner }))
+    }
+
+    /// Store a sealed blob under `key` (e.g. `mailbox/<circle>/<hash>`).
+    pub async fn put(&self, key: String, data: Vec<u8>) -> Result<(), HavenError> {
+        self.inner
+            .put(&key, &data)
+            .await
+            .map_err(|e| HavenError::Invalid { msg: format!("relay put: {e}") })
+    }
+
+    /// Fetch a sealed blob (None if the relay doesn't have it).
+    pub async fn get(&self, key: String) -> Option<Vec<u8>> {
+        self.inner.get(&key).await.ok().flatten()
+    }
+
+    pub async fn has(&self, key: String) -> bool {
+        self.inner.has(&key).await.unwrap_or(false)
+    }
+
+    /// List keys under a prefix (e.g. `mailbox/<circle>`) to poll the mailbox.
+    pub async fn list(&self, prefix: String) -> Vec<String> {
+        self.inner.list(&prefix).await.unwrap_or_default()
+    }
+}
+
+/// The built-in relay/mailbox the Mac app runs in-process: a blob store served from a local
+/// directory over Haven Net. Hold the object to keep it serving; drop it to stop. Its
+/// `node_id_hex` is the `volunteer_node_id` to put in the circle's relay link.
+#[derive(uniffi::Object)]
+pub struct RelayServerHandle {
+    inner: Arc<BlobServer>,
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+impl RelayServerHandle {
+    /// Start serving blobs from `dir`, identified by `seed` (a stable, relay-specific 32-byte
+    /// key — give it its OWN seed, distinct from the messaging identity, so its node id is
+    /// stable and separate).
+    #[uniffi::constructor]
+    pub async fn start(seed: Vec<u8>, dir: String) -> Result<Arc<Self>, HavenError> {
+        let s: [u8; 32] = seed
+            .try_into()
+            .map_err(|_| HavenError::Invalid { msg: "seed must be 32 bytes".into() })?;
+        let inner = BlobServer::spawn(s, PathBuf::from(dir))
+            .await
+            .map_err(|e| HavenError::Invalid { msg: format!("relay start: {e}") })?;
+        Ok(Arc::new(Self { inner }))
+    }
+
+    /// The relay's node id (hex) — reference it in the circle's relay link.
+    pub fn node_id_hex(&self) -> String {
+        self.inner.node_id_hex()
+    }
 }
 
 // ===== Live social demo =====
@@ -233,6 +406,9 @@ impl SocialDemo {
     }
     pub fn react(&self, target: String, emoji: String, created_at: u64) -> String {
         self.author_event(true, created_at, EventKind::Reaction { target, emoji })
+    }
+    pub fn unreact(&self, target: String, emoji: String, created_at: u64) -> String {
+        self.author_event(true, created_at, EventKind::Unreact { target, emoji })
     }
     pub fn friend_react(&self, target: String, emoji: String, created_at: u64) -> String {
         self.author_event(false, created_at, EventKind::Reaction { target, emoji })
@@ -530,6 +706,19 @@ pub struct CircleInfoFfi {
     pub member_count: u32,
 }
 
+/// A verified profile "business card": the authoritative display name plus an optional
+/// one-line bio and a link the user chose to show. Bio/link are empty for legacy peers.
+#[derive(uniffi::Record)]
+pub struct ProfileCardFfi {
+    pub name: String,
+    pub bio: String,
+    pub link: String,
+    /// Base64 of a small JPEG avatar (empty if none).
+    pub avatar: String,
+    /// The peer's chosen emoji (empty if none).
+    pub emoji: String,
+}
+
 /// On-disk form, per circle, so circles/posts/contacts survive restarts and updates.
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PersistCircle {
@@ -652,21 +841,32 @@ impl HavenSocial {
         Ok(hex(&id.verification()))
     }
 
-    /// A signed profile: your chosen name signed by your identity key, so contacts can
-    /// display the name **you** chose — you hold authority over it, not a free-text
-    /// label they typed. Layout: [u32 sig_len][hybrid signature][name utf8].
-    pub fn my_signed_profile(&self, name: String) -> Vec<u8> {
+    /// A signed "business card": your chosen name + an optional one-line bio + an optional
+    /// link, signed by your identity key so contacts display what **you** chose (a relay
+    /// can't tamper). Layout: [u32 sig_len][hybrid signature][payload utf8], where the
+    /// signed payload is JSON `{"n":name,"b":bio,"l":link}`. A name-only legacy blob (raw
+    /// name after the signature, not JSON) is still accepted by the verifiers below.
+    pub fn my_signed_profile(&self, name: String, bio: String, link: String, avatar: String, emoji: String) -> Vec<u8> {
         let st = self.state.lock().unwrap();
-        let sig = st.me.sign(name.as_bytes());
+        let payload = serde_json::json!({ "n": name, "b": bio, "l": link, "a": avatar, "e": emoji }).to_string();
+        let sig = st.me.sign(payload.as_bytes());
         let mut out = (sig.len() as u32).to_le_bytes().to_vec();
         out.extend_from_slice(&sig);
-        out.extend_from_slice(name.as_bytes());
+        out.extend_from_slice(payload.as_bytes());
         out
     }
 
-    /// Verify a contact's signed profile against their bundle; returns the authoritative
-    /// name only if the signature checks out (so a relay can't rename someone).
+    /// Verify a contact's signed profile and return the authoritative **name** only (for
+    /// callers that just need the display name). Accepts both the JSON card and the legacy
+    /// name-only blob.
     pub fn verify_profile(&self, bundle: Vec<u8>, blob: Vec<u8>) -> Option<String> {
+        self.verify_profile_card(bundle, blob).map(|c| c.name)
+    }
+
+    /// Verify a contact's signed business card against their bundle. Returns name/bio/link
+    /// only if the hybrid signature checks out. A legacy name-only blob yields the name with
+    /// empty bio/link.
+    pub fn verify_profile_card(&self, bundle: Vec<u8>, blob: Vec<u8>) -> Option<ProfileCardFfi> {
         if blob.len() < 4 {
             return None;
         }
@@ -675,10 +875,21 @@ impl HavenSocial {
             return None;
         }
         let sig = &blob[4..4 + sig_len];
-        let name_bytes = &blob[4 + sig_len..];
+        let payload = &blob[4 + sig_len..];
         let id = HavenId::from_bytes(&bundle).ok()?;
-        id.verify(name_bytes, sig).ok()?;
-        String::from_utf8(name_bytes.to_vec()).ok()
+        id.verify(payload, sig).ok()?;
+        let text = String::from_utf8(payload.to_vec()).ok()?;
+        // New card is JSON; anything else is a legacy name-only profile.
+        match serde_json::from_str::<serde_json::Value>(&text) {
+            Ok(v) if v.get("n").is_some() => Some(ProfileCardFfi {
+                name: v.get("n").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                bio: v.get("b").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                link: v.get("l").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                avatar: v.get("a").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+                emoji: v.get("e").and_then(|x| x.as_str()).unwrap_or("").to_string(),
+            }),
+            _ => Some(ProfileCardFfi { name: text, bio: String::new(), link: String::new(), avatar: String::new(), emoji: String::new() }),
+        }
     }
 
     /// Add a contact's verified public bundle to a circle. Returns their node id hex.
@@ -752,12 +963,51 @@ impl HavenSocial {
     pub fn react(&self, circle_id: String, target: String, emoji: String, created_at: u64) -> Result<Vec<u8>, HavenError> {
         self.author(&circle_id, created_at, EventKind::Reaction { target, emoji })
     }
+    pub fn unreact(&self, circle_id: String, target: String, emoji: String, created_at: u64) -> Result<Vec<u8>, HavenError> {
+        self.author(&circle_id, created_at, EventKind::Unreact { target, emoji })
+    }
+    /// Flag a media content-ref as sensitive for the whole circle (e.g. on-device SCA flagged it).
+    /// Returns the sealed envelope to broadcast; once any member flags a ref, every client blurs it.
+    pub fn flag_sensitive(&self, circle_id: String, target: String, created_at: u64) -> Result<Vec<u8>, HavenError> {
+        self.author(&circle_id, created_at, EventKind::SensitiveFlag { target })
+    }
+    /// Media content-refs flagged sensitive in this circle's event log (by any member). The viewer
+    /// blurs these regardless of whether their own platform has Sensitive Content Analysis.
+    pub fn sensitive_refs(&self, circle_id: String) -> Vec<String> {
+        let st = self.state.lock().unwrap();
+        let Some(c) = st.circles.iter().find(|c| c.id == circle_id) else { return vec![] };
+        let mut out: Vec<String> = c.events.iter().filter_map(|e| {
+            if let EventKind::SensitiveFlag { target } = &e.kind { Some(target.clone()) } else { None }
+        }).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
     pub fn edit(&self, circle_id: String, target: String, body: String, media: Vec<String>, music: Option<TrackRefFfi>, mute_video: bool, created_at: u64) -> Result<Vec<u8>, HavenError> {
         let music = music.map(|m| m.into_core());
         self.author(&circle_id, created_at, EventKind::Edit { target, body, media, music, mute_video })
     }
     pub fn unsend(&self, circle_id: String, target: String, created_at: u64) -> Result<Vec<u8>, HavenError> {
         self.author(&circle_id, created_at, EventKind::Unsend { target })
+    }
+
+    /// Re-seal every event *I* authored in a circle into mailbox envelopes. Used to BACKFILL a
+    /// mailbox set up after I'd already posted: the relay/S3 mailbox never saw those posts, so a
+    /// member who wasn't online when I sent them can't fetch them. The app uploads each envelope
+    /// to the new mailbox; envelopes are content-addressed, so re-uploading is idempotent.
+    pub fn export_my_envelopes(&self, circle_id: String) -> Vec<Vec<u8>> {
+        let st = self.state.lock().unwrap();
+        let me_hex = hex(&st.me.public().node_id_bytes());
+        let Some(idx) = st.circles.iter().position(|c| c.id == circle_id) else { return vec![]; };
+        let mut members = vec![st.me.public()];
+        members.extend(st.circles[idx].members.iter().cloned());
+        let group = Group::new(circle_id.clone(), members);
+        st.circles[idx]
+            .events
+            .iter()
+            .filter(|e| e.author == me_hex)
+            .filter_map(|e| seal_event(&st.me, &group, e).ok().map(|env| env.to_bytes()))
+            .collect()
     }
 
     /// Ingest a sealed envelope received from the network. Opens it against the known
@@ -984,7 +1234,7 @@ mod net_tests {
         assert_eq!(alice_id, alice.my_node_hex());
 
         // Alice posts → envelope → Bob receives and opens it.
-        let env = alice.post(cid.clone(), "hi mom 💜".into(), vec![], None, None, false, 1_000).unwrap();
+        let env = alice.post(cid.clone(), "hi mom 💜".into(), vec![], None, None, false, false, 1_000).unwrap();
         assert!(bob.receive(cid.clone(), env.clone()).unwrap(), "new on first receive");
         assert!(!bob.receive(cid.clone(), env).unwrap(), "deduped on second receive");
 
@@ -996,23 +1246,40 @@ mod net_tests {
         // A stranger Bob hasn't added cannot be opened (ignored, not an error).
         let eve = HavenSocial::new([9u8; 32].to_vec()).unwrap();
         eve.add_contact_bundle(cid.clone(), bob.my_bundle()).unwrap();
-        let eve_env = eve.post(cid.clone(), "spam".into(), vec![], None, None, false, 1_500).unwrap();
+        let eve_env = eve.post(cid.clone(), "spam".into(), vec![], None, None, false, false, 1_500).unwrap();
         assert!(!bob.receive(cid.clone(), eve_env).unwrap(), "unknown sender is ignored");
         assert_eq!(bob.feed(cid.clone(), 2_000, None).len(), 1, "stranger's post not in feed");
 
-        // Signed profile: Bob reads Alice's authoritative name; a tampered name is rejected.
-        let prof = alice.my_signed_profile("Alice".into());
+        // Signed business card: Bob reads Alice's authoritative name + bio + link; a tampered
+        // payload is rejected.
+        let prof = alice.my_signed_profile("Alice".into(), "Mom of two".into(), "alice.example".into());
         assert_eq!(bob.verify_profile(alice.my_bundle(), prof.clone()).as_deref(), Some("Alice"));
+        let card = bob.verify_profile_card(alice.my_bundle(), prof.clone()).unwrap();
+        assert_eq!(card.name, "Alice");
+        assert_eq!(card.bio, "Mom of two");
+        assert_eq!(card.link, "alice.example");
         let mut forged = prof;
         let last = forged.len() - 1;
         forged[last] ^= 0xff;
-        assert!(bob.verify_profile(alice.my_bundle(), forged).is_none(), "tampered name rejected");
+        assert!(bob.verify_profile(alice.my_bundle(), forged).is_none(), "tampered card rejected");
 
         // Media blob: Alice seals a photo to Bob; Bob opens it; a stranger can't.
         let photo = vec![7u8; 5000];
         let sealed = alice.seal_media(bob.my_node_hex(), photo.clone()).unwrap();
         assert_eq!(bob.open_media(sealed.clone()), Some(photo.clone()));
         assert!(eve.open_media(sealed).is_none(), "non-recipient can't open media");
+
+        // NSE path: Bob's seed alone (no engine/circle state) opens the same blob; a
+        // wrong seed can't. This is exactly what the Notification Service Extension does.
+        let notif = alice.seal_media(bob.my_node_hex(), b"Alice|Sent you a message".to_vec()).unwrap();
+        assert_eq!(
+            open_sealed_with_seed([2u8; 32].to_vec(), notif.clone()),
+            Some(b"Alice|Sent you a message".to_vec()),
+            "NSE opens with Bob's seed only"
+        );
+        assert!(open_sealed_with_seed([9u8; 32].to_vec(), notif.clone()).is_none(), "wrong seed can't open");
+        assert!(open_sealed_with_seed([2u8; 32].to_vec(), vec![0u8; 4]).is_none(), "malformed blob is rejected");
+        assert!(open_sealed_with_seed([2u8; 31].to_vec(), notif).is_none(), "wrong-length seed is rejected");
 
         // Persistence: export Bob's store, reload into a fresh instance → posts survive.
         let saved = bob.export_state();
@@ -1026,7 +1293,7 @@ mod net_tests {
         alice.add_contact_bundle("fam".into(), bob.my_bundle()).unwrap();
         bob.create_circle("fam".into(), "Family".into());
         bob.add_contact_bundle("fam".into(), alice.my_bundle()).unwrap();
-        let fam_env = alice.post("fam".into(), "just family".into(), vec![], None, None, false, 3_000).unwrap();
+        let fam_env = alice.post("fam".into(), "just family".into(), vec![], None, None, false, false, 3_000).unwrap();
         assert!(bob.receive("fam".into(), fam_env).unwrap());
         assert_eq!(bob.feed("fam".into(), 4_000, None).len(), 1, "fam post lands in fam circle");
         assert_eq!(bob.feed(cid, 4_000, None).len(), 1, "default circle is unchanged");

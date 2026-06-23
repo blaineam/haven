@@ -11,8 +11,16 @@ crate-type = ["lib", "staticlib", "cdylib"]
 [dependencies]
 haven-net = { version = "0.0.1", path = "../haven-net" }
 p2pcore = { path = "../p2pcore" }
+data-encoding = "2.11.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 thiserror = "1"
 tokio = { version = "1.52.3", features = ["rt-multi-thread"] }
 uniffi = { version = "0.31.2", features = ["cli", "tokio"] }
+
+# Android-only: wire the JavaVM + Context into ndk-context so iroh's rustls platform
+# verifier can reach the system trust store (otherwise the node panics with
+# "android context was not initialized"). No effect on Apple/wasm builds.
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+ndk-context = "0.1"

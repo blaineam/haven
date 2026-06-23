@@ -13,3 +13,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 anyhow = "1"
 serde_json = "1.0.150"
 data-encoding = "2.11.0"
+rand = "0.8"
+
+[dev-dependencies]
+# Content-addressing in the blob-store integration test (mailbox key = hash of ciphertext).
+blake3 = "1"

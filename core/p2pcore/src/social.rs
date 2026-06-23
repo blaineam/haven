@@ -49,10 +49,17 @@ pub enum EventKind {
     Comment { target: String, body: String, media: Vec<String> },
     /// A reaction (emoji) to a post/message.
     Reaction { target: String, emoji: String },
+    /// Remove *your own* prior reaction (emoji) from a post/message.
+    Unreact { target: String, emoji: String },
     /// Edit the body of one of *your own* prior events.
     Edit { target: String, body: String, media: Vec<String>, music: Option<TrackRef>, #[serde(default)] mute_video: bool },
     /// Retract ("unsend") one of *your own* prior events.
     Unsend { target: String },
+    /// Mark a media content-ref as sensitive (e.g. an Apple client's on-device Sensitive Content
+    /// Analysis flagged it). Additive + irrevocable: once any circle member flags a ref every
+    /// client treats it as sensitive — so one member with SCA protects members on platforms with
+    /// no equivalent. `target` is the media content-ref (content-addressed → identical everywhere).
+    SensitiveFlag { target: String },
 }
 
 /// A signed, addressable social action.
@@ -477,6 +484,24 @@ pub fn build_feed(
                         authors: vec![e.author.clone()],
                     }),
                 }
+            }
+        }
+        if let EventKind::Unreact { target, emoji } = &e.kind {
+            let bucket: Option<&mut Vec<ReactionGroup>> = if let Some(it) = items.get_mut(target) {
+                Some(&mut it.reactions)
+            } else if let Some(c) = comments.get_mut(target) {
+                Some(&mut c.reactions)
+            } else {
+                None
+            };
+            if let Some(reactions) = bucket {
+                if let Some(rg) = reactions.iter_mut().find(|r| &r.emoji == emoji) {
+                    if let Some(pos) = rg.authors.iter().position(|a| a == &e.author) {
+                        rg.authors.remove(pos);
+                        rg.count = rg.count.saturating_sub(1);
+                    }
+                }
+                reactions.retain(|r| !r.authors.is_empty());   // drop a group nobody holds anymore
             }
         }
     }

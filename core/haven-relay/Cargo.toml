@@ -1,0 +1,23 @@
+[package]
+name = "haven-relay"
+version = "0.0.1"
+edition = "2021"
+publish = false
+description = "Haven easy circle relay: an always-on, single-binary connection relay + media store-and-forward that links to a circle and only ever moves ciphertext."
+
+[[bin]]
+name = "haven-relay"
+path = "src/main.rs"
+
+[dependencies]
+haven-net = { path = "../haven-net" }
+p2pcore = { path = "../p2pcore" }
+anyhow = "1"
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+data-encoding = "2.11.0"
+rand = "0.8"
+rustls = { version = "0.23", default-features = false, features = ["ring"] }
+# Pure-Rust QR encoder (no image backend) for the terminal "paste this into the app" code.
+qrcode = { version = "0.14", default-features = false }
