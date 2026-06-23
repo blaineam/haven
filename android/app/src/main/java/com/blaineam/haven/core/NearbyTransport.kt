@@ -1,0 +1,92 @@
+package com.blaineam.haven.core
+
+import android.content.Context
+import android.util.Log
+import com.google.android.gms.nearby.Nearby
+import com.google.android.gms.nearby.connection.AdvertisingOptions
+import com.google.android.gms.nearby.connection.ConnectionInfo
+import com.google.android.gms.nearby.connection.ConnectionLifecycleCallback
+import com.google.android.gms.nearby.connection.ConnectionResolution
+import com.google.android.gms.nearby.connection.ConnectionsClient
+import com.google.android.gms.nearby.connection.DiscoveredEndpointInfo
+import com.google.android.gms.nearby.connection.DiscoveryOptions
+import com.google.android.gms.nearby.connection.EndpointDiscoveryCallback
+import com.google.android.gms.nearby.connection.Payload
+import com.google.android.gms.nearby.connection.PayloadCallback
+import com.google.android.gms.nearby.connection.PayloadTransferUpdate
+import com.google.android.gms.nearby.connection.Strategy
+
+/**
+ * Offline mesh over Nearby Connections (BLE + Wi-Fi) — the Android take on the iOS
+ * MultipeerConnectivity path. Carries the SAME Haven frames as iroh, so a nearby phone with no
+ * internet still exchanges posts/handshakes. Opt-in (Settings) and fully self-contained so it can
+ * never destabilize the online transport. Verified delivery needs two nearby devices.
+ */
+object NearbyTransport {
+    private const val TAG = "NearbyMesh"
+    private const val SERVICE_ID = "com.blaineam.haven.mesh"
+    private val strategy = Strategy.P2P_CLUSTER
+
+    private var client: ConnectionsClient? = null
+    private var ctx: Context? = null
+    private val endpoints = mutableSetOf<String>()
+    var active = false; private set
+
+    /** Outbound bridge: HavenNet calls this to flood a frame to all nearby peers. */
+    fun broadcast(frame: ByteArray) {
+        val c = client ?: return
+        val payload = Payload.fromBytes(frame)
+        endpoints.toList().forEach { runCatching { c.sendPayload(it, payload) } }
+    }
+
+    fun start(context: Context) {
+        if (active) return
+        val appCtx = context.applicationContext
+        ctx = appCtx
+        val c = Nearby.getConnectionsClient(appCtx)
+        client = c
+        active = true
+        val name = HavenNet.nodeIdHex.take(16)
+        c.startAdvertising(name, SERVICE_ID, lifecycle, AdvertisingOptions.Builder().setStrategy(strategy).build())
+            .addOnFailureListener { Log.w(TAG, "advertise failed: ${it.message}") }
+        c.startDiscovery(SERVICE_ID, discovery, DiscoveryOptions.Builder().setStrategy(strategy).build())
+            .addOnFailureListener { Log.w(TAG, "discovery failed: ${it.message}") }
+        Log.i(TAG, "nearby mesh started")
+    }
+
+    fun stop() {
+        client?.apply { stopAdvertising(); stopDiscovery(); stopAllEndpoints() }
+        endpoints.clear()
+        active = false
+        client = null
+    }
+
+    private val discovery = object : EndpointDiscoveryCallback() {
+        override fun onEndpointFound(endpointId: String, info: DiscoveredEndpointInfo) {
+            if (info.serviceId == SERVICE_ID) {
+                client?.requestConnection(HavenNet.nodeIdHex.take(16), endpointId, lifecycle)
+            }
+        }
+        override fun onEndpointLost(endpointId: String) { endpoints.remove(endpointId) }
+    }
+
+    private val lifecycle = object : ConnectionLifecycleCallback() {
+        override fun onConnectionInitiated(endpointId: String, info: ConnectionInfo) {
+            client?.acceptConnection(endpointId, payloads)   // trust handled at the Haven crypto layer
+        }
+        override fun onConnectionResult(endpointId: String, resolution: ConnectionResolution) {
+            if (resolution.status.isSuccess) {
+                endpoints.add(endpointId)
+                HavenNet.onNearbyConnected()   // say hello over the new link
+            }
+        }
+        override fun onDisconnected(endpointId: String) { endpoints.remove(endpointId) }
+    }
+
+    private val payloads = object : PayloadCallback() {
+        override fun onPayloadReceived(endpointId: String, payload: Payload) {
+            payload.asBytes()?.let { HavenNet.onInbound(it) }   // same frame handler as iroh
+        }
+        override fun onPayloadTransferUpdate(endpointId: String, update: PayloadTransferUpdate) {}
+    }
+}

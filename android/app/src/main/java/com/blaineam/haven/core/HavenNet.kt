@@ -376,6 +376,25 @@ object HavenNet : InboundListener {
         for (idHex in social.contactNodeIds(circleId)) sendFrame(Wire.EVENT, payload, idHex)
         // Store-and-forward via the circle relay so offline members still get it.
         scope.launch { uploadEvent(circleId, env) }
+        // Nearby mesh (never DMs — they stay point-to-point, matching iOS).
+        if (NearbyTransport.active && !circleId.startsWith("dm:")) {
+            NearbyTransport.broadcast(Wire.frame(Wire.EVENT, payload))
+        }
+    }
+
+    // ---- Nearby offline mesh (opt-in) ----
+
+    fun enableNearby() { NearbyTransport.start(appContext) }
+    fun disableNearby() { NearbyTransport.stop() }
+    fun nearbyActive(): Boolean = NearbyTransport.active
+
+    /** A nearby peer just connected — greet over the mesh + back-fill the open circle. */
+    fun onNearbyConnected() {
+        val hello = helloPayload(DEFAULT_CIRCLE) ?: return
+        NearbyTransport.broadcast(Wire.frame(Wire.HELLO, hello))
+        for (env in runCatching { social.syncEnvelopes(DEFAULT_CIRCLE) }.getOrDefault(emptyList())) {
+            NearbyTransport.broadcast(Wire.frame(Wire.EVENT, Wire.eventPayload(DEFAULT_CIRCLE, env)))
+        }
     }
 
     // ---- Circle relay / mailbox (store-and-forward, so posts cross even when not both online) ----

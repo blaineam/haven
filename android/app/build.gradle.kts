@@ -96,6 +96,9 @@ dependencies {
     // Background sync (serverless, like the iOS BGAppRefreshTask) for local notifications.
     implementation("androidx.work:work-runtime-ktx:2.9.1")
 
+    // Nearby Connections — offline mesh over BLE/Wi-Fi (the Android take on MultipeerConnectivity).
+    implementation("com.google.android.gms:play-services-nearby:19.3.0")
+
     // WebRTC (maintained libwebrtc fork, prebuilt .so) for mesh group calls — Android side of
     // the same DTLS-SRTP media + SDP/ICE-over-sealed-channel design as iOS.
     implementation("io.getstream:stream-webrtc-android:1.3.8")

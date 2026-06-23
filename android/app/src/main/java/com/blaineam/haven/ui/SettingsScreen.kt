@@ -134,6 +134,37 @@ fun SettingsScreen(onBack: () -> Unit) {
 
             Spacer(Modifier.height(16.dp))
             Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
+                Text("Nearby (offline)", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                Spacer(Modifier.height(4.dp))
+                Text("Share with people right next to you over Bluetooth/Wi-Fi — no internet needed.",
+                    color = HavenTheme.textSecondary, fontSize = 12.sp)
+                Spacer(Modifier.height(8.dp))
+                var nearbyOn by remember { mutableStateOf(HavenNet.nearbyActive()) }
+                val nearbyPerms = androidx.activity.compose.rememberLauncherForActivityResult(
+                    androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+                    if (grants.values.all { it }) { HavenNet.enableNearby(); nearbyOn = true }
+                }
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Nearby sharing", color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                    androidx.compose.material3.Switch(
+                        checked = nearbyOn,
+                        onCheckedChange = { on ->
+                            if (on) {
+                                val perms = if (android.os.Build.VERSION.SDK_INT >= 33)
+                                    arrayOf(android.Manifest.permission.BLUETOOTH_ADVERTISE, android.Manifest.permission.BLUETOOTH_CONNECT,
+                                        android.Manifest.permission.BLUETOOTH_SCAN, android.Manifest.permission.NEARBY_WIFI_DEVICES)
+                                else arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION)
+                                nearbyPerms.launch(perms)
+                            } else { HavenNet.disableNearby(); nearbyOn = false }
+                        },
+                        colors = androidx.compose.material3.SwitchDefaults.colors(
+                            checkedThumbColor = Color.White, checkedTrackColor = HavenTheme.pink),
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+            Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
                 Text("Blocked people", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                 Spacer(Modifier.height(6.dp))
                 if (HavenNet.blocked.isEmpty()) {
