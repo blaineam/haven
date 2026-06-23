@@ -9,15 +9,20 @@ import androidx.compose.runtime.snapshots.SnapshotStateList
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import uniffi.haven_ffi.HavenNode
 import uniffi.haven_ffi.HavenSocial
 import uniffi.haven_ffi.InboundListener
+import uniffi.haven_ffi.RelayClient
 import uniffi.haven_ffi.parseLink
 import java.io.File
+import java.security.MessageDigest
 
 private const val TAG = "HavenNet"
 const val DEFAULT_CIRCLE = "default"
@@ -54,6 +59,13 @@ object HavenNet : InboundListener {
     var internetActive = mutableStateOf(false); private set
     var started = mutableStateOf(false); private set
     var feedVersion = mutableStateOf(0); private set   // bump to recompose the feed
+    var relayActive = mutableStateOf(false); private set   // true once a mailbox put/get succeeds
+
+    // Circle relay/mailbox: circleId -> relay node hex (the "circle supplied relay").
+    private val relayNodes = HashMap<String, String>()
+    private val relayClients = HashMap<String, RelayClient>()
+    private val relayMutex = Mutex()
+    private val seenMailbox = HashSet<String>()
 
     // node ids we initiated a connect to (scanned their QR) → expected verify hash.
     private val initiated = HashMap<String, String>()
@@ -73,6 +85,7 @@ object HavenNet : InboundListener {
         restoreState()
         loadContacts()
         loadBlocked()
+        loadRelayNodes()
     }
 
     /** Start the iroh node and begin syncing. Safe to call repeatedly. */
@@ -84,8 +97,23 @@ object HavenNet : InboundListener {
                 withContext(Dispatchers.Main) { started.value = true }
                 Log.i(TAG, "node started: ${node?.nodeIdHex()}")
                 syncWithContacts()
+                pollMailbox()
             } catch (e: Throwable) {
                 Log.e(TAG, "node start failed", e)
+            }
+        }
+        startMailboxLoop()
+    }
+
+    /** Poll the circle relay/mailbox every 15s so posts arrive even when peers aren't both online. */
+    private var loopStarted = false
+    private fun startMailboxLoop() {
+        if (loopStarted) return
+        loopStarted = true
+        scope.launch {
+            while (true) {
+                delay(15_000)
+                runCatching { pollMailbox() }
             }
         }
     }
@@ -112,6 +140,7 @@ object HavenNet : InboundListener {
             when (type) {
                 Wire.HELLO -> handleHello(body)
                 Wire.EVENT -> handleEvent(body)
+                Wire.RELAY_NODE -> handleRelayNode(body)
                 CallWire.INVITE, CallWire.ACCEPT, CallWire.HANGUP, CallWire.OFFER,
                 CallWire.ANSWER, CallWire.ICE, CallWire.GROUP_INVITE ->
                     withContext(Dispatchers.Main) { callRouter?.invoke(type, body) }
@@ -259,6 +288,11 @@ object HavenNet : InboundListener {
         sendFrame(Wire.HELLO, hello, toNodeHex)
         val envs = runCatching { social.syncEnvelopes(circleId) }.getOrDefault(emptyList())
         for (env in envs) sendFrame(Wire.EVENT, Wire.eventPayload(circleId, env), toNodeHex)
+        // If I know the circle's relay, tell this peer so we share a mailbox.
+        relayNodes[circleId]?.let { nodeHex ->
+            val sealed = runCatching { social.sealCircleMedia(circleId, nodeHex.toByteArray()) }.getOrNull()
+            if (sealed != null) sendFrame(Wire.RELAY_NODE, Wire.eventPayload(circleId, sealed), toNodeHex)
+        }
     }
 
     /** Periodic/triggered sync: greet every contact so circles form + back-fill. */
@@ -316,6 +350,104 @@ object HavenNet : InboundListener {
         scope.launch(Dispatchers.Main) { feedVersion.value++ }
         val payload = Wire.eventPayload(circleId, env)
         for (idHex in social.contactNodeIds(circleId)) sendFrame(Wire.EVENT, payload, idHex)
+        // Store-and-forward via the circle relay so offline members still get it.
+        scope.launch { uploadEvent(circleId, env) }
+    }
+
+    // ---- Circle relay / mailbox (store-and-forward, so posts cross even when not both online) ----
+
+    /** Frame 19: [LP circleId][sealCircleMedia(relay node hex)]. Store the relay + backfill/poll. */
+    private fun handleRelayNode(body: ByteArray) {
+        val r = Wire.Reader(body)
+        val cidBytes = r.lp() ?: return
+        val circleId = String(cidBytes, Charsets.UTF_8)
+        val sealed = r.rest()
+        if (circleId.isEmpty() || sealed.isEmpty()) return
+        val open = runCatching { social.openCircleMedia(circleId, sealed) }.getOrNull() ?: return
+        val nodeHex = String(open, Charsets.UTF_8).trim()
+        if (nodeHex.length != 64) return
+        if (relayNodes[circleId] == nodeHex) return
+        relayNodes[circleId] = nodeHex
+        saveRelayNodes()
+        Log.i(TAG, "adopted relay for $circleId: ${nodeHex.take(8)}")
+        scope.launch {
+            backfillMailbox(circleId)   // upload everything I've already posted here
+            pollMailbox()
+        }
+    }
+
+    /** Manually adopt a relay node for all circles (Settings paste) + tell contacts via frame 19. */
+    fun adoptRelay(nodeHex: String) {
+        val hex = nodeHex.trim().lowercase()
+        if (hex.length != 64) return
+        scope.launch {
+            for (c in social.circles()) {
+                val cid = c.id
+                relayNodes[cid] = hex
+                // Tell members (sealed) so they use the same mailbox.
+                val sealed = runCatching { social.sealCircleMedia(cid, hex.toByteArray()) }.getOrNull()
+                if (sealed != null) {
+                    val frame = Wire.eventPayload(cid, sealed)  // [LP cid][sealed] — same layout as frame 19
+                    for (idHex in social.contactNodeIds(cid)) sendFrame(Wire.RELAY_NODE, frame, idHex)
+                }
+                backfillMailbox(cid)
+            }
+            saveRelayNodes()
+            pollMailbox()
+        }
+    }
+
+    private suspend fun relayClientFor(nodeHex: String): RelayClient? = relayMutex.withLock {
+        relayClients[nodeHex]?.let { return it }
+        val c = runCatching { RelayClient.connect(core.seed, nodeHex) }.getOrNull() ?: return null
+        relayClients[nodeHex] = c
+        c
+    }
+
+    private fun mailboxKey(circleId: String, env: ByteArray): String {
+        val h = MessageDigest.getInstance("SHA-256").digest(env).joinToString("") { "%02x".format(it) }
+        return "haven/mailbox/$circleId/$h"
+    }
+
+    /** Drop a sealed event into the circle's mailbox (idempotent). */
+    private suspend fun uploadEvent(circleId: String, env: ByteArray) {
+        val nodeHex = relayNodes[circleId] ?: return
+        val client = relayClientFor(nodeHex) ?: return
+        val key = mailboxKey(circleId, env)
+        if (seenMailbox.contains(key)) return
+        runCatching {
+            client.put(key, env)
+            seenMailbox.add(key)
+            withContext(Dispatchers.Main) { relayActive.value = true }
+        }.onFailure { Log.d(TAG, "mailbox put failed: ${it.message}"); relayClients.remove(nodeHex) }
+    }
+
+    /** Re-upload every post I authored in a circle (for members who were offline when I posted). */
+    private suspend fun backfillMailbox(circleId: String) {
+        if (relayNodes[circleId] == null) return
+        val envs = runCatching { social.exportMyEnvelopes(circleId) }.getOrDefault(emptyList())
+        for (env in envs) uploadEvent(circleId, env)
+    }
+
+    /** Poll every circle's mailbox; ingest envelopes we haven't seen. */
+    suspend fun pollMailbox() {
+        var changed = false
+        for ((circleId, nodeHex) in relayNodes.toMap()) {
+            val client = relayClientFor(nodeHex) ?: continue
+            val prefix = "haven/mailbox/$circleId/"
+            val keys = runCatching { client.list(prefix) }.getOrNull() ?: continue
+            if (keys.isNotEmpty()) withContext(Dispatchers.Main) { relayActive.value = true }
+            for (key in keys) {
+                if (seenMailbox.contains(key)) continue
+                val env = runCatching { client.get(key) }.getOrNull() ?: continue
+                seenMailbox.add(key)
+                if (runCatching { social.receive(circleId, env) }.getOrDefault(false)) changed = true
+            }
+        }
+        if (changed) {
+            persist()
+            withContext(Dispatchers.Main) { feedVersion.value++ }
+        }
     }
 
     private fun sendFrame(type: Int, payload: ByteArray, toNodeHex: String) {
@@ -374,8 +506,28 @@ object HavenNet : InboundListener {
         prefs.edit().putString("blocked", arr.toString()).apply()
     }
 
+    private fun loadRelayNodes() {
+        val raw = prefs.getString("relayNodes", null) ?: return
+        runCatching {
+            val o = JSONObject(raw)
+            relayNodes.clear()
+            o.keys().forEach { relayNodes[it] = o.getString(it) }
+        }
+    }
+
+    private fun saveRelayNodes() {
+        val o = JSONObject()
+        relayNodes.forEach { (k, v) -> o.put(k, v) }
+        prefs.edit().putString("relayNodes", o.toString()).apply()
+    }
+
+    /** Whether any circle has a relay configured (for the UI indicator). */
+    fun hasRelay(): Boolean = relayNodes.isNotEmpty()
+
     fun reset() {
         contacts.clear(); pending.clear(); blocked.clear(); initiated.clear()
+        relayNodes.clear(); relayClients.clear(); seenMailbox.clear()
+        relayActive.value = false
         prefs.edit().clear().apply()
         runCatching { stateFile.delete() }
         feedVersion.value++

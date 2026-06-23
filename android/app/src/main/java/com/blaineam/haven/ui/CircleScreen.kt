@@ -90,6 +90,7 @@ fun CircleScreen(onAddFriend: () -> Unit) {
             ) {
                 BrandText("Circle", fontSize = 26)
                 Spacer(Modifier.weight(1f))
+                ConnectionDot()
                 Box(
                     Modifier.size(40.dp).clip(CircleShape).clickable { onAddFriend() },
                     contentAlignment = Alignment.Center,
@@ -217,6 +218,24 @@ fun MediaImage(circleId: String, id: String, modifier: Modifier = Modifier) {
         }
     }
     bmp?.let { Image(it, contentDescription = "Photo", modifier = modifier, contentScale = ContentScale.FillWidth) }
+}
+
+/** Live connection status: online (iroh) + relay (mailbox) dots, like the iOS connection chips. */
+@Composable
+private fun ConnectionDot() {
+    val online by HavenNet.internetActive
+    val started by HavenNet.started
+    val relay by HavenNet.relayActive
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp),
+        modifier = Modifier.padding(end = 8.dp)) {
+        val color = if (online) Color(0xFF34D399) else if (started) Color(0xFFF59E0B) else HavenTheme.textSecondary
+        Box(Modifier.size(8.dp).clip(CircleShape).background(color))
+        Text(if (online) "Online" else if (started) "Connecting" else "Offline",
+            color = HavenTheme.textSecondary, fontSize = 11.sp)
+        if (relay) {
+            Text("· Relay", color = Color(0xFF34D399), fontSize = 11.sp)
+        }
+    }
 }
 
 private val QUICK_EMOJI = listOf("❤️", "😂", "🔥", "👍", "🎉", "😮")

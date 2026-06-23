@@ -89,6 +89,33 @@ fun SettingsScreen(onBack: () -> Unit) {
 
             Spacer(Modifier.height(16.dp))
             Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
+                Text("Circle relay", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    if (HavenNet.hasRelay()) "Using a circle relay — posts deliver even when you're not both online."
+                    else "Paste a relay node id (from your Mac/iPhone or a haven-relay daemon) so posts deliver when peers are offline.",
+                    color = HavenTheme.textSecondary, fontSize = 12.sp,
+                )
+                Spacer(Modifier.height(10.dp))
+                var relayInput by remember { mutableStateOf("") }
+                androidx.compose.material3.OutlinedTextField(
+                    value = relayInput, onValueChange = { relayInput = it.trim() },
+                    label = { Text("Relay node id (64 hex)") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = HavenTheme.pink, cursorColor = HavenTheme.pink, focusedLabelColor = HavenTheme.pink),
+                )
+                Spacer(Modifier.height(8.dp))
+                Text("Use this relay", color = if (relayInput.length == 64) HavenTheme.pink else HavenTheme.textSecondary,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(enabled = relayInput.length == 64) {
+                        HavenNet.adoptRelay(relayInput); relayInput = ""
+                    }.padding(8.dp))
+            }
+
+            Spacer(Modifier.height(16.dp))
+            Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
                 Text("Blocked people", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                 Spacer(Modifier.height(6.dp))
                 if (HavenNet.blocked.isEmpty()) {
