@@ -121,23 +121,15 @@ struct HavenApp: App {
 
     var body: some Scene {
         WindowGroup(id: "main") {
-            RootView()
-                .onAppear {
-                    #if os(iOS)
-                    // Seed the post-audio autoplay default from the hardware silent switch on open:
-                    // silenced → start muted (no autoplay until the user taps unmute); ringer on →
-                    // autoplay until they mute. The user's in-app tap overrides for the session.
-                    SilentSwitch.detectSilenced { silenced in
-                        if SettingsStore.shared.silent != silenced { SettingsStore.shared.silent = silenced }
-                    }
-                    #endif
-                    // Screenshot/offline harness: never raise the system notification prompt or
-                    // touch the push relay — it would photobomb the captures and needs the network.
-                    guard ProcessInfo.processInfo.environment["HAVEN_NO_NET"] != "1" else { return }
-                    NotificationManager.shared.requestAuthorization()
-                    PushManager.shared.start()   // register for real push via the relay
-                    PushManager.shared.startVoip()   // PushKit VoIP so calls ring from killed/locked
-                }
+            #if DEBUG
+            if ProcessInfo.processInfo.environment["HAVEN_CAPTION_HARNESS"] == "1" {
+                CaptionHarness()
+            } else {
+                mainRoot
+            }
+            #else
+            mainRoot
+            #endif
         }
         .onChange(of: scenePhase) { _, phase in
             if phase == .background {
@@ -161,6 +153,26 @@ struct HavenApp: App {
             MacMenuBarIcon()
         }
         #endif
+    }
+
+    @ViewBuilder private var mainRoot: some View {
+        RootView()
+            .onAppear {
+                #if os(iOS)
+                // Seed the post-audio autoplay default from the hardware silent switch on open:
+                // silenced → start muted (no autoplay until the user taps unmute); ringer on →
+                // autoplay until they mute. The user's in-app tap overrides for the session.
+                SilentSwitch.detectSilenced { silenced in
+                    if SettingsStore.shared.silent != silenced { SettingsStore.shared.silent = silenced }
+                }
+                #endif
+                // Screenshot/offline harness: never raise the system notification prompt or
+                // touch the push relay — it would photobomb the captures and needs the network.
+                guard ProcessInfo.processInfo.environment["HAVEN_NO_NET"] != "1" else { return }
+                NotificationManager.shared.requestAuthorization()
+                PushManager.shared.start()   // register for real push via the relay
+                PushManager.shared.startVoip()   // PushKit VoIP so calls ring from killed/locked
+            }
     }
 }
 

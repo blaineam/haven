@@ -995,10 +995,6 @@ struct StoryComposerView: View {
     @State private var mediaBaseOffY: CGFloat = 0
     @FocusState private var captionFocused: Bool
 
-    /// The highlight style hugs the text with a colored background — but only once there's text
-    /// to hug. Empty + the hug layout = the broken full-height white bar, so gate on non-empty.
-    private var highlightActive: Bool { StoryCaptions.bgColor(captionSpec) != nil && !caption.isEmpty }
-
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
@@ -1030,31 +1026,26 @@ struct StoryComposerView: View {
             if editingCaption {
                 VStack {
                     Spacer()
-                    TextField("", text: $caption, axis: .vertical)
-                        .focused($captionFocused)
-                        .multilineTextAlignment(.center)
-                        .font(StoryCaptions.font(captionSpec))
-                        .foregroundStyle(StoryCaptions.textColor(captionSpec))
-                        // Show the glow/shadow/neon look live while typing (#88), not only after closing.
-                        .modifier(CaptionStyleEffect(spec: captionSpec))
-                        .tint(.white)
-                        // With a highlight background, hug the text's actual box (like the final
-                        // caption) instead of stretching. Fix BOTH axes: a vertical-axis TextField
-                        // with `fixedSize(horizontal:true, vertical:false)` becomes vertically
-                        // flexible, so between the VStack's spacers it greedily grows to full height
-                        // and the highlight fill renders as a mile-high white bar. Fixing vertical
-                        // too makes it size to the text height — a proper hugging pill.
-                        .fixedSize(horizontal: highlightActive, vertical: highlightActive)
-                        // Match StyledCaption.highlighted's pill EXACTLY (padding 10/3, r8 continuous)
-                        // so the live preview equals the final rendered caption.
-                        .padding(.horizontal, highlightActive ? 10 : 0)
-                        .padding(.vertical, highlightActive ? 3 : 0)
-                        .background { if highlightActive, let bg = StoryCaptions.bgColor(captionSpec) { RoundedRectangle(cornerRadius: 8, style: .continuous).fill(bg) } }
-                        .padding(.horizontal, 24)
-                        .onAppear {
-                            // Focus must be set *after* the field is in the hierarchy.
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { captionFocused = true }
-                        }
+                    // Live preview that EXACTLY equals the final caption: render the real
+                    // StyledCaption as the visible layer, with an invisible TextField on top that
+                    // only captures keystrokes + shows the caret. (Styling a vertical-axis TextField
+                    // directly never matched — `fixedSize` either ballooned it to a full-height bar
+                    // or collapsed it to an empty sliver. This sidesteps that entirely.)
+                    ZStack {
+                        StyledCaption(text: caption.isEmpty ? " " : caption, spec: captionSpec)
+                        TextField("", text: $caption, axis: .vertical)
+                            .focused($captionFocused)
+                            .multilineTextAlignment(.center)
+                            .font(StoryCaptions.font(captionSpec))
+                            .foregroundStyle(.clear)   // glyphs hidden (StyledCaption shows them); caret stays
+                            .tint(.white)
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                    .padding(.horizontal, 24)
+                    .onAppear {
+                        // Focus must be set *after* the field is in the hierarchy.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { captionFocused = true }
+                    }
                     Spacer()
                 }
                 .offset(y: -kbHeight / 2)
