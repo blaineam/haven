@@ -291,6 +291,20 @@ object HavenNet : InboundListener {
         scope.launch { media.forEach { uploadMedia(circleId, it) } }
     }
 
+    /**
+     * Reply to someone's story → opens a DM with them and ATTACHES the story's media (re-sealed to
+     * the DM circle) so the author knows exactly which story you mean. Returns the DM circle id.
+     */
+    fun replyToStory(authorShort: String, storyMediaRef: String?, text: String): String? {
+        val contact = contacts.firstOrNull { it.idHex.startsWith(authorShort) } ?: return null
+        val dmCircle = startDm(contact)
+        val media = storyMediaRef?.let { ref ->
+            LocalMedia.loadAnyCircle(ref)?.let { listOf(LocalMedia.store(dmCircle, it, isVideo = LocalMedia.isVideo(ref))) }
+        } ?: emptyList()
+        sendDm(dmCircle, text, media)
+        return dmCircle
+    }
+
     private fun handleEvent(payload: ByteArray) {
         val ev = Wire.parseEvent(payload) ?: return
         val changed = runCatching { social.receive(ev.circleId, ev.envelope) }.getOrDefault(false)

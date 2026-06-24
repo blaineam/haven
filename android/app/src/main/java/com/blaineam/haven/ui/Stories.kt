@@ -1,6 +1,14 @@
 package com.blaineam.haven.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -24,6 +32,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -106,6 +115,9 @@ fun StoriesTray(groups: List<StoryGroup>, onAddStory: () -> Unit, onOpen: (Int) 
 fun StoryViewer(groups: List<StoryGroup>, startGroup: Int, onClose: () -> Unit) {
     var groupIdx by remember { mutableIntStateOf(startGroup) }
     var itemIdx by remember { mutableIntStateOf(0) }
+    var replyText by remember { mutableStateOf("") }
+    var replying by remember { mutableStateOf(false) }   // pauses auto/tap-advance while typing
+    var sentNote by remember { mutableStateOf(false) }
     val group = groups.getOrNull(groupIdx) ?: run { onClose(); return }
     val item = group.items.getOrNull(itemIdx) ?: run { onClose(); return }
 
@@ -119,8 +131,9 @@ fun StoryViewer(groups: List<StoryGroup>, startGroup: Int, onClose: () -> Unit) 
         else if (groupIdx > 0) { groupIdx--; itemIdx = 0 }
     }
 
-    // Auto-advance every 5s.
-    LaunchedEffect(groupIdx, itemIdx) {
+    // Auto-advance every 5s (paused while replying).
+    LaunchedEffect(groupIdx, itemIdx, replying) {
+        if (replying) return@LaunchedEffect
         delay(5000)
         advance()
     }
@@ -129,7 +142,7 @@ fun StoryViewer(groups: List<StoryGroup>, startGroup: Int, onClose: () -> Unit) 
         Modifier.fillMaxSize().background(Color.Black)
             .pointerInput(groupIdx, itemIdx) {
                 detectTapGestures(
-                    onTap = { o -> if (o.x > size.width / 2) advance() else back() },
+                    onTap = { o -> if (!replying) { if (o.x > size.width / 2) advance() else back() } },
                     onLongPress = { onClose() },
                 )
             },
@@ -165,5 +178,46 @@ fun StoryViewer(groups: List<StoryGroup>, startGroup: Int, onClose: () -> Unit) 
             "✕", color = Color.White, fontSize = 22.sp,
             modifier = Modifier.align(Alignment.TopEnd).padding(16.dp).clickable { onClose() },
         )
+
+        // Reply privately — DMs the author with this story attached so they know which one.
+        if (!group.isMe) {
+            Row(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().imePadding()
+                    .padding(horizontal = 14.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BasicTextField(
+                    value = replyText, onValueChange = { replyText = it },
+                    textStyle = TextStyle(color = Color.White, fontSize = 15.sp),
+                    cursorBrush = SolidColor(HavenTheme.pink),
+                    modifier = Modifier.weight(1f).onFocusChanged { replying = it.isFocused }
+                        .clip(RoundedCornerShape(24.dp)).border(1.dp, Color.White.copy(alpha = 0.45f), RoundedCornerShape(24.dp))
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    decorationBox = { inner ->
+                        if (replyText.isEmpty()) androidx.compose.material3.Text(
+                            "Reply to ${com.blaineam.haven.core.HavenNet.displayName(group.authorShort)}…",
+                            color = Color.White.copy(alpha = 0.6f), fontSize = 15.sp)
+                        inner()
+                    },
+                )
+                if (replyText.isNotBlank()) {
+                    Spacer(Modifier.size(8.dp))
+                    Box(Modifier.size(44.dp).clip(CircleShape).background(HavenTheme.brandHorizontal).clickable {
+                        com.blaineam.haven.core.HavenNet.replyToStory(group.authorShort, item.media.firstOrNull(), replyText.trim())
+                        replyText = ""; replying = false; sentNote = true
+                    }, contentAlignment = Alignment.Center) {
+                        androidx.compose.material3.Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = Color.White)
+                    }
+                }
+            }
+        }
+        if (sentNote) {
+            LaunchedEffect(Unit) { delay(1600); sentNote = false }
+            androidx.compose.material3.Text(
+                "Sent privately ✓", color = Color.White, fontSize = 14.sp,
+                modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 84.dp)
+                    .clip(RoundedCornerShape(20.dp)).background(Color.Black.copy(alpha = 0.6f)).padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+        }
     }
 }
