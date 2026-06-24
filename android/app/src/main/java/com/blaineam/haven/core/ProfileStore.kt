@@ -58,6 +58,13 @@ class ProfileStore private constructor(context: Context) {
             .apply()
     }
 
+    /** Mark onboarding done WITHOUT setting a name/emoji — used when linking an existing identity
+     *  (its profile arrives via multi-device sync, or the user edits it later). */
+    fun markOnboarded() {
+        onboarded = true
+        prefs.edit().putBoolean(KEY_ONBOARDED, true).apply()
+    }
+
     fun save() {
         prefs.edit()
             .putString(KEY_NAME, displayName)

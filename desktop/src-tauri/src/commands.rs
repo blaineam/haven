@@ -634,8 +634,16 @@ pub fn add_identity(engine: Eng, label: String) -> R<String> {
 /// Import an identity from a base64-encoded 32-byte seed (a transfer from another device).
 #[tauri::command]
 pub fn import_identity(engine: Eng, label: String, seed_b64: String) -> R<String> {
-    let raw = base64::engine::general_purpose::STANDARD
-        .decode(seed_b64.trim())
+    // Accept a `haven-seed:<base64>` transfer code from any client (iOS/Android/desktop) OR a raw
+    // base64 seed, in any base64 variant — so a code copied/scanned from a phone just works.
+    let s = seed_b64.trim();
+    let s = s.strip_prefix("haven-seed:").unwrap_or(s).trim();
+    use base64::engine::general_purpose as b64;
+    let raw = b64::STANDARD
+        .decode(s)
+        .or_else(|_| b64::URL_SAFE.decode(s))
+        .or_else(|_| b64::STANDARD_NO_PAD.decode(s))
+        .or_else(|_| b64::URL_SAFE_NO_PAD.decode(s))
         .map_err(|e| format!("bad seed base64: {e}"))?;
     let seed: [u8; 32] = raw.try_into().map_err(|_| "seed is not 32 bytes".to_string())?;
     engine.import_identity(&label, seed).map_err(|e| e.to_string())
