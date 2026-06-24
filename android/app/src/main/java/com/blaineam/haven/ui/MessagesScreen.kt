@@ -45,6 +45,28 @@ import com.blaineam.haven.core.HavenNet
 /** Messages tab — a list of people to DM, then a chat thread. DM = private 2-person circle. */
 @Composable
 fun MessagesScreen() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val lockV by com.blaineam.haven.core.CircleLock.version
+    if (remember(lockV) { com.blaineam.haven.core.CircleLock.needsUnlock(com.blaineam.haven.core.DEFAULT_CIRCLE) }) {
+        HavenBackground {
+            Column(Modifier.fillMaxSize().padding(32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                Text("🔒", fontSize = 48.sp)
+                Spacer(Modifier.height(12.dp))
+                Text("Messages are locked", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                Spacer(Modifier.height(6.dp))
+                Text("Unlock your circle to see your private chats.", color = HavenTheme.textSecondary,
+                    fontSize = 13.sp, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                Spacer(Modifier.height(16.dp))
+                BrandButton(text = "Unlock", modifier = Modifier.fillMaxWidth(0.6f)) {
+                    (context as? androidx.fragment.app.FragmentActivity)?.let {
+                        com.blaineam.haven.core.CircleLock.authenticate(it, com.blaineam.haven.core.DEFAULT_CIRCLE) {}
+                    }
+                }
+            }
+        }
+        return
+    }
     var openThread by remember { mutableStateOf<Pair<String, Contact>?>(null) }
 
     val thread = openThread

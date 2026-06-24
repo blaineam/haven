@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -111,10 +112,10 @@ fun CircleScreen(onAddFriend: () -> Unit) {
     }
 
     HavenBackground {
-        Column(Modifier.fillMaxSize()) {
-            // Title bar.
+        Column(Modifier.fillMaxSize().imePadding()) {
+            // Title bar (compact — every vertical pixel counts on phones).
             Row(
-                Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 16.dp, bottom = 8.dp),
+                Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 10.dp, bottom = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 CircleSwitcher(active, circlesVersion)
@@ -126,24 +127,18 @@ fun CircleScreen(onAddFriend: () -> Unit) {
                 ) { Icon(Icons.Filled.PersonAdd, "Add a friend", tint = HavenTheme.pink) }
             }
 
-            // Stories tray (rings) — always shown so you can add your own.
-            StoriesTray(
-                groups = storyGroups,
-                onAddStory = { openStoryCamera() },
-                onOpen = { viewingStory = it },
-            )
-
-            if (HavenNet.pending.isNotEmpty()) {
-                HavenNet.pending.forEach { PendingCard(it) }
-            }
-
             val lockV by com.blaineam.haven.core.CircleLock.version
-            if (remember(active, lockV) { com.blaineam.haven.core.CircleLock.needsUnlock(active) }) {
+            val locked = remember(active, lockV) { com.blaineam.haven.core.CircleLock.needsUnlock(active) }
+            if (locked) {
+                // A locked circle hides EVERYTHING in it — stories, posts and the composer — until unlock.
                 Column(Modifier.fillMaxWidth().weight(1f).padding(32.dp),
                     horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
                     Text("🔒", fontSize = 48.sp)
                     Spacer(Modifier.height(12.dp))
                     Text("This circle is locked", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                    Spacer(Modifier.height(6.dp))
+                    Text("Stories, posts and messages stay hidden until you unlock.",
+                        color = HavenTheme.textSecondary, fontSize = 13.sp, textAlign = TextAlign.Center)
                     Spacer(Modifier.height(16.dp))
                     BrandButton(text = "Unlock", modifier = Modifier.fillMaxWidth(0.6f)) {
                         (context as? androidx.fragment.app.FragmentActivity)?.let {
@@ -151,31 +146,34 @@ fun CircleScreen(onAddFriend: () -> Unit) {
                         }
                     }
                 }
-            } else if (posts.isEmpty()) {
-                Column(
-                    Modifier.fillMaxWidth().weight(1f).padding(32.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    Text("Nothing here yet", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        if (HavenNet.contacts.isEmpty())
-                            "Add a friend to start sharing.\nEverything you post is end-to-end encrypted to your circle."
-                        else "Say something to your circle below.",
-                        color = HavenTheme.textSecondary, fontSize = 14.sp, textAlign = TextAlign.Center,
-                    )
-                }
             } else {
+                // Stories + pending scroll WITH the posts so there's maximum room to browse.
                 LazyColumn(
                     Modifier.fillMaxWidth().weight(1f),
-                    contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(14.dp),
                 ) {
-                    items(posts, key = { it.id }) { PostCard(it, active) }
+                    item { StoriesTray(groups = storyGroups, onAddStory = { openStoryCamera() }, onOpen = { viewingStory = it }) }
+                    if (HavenNet.pending.isNotEmpty()) item {
+                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) { HavenNet.pending.forEach { PendingCard(it) } }
+                    }
+                    if (posts.isEmpty()) item {
+                        Column(Modifier.fillMaxWidth().height(260.dp).padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                            Text("Nothing here yet", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                if (HavenNet.contacts.isEmpty())
+                                    "Add a friend to start sharing.\nEverything you post is end-to-end encrypted to your circle."
+                                else "Say something to your circle below.",
+                                color = HavenTheme.textSecondary, fontSize = 14.sp, textAlign = TextAlign.Center,
+                            )
+                        }
+                    } else items(posts, key = { it.id }) { PostCard(it, active) }
                 }
             }
 
+            if (!locked) {
             // Staged photo preview.
             pendingPhoto?.let { ref ->
                 Box(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
@@ -246,6 +244,7 @@ fun CircleScreen(onAddFriend: () -> Unit) {
                         },
                     contentAlignment = Alignment.Center,
                 ) { Icon(Icons.AutoMirrored.Filled.Send, "Post", tint = Color.White) }
+            }
             }
         }
 
