@@ -1038,11 +1038,13 @@ struct StoryComposerView: View {
                         // Show the glow/shadow/neon look live while typing (#88), not only after closing.
                         .modifier(CaptionStyleEffect(spec: captionSpec))
                         .tint(.white)
-                        // With a highlight background, hug the text width (like the final caption)
-                        // instead of stretching full-width while editing. Only once there's text:
-                        // a vertical-axis TextField with `fixedSize(horizontal:)` + an empty string
-                        // stretches its background to full height (the broken full-screen white bar).
-                        .fixedSize(horizontal: highlightActive, vertical: false)
+                        // With a highlight background, hug the text's actual box (like the final
+                        // caption) instead of stretching. Fix BOTH axes: a vertical-axis TextField
+                        // with `fixedSize(horizontal:true, vertical:false)` becomes vertically
+                        // flexible, so between the VStack's spacers it greedily grows to full height
+                        // and the highlight fill renders as a mile-high white bar. Fixing vertical
+                        // too makes it size to the text height — a proper hugging pill.
+                        .fixedSize(horizontal: highlightActive, vertical: highlightActive)
                         .padding(.horizontal, highlightActive ? 12 : 0)
                         .padding(.vertical, highlightActive ? 6 : 0)
                         .background { if highlightActive, let bg = StoryCaptions.bgColor(captionSpec) { RoundedRectangle(cornerRadius: 8).fill(bg) } }
