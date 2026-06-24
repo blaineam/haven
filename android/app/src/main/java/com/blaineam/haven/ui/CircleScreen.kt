@@ -489,6 +489,7 @@ fun PostCard(item: FeedItemFfi, circleId: String = DEFAULT_CIRCLE) {
     var showEdit by remember(item.id) { mutableStateOf(false) }
     var whoReacted by remember(item.id) { mutableStateOf<uniffi.haven_ffi.ReactionFfi?>(null) }
     var viewerStart by remember(item.id) { mutableStateOf<Int?>(null) }
+    var commentPicker by remember(item.id) { mutableStateOf<String?>(null) }   // comment id being reacted to
     viewerStart?.let { start ->
         FullScreenOverlay(onDismiss = { viewerStart = null }) {
             MediaViewer(circleId, item.media, start) { viewerStart = null }
@@ -631,10 +632,36 @@ fun PostCard(item: FeedItemFfi, circleId: String = DEFAULT_CIRCLE) {
         if (item.comments.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))
             item.comments.forEach { c ->
-                Row(Modifier.padding(vertical = 2.dp)) {
-                    Text(if (c.isMe) "You: " else "${HavenNet.displayName(c.authorShort)}: ",
-                        color = HavenTheme.pink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                    Text(c.body, color = Color.White, fontSize = 13.sp)
+                Column(Modifier.padding(vertical = 2.dp)) {
+                    // Tap-and-hold a comment to react to it (parity with iOS).
+                    Row(Modifier.combinedClickable(onClick = {},
+                        onLongClick = { commentPicker = if (commentPicker == c.id) null else c.id })) {
+                        Text(if (c.isMe) "You: " else "${HavenNet.displayName(c.authorShort)}: ",
+                            color = HavenTheme.pink, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                        Text(c.body, color = Color.White, fontSize = 13.sp)
+                    }
+                    if (c.reactions.isNotEmpty()) {
+                        Row(Modifier.padding(start = 4.dp, top = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            c.reactions.forEach { r ->
+                                Box(Modifier.clip(RoundedCornerShape(16.dp))
+                                    .background(if (r.mine) HavenTheme.pink.copy(alpha = 0.25f) else HavenTheme.background)
+                                    .clickable {
+                                        if (r.mine) HavenNet.unreact(circleId, c.id, r.emoji) else HavenNet.react(circleId, c.id, r.emoji)
+                                    }.padding(horizontal = 8.dp, vertical = 3.dp)) {
+                                    Text("${r.emoji} ${r.count}", fontSize = 12.sp, color = Color.White)
+                                }
+                            }
+                        }
+                    }
+                    if (commentPicker == c.id) {
+                        Row(Modifier.padding(top = 2.dp)) {
+                            QUICK_EMOJI.forEach { e ->
+                                Box(Modifier.clip(CircleShape).clickable {
+                                    HavenNet.react(circleId, c.id, e); commentPicker = null
+                                }.padding(5.dp)) { Text(e, fontSize = 20.sp) }
+                            }
+                        }
+                    }
                 }
             }
         }
