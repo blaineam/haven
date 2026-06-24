@@ -1,7 +1,9 @@
 package com.blaineam.haven.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -25,8 +27,10 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -223,14 +227,17 @@ fun DmThread(circleId: String, partner: Contact, onBack: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun Bubble(m: uniffi.haven_ffi.FeedItemFfi, circleId: String) {
     val mine = m.isMe
     val text = m.body
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
+    var showReact by remember(m.id) { mutableStateOf(false) }
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = if (mine) Alignment.End else Alignment.Start) {
         Column(
             Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp))
                 .background(if (mine) HavenTheme.pink else HavenTheme.card)
+                .combinedClickable(onClick = {}, onLongClick = { showReact = true })
                 .padding(horizontal = 14.dp, vertical = 10.dp),
         ) {
             m.media.forEach { ref ->
@@ -246,5 +253,35 @@ private fun Bubble(m: uniffi.haven_ffi.FeedItemFfi, circleId: String) {
                 MusicChip(mus)
             }
         }
+        // Reactions on this message — tap one to toggle yours (long-press the bubble to add).
+        if (m.reactions.isNotEmpty()) {
+            Row(Modifier.padding(top = 3.dp), horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                m.reactions.forEach { r ->
+                    Box(
+                        Modifier.clip(RoundedCornerShape(12.dp)).background(HavenTheme.card)
+                            .clickable {
+                                if (r.mine) HavenNet.unreact(circleId, m.id, r.emoji)
+                                else HavenNet.react(circleId, m.id, r.emoji)
+                            }
+                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                    ) { Text("${r.emoji} ${r.count}", fontSize = 12.sp, color = Color.White) }
+                }
+            }
+        }
+    }
+    if (showReact) {
+        AlertDialog(
+            onDismissRequest = { showReact = false },
+            confirmButton = { TextButton(onClick = { showReact = false }) { Text("Close", color = HavenTheme.pink) } },
+            text = {
+                Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    listOf("❤️", "😂", "👍", "🎉", "😮", "😢", "🔥").forEach { e ->
+                        Text(e, fontSize = 28.sp, modifier = Modifier.clickable {
+                            HavenNet.react(circleId, m.id, e); showReact = false
+                        })
+                    }
+                }
+            },
+        )
     }
 }
