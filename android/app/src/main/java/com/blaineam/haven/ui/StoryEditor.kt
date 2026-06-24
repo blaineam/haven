@@ -244,24 +244,31 @@ fun StoryEditor(ref: String, isVideo: Boolean, initialFilter: Int = 0, onClose: 
                         .clickable(enabled = !sharing) {
                             sharing = true
                             scope.launch {
-                                if (isVideo) {
-                                    shareLabel = "Applying filter…"
-                                    val newRef = withContext(Dispatchers.IO) {
-                                        val inFile = LocalMedia.videoFile(DEFAULT_CIRCLE, ref)
-                                        if (inFile == null) ref else {
-                                            val out = VideoFilter.transcode(context, inFile, filter.spec) { shareLabel = "Applying filter… ${(it * 100).toInt()}%" }
-                                            if (out.absolutePath == inFile.absolutePath) ref
-                                            else runCatching { LocalMedia.store(DEFAULT_CIRCLE, out.readBytes(), isVideo = true) }.getOrNull() ?: ref
+                                // Resilient: a throw anywhere here (e.g. an OOM baking the photo or
+                                // transcoding the video) used to leave `sharing=true` with onClose()
+                                // never reached — an infinite spinner and no story. Always release the
+                                // spinner; only close on success, else show an error so the user retries.
+                                val ok = runCatching {
+                                    if (isVideo) {
+                                        shareLabel = "Applying filter…"
+                                        val newRef = withContext(Dispatchers.IO) {
+                                            val inFile = LocalMedia.videoFile(DEFAULT_CIRCLE, ref)
+                                            if (inFile == null) ref else {
+                                                val out = VideoFilter.transcode(context, inFile, filter.spec) { shareLabel = "Applying filter… ${(it * 100).toInt()}%" }
+                                                if (out.absolutePath == inFile.absolutePath) ref
+                                                else runCatching { LocalMedia.store(DEFAULT_CIRCLE, out.readBytes(), isVideo = true) }.getOrNull() ?: ref
+                                            }
                                         }
+                                        HavenNet.postStory(caption.trim(), newRef, music)
+                                    } else {
+                                        val baked = withContext(Dispatchers.IO) {
+                                            bakePhoto(srcBmp, filter.spec, caption.trim(), capColor, style, fontIdx, sizeSp, capOffset, boxSize)
+                                        }
+                                        HavenNet.postStory("", baked ?: ref, music)
                                     }
-                                    HavenNet.postStory(caption.trim(), newRef, music)
-                                } else {
-                                    val baked = withContext(Dispatchers.IO) {
-                                        bakePhoto(srcBmp, filter.spec, caption.trim(), capColor, style, fontIdx, sizeSp, capOffset, boxSize)
-                                    }
-                                    HavenNet.postStory("", baked ?: ref, music)
-                                }
-                                onClose()
+                                }.onFailure { android.util.Log.e("StoryEditor", "share to story failed", it) }.isSuccess
+                                sharing = false
+                                if (ok) onClose() else shareLabel = "Couldn't share — try again"
                             }
                         }.padding(horizontal = 26.dp, vertical = 13.dp))
             }
