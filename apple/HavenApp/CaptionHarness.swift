@@ -1,6 +1,43 @@
 #if DEBUG
 import SwiftUI
 
+/// Debug-only check that the story bottom scrim covers the FULL bottom of a near-white image
+/// (down through the home-indicator strip). Launch with `HAVEN_SCRIM_HARNESS=1`.
+struct ScrimHarness: View {
+    var body: some View {
+        ZStack {
+            Color.white.ignoresSafeArea()   // simulate a story image that's near-white at the bottom
+            VStack {
+                Spacer()
+                VStack(spacing: 0) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "music.note").font(.caption)
+                        Text("Treat People With Kindness · Harry Styles").font(.caption.weight(.medium)).lineLimit(1)
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(.black.opacity(0.4), in: Capsule())
+                    .padding(.bottom, 8)
+                    HStack {
+                        Text("Reply to Sam…").foregroundStyle(.white.opacity(0.7)); Spacer()
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 11)
+                    .background(.white.opacity(0.14), in: Capsule())
+                    .overlay(Capsule().strokeBorder(.white.opacity(0.25)))
+                    .padding(.horizontal, 16).padding(.bottom, 18)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 64)
+                .background(
+                    LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .top, endPoint: .bottom)
+                        .ignoresSafeArea(edges: .bottom)
+                        .allowsHitTesting(false)
+                )
+            }
+        }
+    }
+}
+
 /// Debug-only side-by-side of the LIVE editing caption preview vs the FINAL rendered StyledCaption,
 /// so the highlight pill can be made to actually match. Launch with `HAVEN_CAPTION_HARNESS=1`.
 struct CaptionHarness: View {

@@ -205,9 +205,12 @@ struct StoryViewer: View {
                 }
             }
             .frame(maxWidth: .infinity)
-            .padding(.top, 44)
+            .padding(.top, 64)
             .background(
-                LinearGradient(colors: [.clear, .black.opacity(0.5)], startPoint: .top, endPoint: .bottom)
+                // Bleed the fade through the bottom safe area (home-indicator strip) so it covers
+                // the FULL bottom of the image, not just down to the safe-area inset.
+                LinearGradient(colors: [.clear, .black.opacity(0.6)], startPoint: .top, endPoint: .bottom)
+                    .ignoresSafeArea(edges: .bottom)
                     .allowsHitTesting(false)
             )
         }

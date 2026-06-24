@@ -124,6 +124,8 @@ struct HavenApp: App {
             #if DEBUG
             if ProcessInfo.processInfo.environment["HAVEN_CAPTION_HARNESS"] == "1" {
                 CaptionHarness()
+            } else if ProcessInfo.processInfo.environment["HAVEN_SCRIM_HARNESS"] == "1" {
+                ScrimHarness()
             } else {
                 mainRoot
             }
