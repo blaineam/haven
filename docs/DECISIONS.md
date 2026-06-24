@@ -229,7 +229,7 @@ your IP" is false and we won't claim it. We **do** guarantee, by default config:
 - **no identity↔IP linkage** (peers auth to each other E2E; relay sees ephemeral
   rendezvous tokens, not public keys),
 - **quota without identity** (blind-signed Privacy-Pass-style tokens),
-- **opt-in onion/proxy mode** for true IP *hiding* (the only way a node can't see
+- **opt-in onion/proxy mode (planned, not yet shipped)** for true IP *hiding* (the only way a node can't see
   your IP), off by default for latency.
 
 Promise: **never logged, never linked to you, optionally fully hidden.**

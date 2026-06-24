@@ -145,7 +145,7 @@
     <div class="container">
       <div class="center reveal">
         <span class="eyebrow">Privacy, in plain words</span>
-        <h2 style="font-size:clamp(26px,4.5vw,40px)">Your keys never leave your phone.</h2>
+        <h2 style="font-size:clamp(26px,4.5vw,40px)">We never hold your keys.</h2>
         <p class="lead">
           Here's the honest version of how Haven keeps your life yours — no asterisks, no fine print.
         </p>
@@ -156,9 +156,9 @@
           <h3 style="font-size:20px;margin-bottom:8px">What stays private</h3>
           <ul class="points" style="margin-top:6px">
             <li><span class="dot"></span><span>Every post, message, photo, video and call is <b>encrypted on your device</b> before it's sent.</span></li>
-            <li><span class="dot"></span><span>The secret keys that unlock your content <b>live only on your devices</b> — stored in the Secure Enclave on Apple devices.</span></li>
+            <li><span class="dot"></span><span>The secret keys that unlock your content <b>stay on your own devices</b> — in the Secure Enclave on Apple devices, the OS secure store elsewhere. The only way they sync between <i>your</i> devices is Apple's end-to-end-encrypted iCloud Keychain, which we can't read either. <b>We never hold them.</b></span></li>
             <li><span class="dot"></span><span>There's <b>no central account</b>, no profile database, no advertising ID, no analytics.</span></li>
-            <li><span class="dot"></span><span>Choose <b>your own storage</b> — your iCloud, your S3 bucket, your NAS. We never hold your keys.</span></li>
+            <li><span class="dot"></span><span>Choose <b>your own storage</b> — a Haven relay you (or a friend) run, or your own S3 bucket (S3/R2/B2). We run no storage and hold no credentials.</span></li>
           </ul>
         </div>
         <div class="card">
@@ -166,7 +166,7 @@
           <ul class="points" style="margin-top:6px">
             <li><span class="dot"></span><span>A <b>relay</b> (an optional helper) can see that <em>some</em> encrypted bytes passed through, but never what they say.</span></li>
             <li><span class="dot"></span><span>To deliver bytes to you, a relay <b>briefly handles your IP address</b> — that's just how the internet works. It's never logged, and never tied to who you are.</span></li>
-            <li><span class="dot"></span><span>Want full IP hiding? There's an <b>opt-in onion / Tor mode</b> for that.</span></li>
+            <li><span class="dot"></span><span>Friends <b>never see each other's IP</b> when a relay is in the path — only the relay does, briefly. For full IP hiding today, run Haven behind your own VPN; a built-in onion/Tor mode is on the roadmap, not shipped.</span></li>
             <li><span class="dot"></span><span>If someone steals your unlocked, malware-infected device, they have your device. No app on earth fixes that.</span></li>
           </ul>
         </div>

@@ -104,5 +104,5 @@ service. Full detail in [`RELAY-AND-DEPLOY.md`](RELAY-AND-DEPLOY.md).
   community member's, never required to be yours.
 
 Both run with **hardened, no-log, identity-blind defaults**; IPs are never logged or
-linked to identities, with an opt-in onion mode for full IP hiding. A
+linked to identities, with a planned (not-yet-shipped) opt-in onion mode for full IP hiding. A
 **`haven-relay`** deployment tool stands either role up on most clouds in one command.
