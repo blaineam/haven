@@ -222,13 +222,34 @@ jobs:
           node -e "const f='desktop/src-tauri/tauri.conf.json';const c=require('fs');const j=JSON.parse(c.readFileSync(f));j.version='${{ needs.meta.outputs.version }}'.split('-')[0];c.writeFileSync(f,JSON.stringify(j,null,2));"
       - name: Install Tauri CLI
         run: cargo install tauri-cli --version "^2" --locked
-      - name: Build .dmg (signed + notarized if Apple secrets are present)
-        working-directory: desktop/src-tauri
+      # Import the Developer ID Application cert into a dedicated keychain so `codesign` can
+      # resolve the identity non-interactively. Tauri's own APPLE_CERTIFICATE import was flaky
+      # ("failed to resolve signing identity"); this explicit import is the reliable CI pattern.
+      - name: Import Developer ID certificate
         env:
-          # Code-signing + notarization. All gated: if the cert isn't provided Tauri produces an
-          # UNSIGNED .dmg (still installable for beta after a right-click→Open / Gatekeeper allow).
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KC="$RUNNER_TEMP/haven-signing.keychain-db"
+          KCPW="$(openssl rand -hex 20)"
+          CERT="$RUNNER_TEMP/cert.p12"
+          echo "$APPLE_CERTIFICATE" | base64 --decode > "$CERT"
+          security create-keychain -p "$KCPW" "$KC"
+          security set-keychain-settings -lut 21600 "$KC"
+          security unlock-keychain -p "$KCPW" "$KC"
+          security import "$CERT" -P "$APPLE_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 \
+            -k "$KC" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KCPW" "$KC" >/dev/null
+          # Put our keychain first in the user search list so codesign + Tauri find the identity.
+          security list-keychains -d user -s "$KC" $(security list-keychains -d user | sed 's/"//g')
+          echo "── Available code-signing identities (must include a 'Developer ID Application'): ──"
+          security find-identity -v -p codesigning "$KC"
+      - name: Build .dmg (Developer ID signed + notarized)
+        working-directory: desktop/src-tauri
+        env:
+          # Cert is already in the keychain (above) — pass ONLY the identity name + notarization
+          # creds. Passing APPLE_CERTIFICATE here too triggers Tauri's own (conflicting) import.
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
