@@ -182,6 +182,104 @@ pub fn seal_account_state(account_seed: Vec<u8>, state: Arc<AccountStateHandle>)
     Ok(st.seal(&acct.self_sync_key()))
 }
 
+// ── Gap 3: shared circle-sync encoding (byte-identical across all platforms) ──────────────
+
+/// A circle's portable structure for multi-device sync. Built/parsed by [`encode_circle_sync`]
+/// / [`decode_circle_sync`] so every platform emits **identical bytes** (the cross-platform
+/// convergence contract) — no per-platform JSON escaping / key-order / base64 drift.
+#[derive(uniffi::Record)]
+pub struct CircleSyncRecord {
+    pub name: String,
+    /// Each member's full public bundle bytes (the FFI base64-encodes them on the wire).
+    pub member_bundles: Vec<Vec<u8>>,
+    pub relays: Vec<String>,
+}
+
+// Field order is ALPHABETICAL so serde_json's declaration-order output matches Apple's
+// JSONEncoder(.sortedKeys): {"members":[...],"name":"...","relays":[...]}.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CircleWire {
+    members: Vec<String>,
+    name: String,
+    relays: Vec<String>,
+}
+
+/// Deterministically encode a circle: standard-padding base64 of each member bundle (sorted),
+/// sorted relays, compact JSON with alphabetical keys. Identical on iOS/Android/desktop.
+#[uniffi::export]
+pub fn encode_circle_sync(name: String, member_bundles: Vec<Vec<u8>>, relays: Vec<String>) -> Vec<u8> {
+    let mut members: Vec<String> =
+        member_bundles.iter().map(|b| data_encoding::BASE64.encode(b)).collect();
+    members.sort();
+    let mut relays = relays;
+    relays.sort();
+    serde_json::to_vec(&CircleWire { members, name, relays }).unwrap_or_default()
+}
+
+/// Inverse of [`encode_circle_sync`].
+#[uniffi::export]
+pub fn decode_circle_sync(bytes: Vec<u8>) -> Option<CircleSyncRecord> {
+    let w: CircleWire = serde_json::from_slice(&bytes).ok()?;
+    let member_bundles = w
+        .members
+        .iter()
+        .filter_map(|b| data_encoding::BASE64.decode(b.as_bytes()).ok())
+        .collect();
+    Some(CircleSyncRecord { name: w.name, member_bundles, relays: w.relays })
+}
+
+// ── Gap 1: S3 transport over the FFI (so Android — which has no native S3 — can self-sync
+// over a BYO bucket, and any client can share the one tested SigV4 implementation) ──────────
+
+/// A BYO S3-compatible bucket config (AWS / R2 / B2 / MinIO / rclone serve s3).
+#[derive(uniffi::Record)]
+pub struct S3ConfigFfi {
+    pub endpoint: String,
+    pub region: String,
+    pub bucket: String,
+    pub access_key: String,
+    pub secret_key: String,
+}
+
+fn s3_mailbox(c: &S3ConfigFfi) -> Result<haven_s3::S3Mailbox, HavenError> {
+    haven_s3::S3Mailbox::new(haven_s3::S3Config {
+        endpoint: c.endpoint.clone(),
+        region: c.region.clone(),
+        bucket: c.bucket.clone(),
+        access_key: c.access_key.clone(),
+        secret_key: c.secret_key.clone(),
+        prefix: String::new(), // self-sync passes fully-qualified keys
+    })
+    .map_err(|e| HavenError::Invalid { msg: format!("s3 config: {e}") })
+}
+
+/// PUT a blob to `key` in the bucket.
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn s3_put(config: S3ConfigFfi, key: String, data: Vec<u8>) -> Result<(), HavenError> {
+    s3_mailbox(&config)?
+        .put(&key, &data)
+        .await
+        .map_err(|e| HavenError::Invalid { msg: format!("s3 put: {e}") })
+}
+
+/// GET a blob (None if absent).
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn s3_get(config: S3ConfigFfi, key: String) -> Result<Option<Vec<u8>>, HavenError> {
+    s3_mailbox(&config)?
+        .get(&key)
+        .await
+        .map_err(|e| HavenError::Invalid { msg: format!("s3 get: {e}") })
+}
+
+/// LIST keys under `prefix`.
+#[uniffi::export(async_runtime = "tokio")]
+pub async fn s3_list(config: S3ConfigFfi, prefix: String) -> Result<Vec<String>, HavenError> {
+    s3_mailbox(&config)?
+        .list(&prefix)
+        .await
+        .map_err(|e| HavenError::Invalid { msg: format!("s3 list: {e}") })
+}
+
 /// Canonical relay-mailbox key for this device's self-sync slot — `self/<account>/state/<device>`.
 /// Every client MUST use this so a user's devices converge cross-platform.
 ///
