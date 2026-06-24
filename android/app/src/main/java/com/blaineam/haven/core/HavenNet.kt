@@ -414,6 +414,9 @@ object HavenNet : InboundListener {
         }.getOrNull() ?: return
         afterAuthor(circleId, env)
         scope.launch { media.forEach { uploadMedia(circleId, it) } }   // push photos/videos to the relay
+        // "Save my posts to Photos" (iOS parity).
+        if (media.isNotEmpty() && ProfileStore.get(appContext).saveMyPosts)
+            scope.launch { media.forEach { MediaSaver.autoSave(appContext, it) } }
     }
 
     /** Build a portable track reference from a shared streaming link (YouTube/Spotify/etc.). */
@@ -778,6 +781,8 @@ object HavenNet : InboundListener {
             LocalMedia.storeUnderRef(DEFAULT_CIRCLE, ref, full.copyOf(p))
             incomingMedia.remove(ref)
             scope.launch(Dispatchers.Main) { feedVersion.value++ }
+            // "Save others' posts to Photos" (iOS parity) — auto-save received media once.
+            if (ProfileStore.get(appContext).saveOthersPosts) scope.launch { MediaSaver.autoSave(appContext, ref) }
         }
     }
 

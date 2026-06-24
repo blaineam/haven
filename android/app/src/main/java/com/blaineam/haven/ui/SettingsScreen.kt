@@ -95,6 +95,17 @@ fun SettingsScreen(onBack: () -> Unit) {
 
             Spacer(Modifier.height(16.dp))
             Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
+                Text("Photos", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                Spacer(Modifier.height(4.dp))
+                Text("Keep a copy in your gallery (Pictures/Haven).", color = HavenTheme.textSecondary, fontSize = 12.sp)
+                Spacer(Modifier.height(8.dp))
+                SettingSwitch("Save my posts to Photos", profile.saveMyPosts) { profile.saveMyPosts = it }
+                SettingSwitch("Save others' posts to Photos", profile.saveOthersPosts) { profile.saveOthersPosts = it }
+                SettingSwitch("Auto-optimize media (smaller, faster)", profile.autoOptimize) { profile.autoOptimize = it }
+            }
+
+            Spacer(Modifier.height(16.dp))
+            Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
                 Text("Circle relay", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                 Spacer(Modifier.height(4.dp))
                 Text(
@@ -329,5 +340,15 @@ private fun SettingsCheck(title: String, ok: Boolean) {
             fontSize = 16.sp, fontWeight = FontWeight.Bold)
         Spacer(Modifier.size(10.dp))
         Text(title, color = Color.White, fontSize = 14.sp)
+    }
+}
+
+@Composable
+private fun SettingSwitch(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f))
+        androidx.compose.material3.Switch(checked = checked, onCheckedChange = onChange,
+            colors = androidx.compose.material3.SwitchDefaults.colors(
+                checkedThumbColor = Color.White, checkedTrackColor = HavenTheme.pink))
     }
 }
