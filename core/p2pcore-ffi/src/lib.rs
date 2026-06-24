@@ -711,6 +711,58 @@ struct NetState {
 
 const DEFAULT_CIRCLE: &str = "default";
 
+/// The event id a kind points at (a comment/reaction/edit/unsend/sensitive-flag target), if any.
+fn event_target(kind: &EventKind) -> Option<&str> {
+    match kind {
+        EventKind::Comment { target, .. }
+        | EventKind::Reaction { target, .. }
+        | EventKind::Unreact { target, .. }
+        | EventKind::Edit { target, .. }
+        | EventKind::Unsend { target }
+        | EventKind::SensitiveFlag { target } => Some(target.as_str()),
+        EventKind::Post { .. } | EventKind::Message { .. } => None,
+    }
+}
+
+/// Remove a member from a circle **completely** — their membership, every event they authored,
+/// and (transitively) every event that targets one of those: other members' comments, reactions,
+/// edits, and flags on the removed member's now-gone posts. Without the transitive sweep those
+/// orphans linger in the log, so the circle is left in a fragmented state at the time of removal.
+///
+/// The `seen` dedup set is intentionally left intact: a still-present member could re-deliver one
+/// of these orphan events, and keeping its id in `seen` makes `receive` drop it instead of
+/// resurrecting the fragment.
+fn purge_member_from_circle(c: &mut Circle, node_hex: &str) {
+    c.members.retain(|m| hex(&m.node_id_bytes()) != node_hex);
+    let mut doomed: HashSet<String> = c
+        .events
+        .iter()
+        .filter(|e| e.author == node_hex)
+        .map(|e| e.id.clone())
+        .collect();
+    if doomed.is_empty() {
+        return;
+    }
+    // Fixpoint: keep dooming events that point at an already-doomed event (a reaction on a comment
+    // on their post, etc.) until nothing new is caught.
+    loop {
+        let before = doomed.len();
+        for e in &c.events {
+            if !doomed.contains(&e.id) {
+                if let Some(t) = event_target(&e.kind) {
+                    if doomed.contains(t) {
+                        doomed.insert(e.id.clone());
+                    }
+                }
+            }
+        }
+        if doomed.len() == before {
+            break;
+        }
+    }
+    c.events.retain(|e| !doomed.contains(&e.id));
+}
+
 /// A circle summary for the UI.
 #[derive(uniffi::Record)]
 pub struct CircleInfoFfi {
@@ -816,8 +868,7 @@ impl HavenSocial {
     pub fn remove_from_circle(&self, circle_id: String, node_hex: String) {
         let mut st = self.state.lock().unwrap();
         if let Some(c) = st.circles.iter_mut().find(|c| c.id == circle_id) {
-            c.members.retain(|m| hex(&m.node_id_bytes()) != node_hex);
-            c.events.retain(|e| e.author != node_hex);
+            purge_member_from_circle(c, &node_hex);
         }
     }
 
@@ -827,8 +878,7 @@ impl HavenSocial {
     pub fn block_member(&self, node_hex: String) {
         let mut st = self.state.lock().unwrap();
         for c in st.circles.iter_mut() {
-            c.members.retain(|m| hex(&m.node_id_bytes()) != node_hex);
-            c.events.retain(|e| e.author != node_hex);
+            purge_member_from_circle(c, &node_hex);
         }
     }
 
@@ -1280,7 +1330,7 @@ mod net_tests {
 
         // Signed business card: Bob reads Alice's authoritative name + bio + link; a tampered
         // payload is rejected.
-        let prof = alice.my_signed_profile("Alice".into(), "Mom of two".into(), "alice.example".into());
+        let prof = alice.my_signed_profile("Alice".into(), "Mom of two".into(), "alice.example".into(), String::new(), String::new());
         assert_eq!(bob.verify_profile(alice.my_bundle(), prof.clone()).as_deref(), Some("Alice"));
         let card = bob.verify_profile_card(alice.my_bundle(), prof.clone()).unwrap();
         assert_eq!(card.name, "Alice");
@@ -1326,5 +1376,45 @@ mod net_tests {
         assert_eq!(bob.feed("fam".into(), 4_000, None).len(), 1, "fam post lands in fam circle");
         assert_eq!(bob.feed(cid, 4_000, None).len(), 1, "default circle is unchanged");
         assert_eq!(alice.circles().len(), 2, "alice now has two circles");
+    }
+
+    #[test]
+    fn removing_a_member_purges_their_posts_and_the_orphaned_replies() {
+        let alice = HavenSocial::new([10u8; 32].to_vec()).unwrap(); // does the removing
+        let bob = HavenSocial::new([11u8; 32].to_vec()).unwrap(); // gets removed
+        let carol = HavenSocial::new([12u8; 32].to_vec()).unwrap(); // stays
+        let cid = DEFAULT_CIRCLE.to_string();
+
+        let bob_hex = alice.add_contact_bundle(cid.clone(), bob.my_bundle()).unwrap();
+        alice.add_contact_bundle(cid.clone(), carol.my_bundle()).unwrap();
+        // Bob + Carol must seal to Alice for her to open their events.
+        bob.add_contact_bundle(cid.clone(), alice.my_bundle()).unwrap();
+        carol.add_contact_bundle(cid.clone(), alice.my_bundle()).unwrap();
+
+        // Bob posts; Alice receives it.
+        let post_env = bob.post(cid.clone(), "bob's photo".into(), vec![], None, None, false, false, 1_000).unwrap();
+        assert!(alice.receive(cid.clone(), post_env).unwrap());
+        let post_id = alice.feed(cid.clone(), 5_000, None)[0].id.clone();
+
+        // Carol (a different, still-present member) comments on + reacts to Bob's post.
+        let c_env = carol.comment(cid.clone(), post_id.clone(), "nice!".into(), vec![], 1_100).unwrap();
+        assert!(alice.receive(cid.clone(), c_env).unwrap());
+        let r_env = carol.react(cid.clone(), post_id.clone(), "❤️".into(), 1_200).unwrap();
+        assert!(alice.receive(cid.clone(), r_env).unwrap());
+
+        let feed = alice.feed(cid.clone(), 5_000, None);
+        assert_eq!(feed.len(), 1);
+        assert_eq!(feed[0].comments.len(), 1, "carol's comment is attached to bob's post");
+        assert_eq!(feed[0].reactions.len(), 1, "carol's reaction is attached to bob's post");
+
+        // Remove Bob → his post AND Carol's comment/reaction *on that post* must all vanish; the
+        // circle is left with no fragments.
+        alice.remove_from_circle(cid.clone(), bob_hex.clone());
+        assert!(alice.feed(cid.clone(), 5_000, None).is_empty(), "no fragments left after removal");
+
+        // Carol herself stays a member; only Bob is gone.
+        let members = alice.contact_node_ids(cid.clone());
+        assert!(members.contains(&carol.my_node_hex()), "carol remains a member");
+        assert!(!members.contains(&bob_hex), "bob is removed");
     }
 }
