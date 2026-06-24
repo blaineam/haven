@@ -162,7 +162,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                 Text("Share with people right next to you over Bluetooth/Wi-Fi — no internet needed.",
                     color = HavenTheme.textSecondary, fontSize = 12.sp)
                 Spacer(Modifier.height(8.dp))
-                var nearbyOn by remember { mutableStateOf(HavenNet.nearbyActive()) }
+                var nearbyOn by remember { mutableStateOf(HavenNet.nearbyWanted()) }
                 val nearbyPerms = androidx.activity.compose.rememberLauncherForActivityResult(
                     androidx.activity.result.contract.ActivityResultContracts.RequestMultiplePermissions()) { grants ->
                     if (grants.values.all { it }) { HavenNet.enableNearby(); nearbyOn = true }

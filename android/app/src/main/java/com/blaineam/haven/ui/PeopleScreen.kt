@@ -49,6 +49,7 @@ fun PeopleScreen(onAddFriend: () -> Unit, onClose: () -> Unit) {
     val contacts = HavenNet.contacts
     var dm by remember { mutableStateOf<Pair<String, Contact>?>(null) }
     var confirmBlock by remember { mutableStateOf<Contact?>(null) }
+    var confirmRemove by remember { mutableStateOf<Contact?>(null) }
 
     val thread = dm
     if (thread != null) {
@@ -96,6 +97,8 @@ fun PeopleScreen(onAddFriend: () -> Unit, onClose: () -> Unit) {
                                 contentAlignment = Alignment.Center) {
                                 Icon(Icons.Filled.Chat, "Message", tint = HavenTheme.pink)
                             }
+                            Text("Remove", color = HavenTheme.textSecondary, fontSize = 13.sp,
+                                modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { confirmRemove = c }.padding(8.dp))
                             Text("Block", color = Color(0xFFF87171), fontSize = 13.sp,
                                 modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { confirmBlock = c }.padding(8.dp))
                         }
@@ -115,6 +118,19 @@ fun PeopleScreen(onAddFriend: () -> Unit, onClose: () -> Unit) {
             confirmButton = { TextButton(onClick = { HavenNet.block(c.idHex); confirmBlock = null }) {
                 Text("Block", color = Color(0xFFF87171)) } },
             dismissButton = { TextButton(onClick = { confirmBlock = null }) { Text("Cancel", color = HavenTheme.pink) } },
+        )
+    }
+
+    confirmRemove?.let { c ->
+        AlertDialog(
+            onDismissRequest = { confirmRemove = null },
+            containerColor = HavenTheme.card,
+            title = { Text("Remove ${c.name}?", color = Color.White) },
+            text = { Text("They'll be removed from this circle but not blocked — you can add them again later.",
+                color = HavenTheme.textSecondary) },
+            confirmButton = { TextButton(onClick = { HavenNet.removeFromCircle(c.idHex); confirmRemove = null }) {
+                Text("Remove", color = HavenTheme.pink) } },
+            dismissButton = { TextButton(onClick = { confirmRemove = null }) { Text("Cancel", color = HavenTheme.pink) } },
         )
     }
 }

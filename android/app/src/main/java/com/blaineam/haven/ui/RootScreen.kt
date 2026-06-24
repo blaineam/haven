@@ -99,6 +99,7 @@ private fun MainScaffold() {
             HavenNet.start()
             com.blaineam.haven.core.CallManager.init(context, HavenNet.nodeIdHex)
             com.blaineam.haven.core.ConnectionService.restoreIfEnabled(context)
+            HavenNet.restoreNearbyIfWanted()   // default-on; auto-starts when perms already granted
         }
     }
     // Notification permission on Android 13+ (no-op below).

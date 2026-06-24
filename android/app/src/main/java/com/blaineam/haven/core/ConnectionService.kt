@@ -64,8 +64,10 @@ class ConnectionService : Service() {
             }
         }
 
+        // Default ON: a P2P app is most useful staying reachable for the circle. Users who turn
+        // it off have that choice persisted (false is written explicitly).
         fun isEnabled(ctx: Context): Boolean =
-            ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).getBoolean(KEY, false)
+            ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).getBoolean(KEY, true)
 
         fun setEnabled(ctx: Context, on: Boolean) {
             ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putBoolean(KEY, on).apply()

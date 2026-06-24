@@ -39,6 +39,17 @@ object NearbyTransport {
         endpoints.toList().forEach { runCatching { c.sendPayload(it, payload) } }
     }
 
+    /** True if the runtime perms Nearby needs are already granted (so we can auto-start on launch). */
+    fun hasPermissions(context: Context): Boolean {
+        val perms = if (android.os.Build.VERSION.SDK_INT >= 33)
+            arrayOf(android.Manifest.permission.BLUETOOTH_ADVERTISE, android.Manifest.permission.BLUETOOTH_CONNECT,
+                android.Manifest.permission.BLUETOOTH_SCAN, android.Manifest.permission.NEARBY_WIFI_DEVICES)
+        else arrayOf(android.Manifest.permission.ACCESS_FINE_LOCATION)
+        return perms.all {
+            androidx.core.content.ContextCompat.checkSelfPermission(context, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        }
+    }
+
     fun start(context: Context) {
         if (active) return
         val appCtx = context.applicationContext

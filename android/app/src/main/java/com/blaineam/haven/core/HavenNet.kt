@@ -337,6 +337,12 @@ object HavenNet : InboundListener {
         saveContacts(); saveBlocked(); persist()
     }
 
+    /** Remove someone from the current circle WITHOUT blocking them (parity with iOS). */
+    fun removeFromCircle(idHex: String) {
+        runCatching { social.removeFromCircle(activeCircle.value, idHex) }
+        feedVersion.value++; circlesVersion.value++; persist()
+    }
+
     fun unblock(idHex: String) {
         blocked.removeAll { it == idHex }
         saveBlocked()
@@ -457,9 +463,16 @@ object HavenNet : InboundListener {
 
     // ---- Nearby offline mesh (opt-in) ----
 
-    fun enableNearby() { NearbyTransport.start(appContext) }
-    fun disableNearby() { NearbyTransport.stop() }
+    private fun nearbyPrefs() = appContext.getSharedPreferences("haven.nearby", Context.MODE_PRIVATE)
+    fun enableNearby() { nearbyPrefs().edit().putBoolean("on", true).apply(); NearbyTransport.start(appContext) }
+    fun disableNearby() { nearbyPrefs().edit().putBoolean("on", false).apply(); NearbyTransport.stop() }
     fun nearbyActive(): Boolean = NearbyTransport.active
+    /** The user's persisted intent — default ON for a P2P app. */
+    fun nearbyWanted(): Boolean = nearbyPrefs().getBoolean("on", true)
+    /** On launch: auto-start Nearby if wanted (default) and the perms are already granted. */
+    fun restoreNearbyIfWanted() {
+        if (nearbyWanted() && NearbyTransport.hasPermissions(appContext)) runCatching { NearbyTransport.start(appContext) }
+    }
 
     /** A nearby peer just connected — greet over the mesh + back-fill the open circle. */
     fun onNearbyConnected() {
