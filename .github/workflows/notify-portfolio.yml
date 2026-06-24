@@ -1,0 +1,29 @@
+# Pings the portfolio's `mirror-app-docs` workflow the moment Haven's landing page (web/) or docs
+# change, so blaineam.github.io/apps/haven updates immediately instead of waiting for the daily
+# cron.
+#
+# Requires a PAT stored as `PORTFOLIO_DISPATCH_TOKEN` in this repo's secrets (the default
+# GITHUB_TOKEN can't dispatch to another repo). Use a fine-grained PAT scoped to
+# blaineam/blaineam.github.io with Contents: read-write, or a classic PAT with public_repo.
+
+name: Notify portfolio to mirror docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'web/**'
+      - 'docs/**'
+  workflow_dispatch:
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger mirror-app-docs in portfolio
+        env:
+          GH_TOKEN: ${{ secrets.PORTFOLIO_DISPATCH_TOKEN }}
+        run: |
+          gh api -X POST \
+            /repos/blaineam/blaineam.github.io/dispatches \
+            -f event_type=mirror-app-docs
