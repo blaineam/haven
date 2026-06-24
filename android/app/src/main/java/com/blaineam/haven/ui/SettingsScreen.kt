@@ -131,6 +131,40 @@ fun SettingsScreen(onBack: () -> Unit) {
                     )
                 }
                 Spacer(Modifier.height(8.dp))
+
+                // Adopted relays, with reachability + remove. Posts mirror to ALL of these and read
+                // falls back across them, so adding several gives graceful redundancy.
+                val relaysVersion by HavenNet.relaysVersion
+                val relays = remember(relaysVersion) { HavenNet.relaysDetail() }
+                if (relays.isNotEmpty()) {
+                    Spacer(Modifier.height(8.dp))
+                    Text("Relays (${relays.size})", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                    Spacer(Modifier.height(4.dp))
+                    relays.forEach { (hex, reachable, hosted) ->
+                        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Box(Modifier.size(8.dp).clip(CircleShape).background(
+                                if (reachable) Color(0xFF34C759) else Color(0xFFFF9500)))
+                            Spacer(Modifier.size(8.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(hex.take(16) + "…", color = Color.White, fontSize = 13.sp)
+                                Text(
+                                    when {
+                                        hosted -> "Hosted on this phone"
+                                        reachable -> "Reachable"
+                                        else -> "Unreachable — backing off"
+                                    },
+                                    color = HavenTheme.textSecondary, fontSize = 11.sp,
+                                )
+                            }
+                            if (!hosted) {
+                                Text("Remove", color = HavenTheme.textSecondary, fontSize = 12.sp,
+                                    modifier = Modifier.clip(RoundedCornerShape(8.dp))
+                                        .clickable { HavenNet.forgetRelay(hex) }.padding(6.dp))
+                            }
+                        }
+                    }
+                }
+
                 Spacer(Modifier.height(10.dp))
                 var relayInput by remember { mutableStateOf("") }
                 androidx.compose.material3.OutlinedTextField(
@@ -142,7 +176,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                         focusedBorderColor = HavenTheme.pink, cursorColor = HavenTheme.pink, focusedLabelColor = HavenTheme.pink),
                 )
                 Spacer(Modifier.height(8.dp))
-                Text("Use this relay", color = if (relayInput.length == 64) HavenTheme.pink else HavenTheme.textSecondary,
+                Text("Add this relay", color = if (relayInput.length == 64) HavenTheme.pink else HavenTheme.textSecondary,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(enabled = relayInput.length == 64) {
                         HavenNet.adoptRelay(relayInput); relayInput = ""
