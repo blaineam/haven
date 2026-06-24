@@ -273,6 +273,12 @@ private fun Bubble(m: uniffi.haven_ffi.FeedItemFfi, circleId: String) {
         AlertDialog(
             onDismissRequest = { showReact = false },
             confirmButton = { TextButton(onClick = { showReact = false }) { Text("Close", color = HavenTheme.pink) } },
+            // Unsend your own message (removes it for both sides).
+            dismissButton = if (mine) ({
+                TextButton(onClick = { HavenNet.unsendPost(circleId, m.id); showReact = false }) {
+                    Text("Delete", color = HavenTheme.pink)
+                }
+            }) else null,
             text = {
                 Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
                     listOf("❤️", "😂", "👍", "🎉", "😮", "😢", "🔥").forEach { e ->
