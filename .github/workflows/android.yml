@@ -107,3 +107,47 @@ jobs:
         with:
           files: out/*.apk
           fail_on_unmatched_files: true
+
+      # ── Google Play: build a signed AAB on tags + publish to the internal track ──────────────
+      # Needs the release keystore (ANDROID_KEYSTORE_* — same one Play App Signing was enrolled
+      # with) AND a Play Developer API service-account JSON (PLAY_SERVICE_ACCOUNT_JSON). Both are
+      # gates: missing either just skips the upload, so betas keep building untouched.
+      # FIRST RELEASE CAVEAT: Google requires the very first AAB of a new app to be uploaded by
+      # hand in the Play Console (to enroll App Signing). After that, this job takes over.
+      - name: Build signed release AAB (for Play)
+        if: startsWith(github.ref, 'refs/tags/v') && steps.keystore.outputs.have_keystore == 'true'
+        working-directory: android
+        env:
+          HAVEN_KEYSTORE_FILE: ${{ runner.temp }}/haven-release.keystore
+          HAVEN_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          HAVEN_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          HAVEN_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          VN="${GITHUB_REF_NAME#v}"
+          ./gradlew bundleRelease -PhavenVersionCode=${{ github.run_number }} -PhavenVersionName="$VN"
+          mkdir -p ../out
+          find app/build/outputs/bundle -name '*.aab' -exec cp {} ../out/ \;
+          ls -la ../out
+
+      - name: Check Play credentials
+        id: play
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          SA: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -n "$SA" ] && [ "${{ steps.keystore.outputs.have_keystore }}" = "true" ]; then
+            echo "submit=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "submit=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No PLAY_SERVICE_ACCOUNT_JSON (or no release keystore) — skipping Play upload."
+          fi
+
+      - name: Publish AAB to Google Play (internal track)
+        if: steps.play.outputs.submit == 'true'
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.blaineam.haven
+          releaseFiles: out/*.aab
+          track: internal
+          status: completed

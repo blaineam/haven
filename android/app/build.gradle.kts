@@ -12,8 +12,11 @@ android {
         applicationId = "com.blaineam.haven"
         minSdk = 29
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // CI overrides these per release so every Play upload has a unique, increasing versionCode
+        // (Play rejects a re-used code). Locally they default to the baseline below.
+        //   ./gradlew bundleRelease -PhavenVersionCode=<n> -PhavenVersionName=<x.y.z>
+        versionCode = (project.findProperty("havenVersionCode") as String?)?.toInt() ?: 1
+        versionName = (project.findProperty("havenVersionName") as String?) ?: "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         // We ship prebuilt .so files in jniLibs; keep the APK to the ABIs we build.

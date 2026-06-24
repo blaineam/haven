@@ -154,6 +154,18 @@ jobs:
   # ── Desktop installers (Windows + Linux) ───────────────────────────────────────────────
   desktop:
     needs: meta
+    # Partner Center / Microsoft Store credentials, surfaced as job env so the MSIX steps' `if:`
+    # gates can test them. All blank until you add the secrets → the Store steps stay inert and
+    # normal releases (installers only) are unaffected. See docs/STORE-AUTOPUBLISH.md.
+    env:
+      STORE_IDENTITY_NAME: ${{ secrets.STORE_IDENTITY_NAME }}
+      STORE_PUBLISHER: ${{ secrets.STORE_PUBLISHER }}
+      STORE_PUBLISHER_DISPLAY: ${{ secrets.STORE_PUBLISHER_DISPLAY }}
+      STORE_TENANT_ID: ${{ secrets.STORE_TENANT_ID }}
+      STORE_CLIENT_ID: ${{ secrets.STORE_CLIENT_ID }}
+      STORE_CLIENT_SECRET: ${{ secrets.STORE_CLIENT_SECRET }}
+      STORE_SELLER_ID: ${{ secrets.STORE_SELLER_ID }}
+      STORE_APP_ID: ${{ secrets.STORE_APP_ID }}
     strategy:
       fail-fast: false
       matrix:
@@ -193,6 +205,47 @@ jobs:
             \( -name '*.msi' -o -name '*.exe' -o -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \) \
             -exec cp {} out/ \;
           ls -la out
+
+      # ── Microsoft Store: package an MSIX and submit it (Windows · tags · only when the Store
+      #    secrets are set). Inert otherwise, so installer-only releases are untouched. The MSIX is
+      #    also dropped in out/ so it rides the GitHub Release as a sideloadable download.
+      - name: Package MSIX
+        id: msix
+        if: matrix.os == 'windows-latest' && startsWith(github.ref, 'refs/tags/v') && env.STORE_IDENTITY_NAME != ''
+        shell: pwsh
+        run: |
+          $ver  = "${{ needs.meta.outputs.version }}".Split('-')[0]
+          $ver4 = "$ver.0"
+          $stage = "$env:RUNNER_TEMP\msix"
+          New-Item -ItemType Directory -Force -Path "$stage\Assets" | Out-Null
+          $rel = "desktop\src-tauri\target\release"
+          $exe = if (Test-Path "$rel\Haven.exe") { "$rel\Haven.exe" } else { "$rel\haven-desktop.exe" }
+          Copy-Item $exe "$stage\Haven.exe"
+          foreach ($a in 'StoreLogo','Square150x150Logo','Square44x44Logo','Square71x71Logo','Square310x310Logo') {
+            Copy-Item "desktop\src-tauri\icons\$a.png" "$stage\Assets\$a.png"
+          }
+          $m = Get-Content "desktop\msix\AppxManifest.xml.in" -Raw
+          $m = $m.Replace('@IDENTITY_NAME@',    $env:STORE_IDENTITY_NAME).
+                  Replace('@PUBLISHER@',        $env:STORE_PUBLISHER).
+                  Replace('@PUBLISHER_DISPLAY@',$env:STORE_PUBLISHER_DISPLAY).
+                  Replace('@VERSION@',          $ver4)
+          Set-Content "$stage\AppxManifest.xml" $m -Encoding UTF8
+          $makeappx = (Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin\*\x64\makeappx.exe" -ErrorAction SilentlyContinue |
+                       Sort-Object FullName -Descending | Select-Object -First 1).FullName
+          if (-not $makeappx) { throw "makeappx.exe not found in the Windows SDK" }
+          $msix = "out\Haven-$ver.msix"
+          & $makeappx pack /d "$stage" /p "$msix" /o
+          "msix=$msix" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+
+      - name: Submit MSIX to the Microsoft Store
+        if: steps.msix.outputs.msix != '' && env.STORE_TENANT_ID != ''
+        shell: pwsh
+        run: |
+          dotnet tool install --global MSStore.CLI
+          msstore reconfigure --tenantId $env:STORE_TENANT_ID --clientId $env:STORE_CLIENT_ID `
+            --clientSecret $env:STORE_CLIENT_SECRET --sellerId $env:STORE_SELLER_ID
+          msstore publish "${{ steps.msix.outputs.msix }}" --appId $env:STORE_APP_ID --noConfirm
+
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.name }}

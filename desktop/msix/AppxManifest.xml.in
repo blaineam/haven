@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  MSIX manifest TEMPLATE for the Microsoft Store. The release CI substitutes the @PLACEHOLDERS@
+  from repo secrets (Partner Center values) before calling makeappx — nothing identity-specific is
+  committed. Get IDENTITY_NAME / PUBLISHER / PUBLISHER_DISPLAY from Partner Center ▸ your app ▸
+  Product management ▸ Product identity (Package/Identity/Name, Publisher, Publisher display name).
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap rescap">
+
+  <Identity Name="@IDENTITY_NAME@"
+            Publisher="@PUBLISHER@"
+            Version="@VERSION@"
+            ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>Haven</DisplayName>
+    <PublisherDisplayName>@PUBLISHER_DISPLAY@</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.17763.0" MaxVersionTested="10.0.22621.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="Haven" Executable="Haven.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="Haven"
+        Description="A private home for your people — end-to-end encrypted, serverless social."
+        Square150x150Logo="Assets\Square150x150Logo.png"
+        Square44x44Logo="Assets\Square44x44Logo.png"
+        BackgroundColor="#140A24">
+        <uap:DefaultTile
+          Square71x71Logo="Assets\Square71x71Logo.png"
+          Square310x310Logo="Assets\Square310x310Logo.png" />
+      </uap:VisualElements>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <!-- A packaged Win32 (full-trust) app — the Store flags this as a "restricted" capability,
+         which is expected and allowed for desktop apps. -->
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>
