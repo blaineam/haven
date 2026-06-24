@@ -38,6 +38,21 @@ final class SelfSyncCoordinator {
 
     private var inFlight = false
 
+    /// Deterministic JSON (sorted keys) so equal state encodes to identical bytes — otherwise the
+    /// change-detection diff would re-stamp every sync and the devices would ping-pong.
+    private static let encoder: JSONEncoder = {
+        let e = JSONEncoder(); e.outputFormatting = [.sortedKeys]; return e
+    }()
+
+    /// A circle's portable structure: its name, every member's public bundle (base64), and the
+    /// relay nodes that hold its mailbox — enough for another device to reconstruct it and seal
+    /// to all members. Member bundles are public keys; the blob is sealed to the user's devices.
+    private struct CircleSync: Codable, Equatable {
+        var name: String
+        var members: [String]   // base64 member bundles, sorted
+        var relays: [String]    // relay node hexes, sorted
+    }
+
     /// Last converged state, persisted so we can detect what changed locally (LWW only advances
     /// a key's stamp when its value actually changes — otherwise two devices would ping-pong).
     private var baseURL: URL {
@@ -47,8 +62,9 @@ final class SelfSyncCoordinator {
 
     // MARK: state ↔ CRDT mapping (v1: profile + global settings)
 
-    /// The current local state as namespaced key → value bytes (no stamps).
-    private func currentLocal() -> [String: Data] {
+    /// The current local state as namespaced key → value bytes (no stamps). `social` (when
+    /// available) contributes circle structure; without it, circles are simply not snapshotted.
+    private func currentLocal(social: HavenSocial?) -> [String: Data] {
         var m: [String: Data] = [:]
         let p = ProfileStore.shared
         m["profile:name"] = Data(p.displayName.utf8)
@@ -66,6 +82,16 @@ final class SelfSyncCoordinator {
             if let data = try? JSONEncoder().encode(c) { m["contact:\(c.idHex)"] = data }
         }
         for hex in ConnectionsStore.shared.blocked { m["blocked:\(hex)"] = Data([1]) }
+        // Circles: name + member bundles + relay nodes, so another device can reconstruct each
+        // circle and seal to every member. (Additive in v1 — member/circle removal is a follow-up.)
+        if let social = social {
+            for ci in social.circles() {
+                let members = social.circleMemberBundles(circleId: ci.id).map { $0.base64EncodedString() }.sorted()
+                let relays = RelayMailboxStore.shared.relays(forCircle: ci.id).sorted()
+                let cs = CircleSync(name: ci.name, members: members, relays: relays)
+                if let data = try? Self.encoder.encode(cs) { m["circle:\(ci.id)"] = data }
+            }
+        }
         return m
     }
 
@@ -76,7 +102,7 @@ final class SelfSyncCoordinator {
 
     /// Write a merged state back into the local stores (only when a value actually differs, to
     /// avoid feedback loops through the stores' didSet broadcasts).
-    private func applyLocal(_ h: AccountStateHandle) {
+    private func applyLocal(_ h: AccountStateHandle, social: HavenSocial?) {
         let p = ProfileStore.shared
         if let v = h.get(key: "profile:name"), let s = String(data: v, encoding: .utf8), s != p.displayName { p.displayName = s }
         if let v = h.get(key: "profile:emoji"), let s = String(data: v, encoding: .utf8), s != p.emoji { p.emoji = s }
@@ -114,6 +140,26 @@ final class SelfSyncCoordinator {
         let conn = ConnectionsStore.shared
         for hex in wantBlocked.subtracting(conn.blocked) { conn.block(hex) }
         for hex in conn.blocked.subtracting(wantBlocked) { conn.unblock(hex) }
+
+        // Circles: reconstruct each synced circle — create it, register every member's bundle
+        // (so this device can seal to them), and record its relay mailbox(es). Additive in v1.
+        if let social = social {
+            let existing = social.circles()
+            for e in live where e.key.hasPrefix("circle:") {
+                let id = String(e.key.dropFirst("circle:".count))
+                guard let c = try? JSONDecoder().decode(CircleSync.self, from: e.value) else { continue }
+                social.createCircle(id: id, name: c.name)   // no-op if it already exists
+                if let cur = existing.first(where: { $0.id == id }), cur.name != c.name {
+                    social.renameCircle(id: id, name: c.name)
+                }
+                for b64 in c.members {
+                    if let bundle = Data(base64Encoded: b64) {
+                        _ = try? social.addContactBundle(circleId: id, bundle: bundle)
+                    }
+                }
+                for node in c.relays { RelayMailboxStore.shared.add(circleId: id, nodeHex: node) }
+            }
+        }
     }
 
     private func boolValue(_ h: AccountStateHandle, _ key: String) -> Bool? {
@@ -127,13 +173,16 @@ final class SelfSyncCoordinator {
     /// slot, apply the converged result locally, persist, and re-publish our own slot. Safe to
     /// call on a timer; coalesces if already running. No-op without an account or any sync
     /// target (a relay or the user's S3 bucket — either works, no relay required).
-    func sync() async {
-        guard !inFlight else { return }
-        guard let seed = AccountStore.storedSeed() else { return }
+    /// Returns `true` if the merge brought in changes from another device (so the caller can
+    /// persist the engine state + refresh the UI — relevant when circles arrive).
+    @discardableResult
+    func sync(social: HavenSocial?) async -> Bool {
+        guard !inFlight else { return false }
+        guard let seed = AccountStore.storedSeed() else { return false }
         let accountHex = AccountStore.currentNodeHex()
-        guard !accountHex.isEmpty else { return }
+        guard !accountHex.isEmpty else { return false }
         let transports = gatherTransports()
-        guard !transports.isEmpty else { return }   // needs a relay OR an S3 bucket (either works)
+        guard !transports.isEmpty else { return false }   // needs a relay OR an S3 bucket
         inFlight = true
         defer { inFlight = false }
 
@@ -148,7 +197,7 @@ final class SelfSyncCoordinator {
         // 2. Fold in whatever changed locally since last sync (stamp = now, this device).
         let now = UInt64(Date().timeIntervalSince1970 * 1000)
         let device = SelfSyncDevice.id
-        let local = currentLocal()
+        let local = currentLocal(social: social)
         for (key, value) in local {
             if base.get(key: key) != value {
                 _ = try? base.set(key: key, value: value, ts: now, device: device)
@@ -162,7 +211,10 @@ final class SelfSyncCoordinator {
             }
         }
 
-        // 3. Pull + merge every peer slot from every relay.
+        // Snapshot post-fold so we can tell whether the merge below actually brought anything new.
+        let preMerge = base.toBytes()
+
+        // 3. Pull + merge every peer slot from every relay/bucket.
         let prefix = "haven/" + selfSyncSlotPrefix(accountNodeHex: accountHex)
         let ownKey = "haven/" + selfSyncSlotKey(accountNodeHex: accountHex, deviceNodeHex: SelfSyncDevice.hex)
         for t in transports {
@@ -175,13 +227,16 @@ final class SelfSyncCoordinator {
             }
         }
 
+        let changed = base.toBytes() != preMerge
+
         // 4. Apply the converged state locally + persist the new base.
-        applyLocal(base)
+        applyLocal(base, social: social)
         try? base.toBytes().write(to: baseURL, options: .atomic)
 
-        // 5. Re-publish our own slot (sealed) to every relay for redundancy.
-        guard let sealed = try? sealAccountState(accountSeed: seed, state: base) else { return }
+        // 5. Re-publish our own slot (sealed) to every relay/bucket for redundancy.
+        guard let sealed = try? sealAccountState(accountSeed: seed, state: base) else { return changed }
         for t in transports { _ = await tUpload(t, ownKey, sealed) }
+        return changed
     }
 
     // MARK: transports (relay + S3 — self-sync works with either, or both)

@@ -710,8 +710,11 @@ final class FeedStore: ObservableObject {
     func pollMailboxNow() {
         guard let social else { return }
         // Multi-device self-sync runs on every poll, independent of per-circle mailboxes — it has
-        // its own transport (any configured relay OR the user's S3 bucket). (D16 Phase 3.)
-        Task { @MainActor in await SelfSyncCoordinator.shared.sync() }
+        // its own transport (any configured relay OR the user's S3 bucket). (D16 Phase 3.) When it
+        // pulls in changes from another device (e.g. a synced circle) persist + refresh.
+        Task { @MainActor in
+            if await SelfSyncCoordinator.shared.sync(social: self.social) { self.persist(); self.refresh() }
+        }
         let ids = circles.map { $0.id }
         guard ids.contains(where: { SharedStore.hasMailbox($0) }) else { return }   // relay or S3
         Task { @MainActor in

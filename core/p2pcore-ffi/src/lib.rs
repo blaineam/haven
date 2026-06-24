@@ -954,6 +954,21 @@ impl HavenSocial {
             .unwrap_or_default()
     }
 
+    /// The full public **bundles** of a circle's members — for multi-device sync. Another of the
+    /// user's devices replays these through [`add_contact_bundle`] to reconstruct the circle and
+    /// seal to every member. Bundles are public keys; replicating them (sealed to the user's own
+    /// devices) leaks nothing.
+    pub fn circle_member_bundles(&self, circle_id: String) -> Vec<Vec<u8>> {
+        self.state
+            .lock()
+            .unwrap()
+            .circles
+            .iter()
+            .find(|c| c.id == circle_id)
+            .map(|c| c.members.iter().map(|m| m.to_bytes()).collect())
+            .unwrap_or_default()
+    }
+
     pub fn post(
         &self,
         circle_id: String,
