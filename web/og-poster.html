@@ -1,0 +1,67 @@
+<!doctype html>
+<!-- Source for the OpenGraph/Twitter poster. Rendered to assets/og-image.jpg at 1200x630.
+     Self-contained (inline CSS, system fonts) so it rasterizes identically headless. -->
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<style>
+  :root{
+    --violet:#7C3AED; --pink:#EC4899; --amber:#F59E0B;
+    --brand:linear-gradient(135deg,var(--violet),var(--pink),var(--amber));
+    --bg:#0b0b10; --text:#f5f5f7; --text2:rgba(245,245,247,.66);
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:1200px;height:630px;overflow:hidden}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Display","Segoe UI",Roboto,system-ui,sans-serif;
+    background:var(--bg);
+    background-image:
+      radial-gradient(50% 60% at 90% -10%, rgba(236,72,153,.30), transparent 60%),
+      radial-gradient(48% 55% at -8% 8%, rgba(124,58,237,.32), transparent 60%),
+      radial-gradient(46% 50% at 60% 120%, rgba(245,158,11,.16), transparent 60%);
+    color:var(--text); position:relative;
+  }
+  .wrap{display:flex;height:100%;align-items:center}
+  .left{flex:0 0 660px;padding:0 0 0 76px}
+  .eyebrow{font-size:18px;font-weight:800;letter-spacing:.18em;text-transform:uppercase;
+    color:var(--pink);margin-bottom:24px}
+  .eyebrow .dot{color:rgba(245,245,247,.30);margin:0 8px}
+  .wordmark{font-size:130px;font-weight:850;letter-spacing:-.04em;line-height:.95;
+    background:var(--brand);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .tagline{font-size:44px;font-weight:800;letter-spacing:-.02em;line-height:1.08;margin-top:18px;color:var(--text)}
+  .tagline .g{background:var(--brand);-webkit-background-clip:text;background-clip:text;color:transparent}
+  .sub{margin-top:26px;font-size:21px;color:var(--text2);font-weight:600;max-width:30ch;line-height:1.45}
+  .pills{margin-top:30px;display:flex;gap:11px;flex-wrap:wrap}
+  .pill{font-size:16px;font-weight:600;color:var(--text2);
+    border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:8px 16px;
+    background:rgba(255,255,255,.05)}
+  .right{flex:1;position:relative;height:100%}
+  .phone{position:absolute;right:-40px;top:50%;height:760px;
+    transform:translateY(-50%) rotate(6deg);
+    filter:drop-shadow(0 40px 70px rgba(0,0,0,.6))}
+  .phone.back{right:230px;height:680px;transform:translateY(-48%) rotate(-7deg);opacity:.92;
+    filter:drop-shadow(0 30px 55px rgba(0,0,0,.5))}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="left">
+      <div class="eyebrow">End-to-end encrypted <span class="dot">•</span> No servers <span class="dot">•</span> No ads</div>
+      <div class="wordmark">Haven</div>
+      <div class="tagline">A private home<br/>for <span class="g">your people.</span></div>
+      <div class="sub">Photos, stories, messages &amp; calls — peer-to-peer, post-quantum, nothing leaves your circle.</div>
+      <div class="pills">
+        <span class="pill">iPhone &amp; iPad</span>
+        <span class="pill">Mac</span>
+        <span class="pill">Android</span>
+        <span class="pill">Windows</span>
+        <span class="pill">Linux</span>
+      </div>
+    </div>
+    <div class="right">
+      <img class="phone back" src="assets/renders/phone-story.png" alt="" />
+      <img class="phone" src="assets/renders/phone-feed.png" alt="" />
+    </div>
+  </div>
+</body>
+</html>
