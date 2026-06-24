@@ -21,6 +21,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
@@ -125,6 +127,8 @@ fun DmThread(circleId: String, partner: Contact, onBack: () -> Unit) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var draft by remember { mutableStateOf("") }
     var pendingPhoto by remember { mutableStateOf<String?>(null) }
+    var pendingMusic by remember { mutableStateOf<uniffi.haven_ffi.TrackRefFfi?>(null) }
+    var showMusicDialog by remember { mutableStateOf(false) }
     val version by HavenNet.feedVersion
     val msgs = remember(version, circleId) { HavenNet.messages(circleId) }
     val picker = androidx.activity.compose.rememberLauncherForActivityResult(
@@ -164,7 +168,7 @@ fun DmThread(circleId: String, partner: Contact, onBack: () -> Unit) {
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                items(msgs, key = { it.id }) { m -> Bubble(m.body, mine = m.isMe, media = m.media, circleId = circleId) }
+                items(msgs, key = { it.id }) { m -> Bubble(m, circleId = circleId) }
             }
 
             pendingPhoto?.let { ref ->
@@ -175,6 +179,13 @@ fun DmThread(circleId: String, partner: Contact, onBack: () -> Unit) {
                     else MediaImage(circleId, ref, Modifier.size(56.dp).clip(RoundedCornerShape(10.dp)))
                 }
             }
+            pendingMusic?.let { m ->
+                Row(Modifier.padding(start = 16.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    MusicChip(m)
+                    Icon(Icons.Filled.Close, "Remove song", tint = Color.White,
+                        modifier = Modifier.padding(start = 6.dp).size(18.dp).clickable { pendingMusic = null })
+                }
+            }
 
             Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(40.dp).clip(CircleShape).clickable {
@@ -182,6 +193,10 @@ fun DmThread(circleId: String, partner: Contact, onBack: () -> Unit) {
                         androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageAndVideo))
                 }, contentAlignment = Alignment.Center) {
                     Icon(Icons.Filled.AddPhotoAlternate, "Photo", tint = HavenTheme.pink)
+                }
+                Box(Modifier.size(40.dp).clip(CircleShape).clickable { showMusicDialog = true },
+                    contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.MusicNote, "Add a song", tint = HavenTheme.pink)
                 }
                 OutlinedTextField(
                     value = draft, onValueChange = { draft = it },
@@ -191,34 +206,45 @@ fun DmThread(circleId: String, partner: Contact, onBack: () -> Unit) {
                         focusedBorderColor = HavenTheme.pink, cursorColor = HavenTheme.pink),
                 )
                 Spacer(Modifier.size(8.dp))
-                val canSend = draft.isNotBlank() || pendingPhoto != null
+                val canSend = draft.isNotBlank() || pendingPhoto != null || pendingMusic != null
                 Box(
                     Modifier.size(48.dp).clip(CircleShape).background(HavenTheme.brandHorizontal)
                         .clickable(enabled = canSend) {
-                            HavenNet.sendDm(circleId, draft.trim(), listOfNotNull(pendingPhoto)); draft = ""; pendingPhoto = null
+                            HavenNet.sendDm(circleId, draft.trim(), listOfNotNull(pendingPhoto), pendingMusic)
+                            draft = ""; pendingPhoto = null; pendingMusic = null
                         },
                     contentAlignment = Alignment.Center,
                 ) { Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = Color.White) }
             }
         }
+        if (showMusicDialog) {
+            MusicSearchSheet(onPick = { pendingMusic = it; showMusicDialog = false }, onDismiss = { showMusicDialog = false })
+        }
     }
 }
 
 @Composable
-private fun Bubble(text: String, mine: Boolean, media: List<String> = emptyList(), circleId: String) {
+private fun Bubble(m: uniffi.haven_ffi.FeedItemFfi, circleId: String) {
+    val mine = m.isMe
+    val text = m.body
     Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
         Column(
             Modifier.widthIn(max = 280.dp).clip(RoundedCornerShape(18.dp))
                 .background(if (mine) HavenTheme.pink else HavenTheme.card)
                 .padding(horizontal = 14.dp, vertical = 10.dp),
         ) {
-            media.forEach { ref ->
+            m.media.forEach { ref ->
                 if (com.blaineam.haven.core.LocalMedia.isVideo(ref))
                     VideoTile(circleId, ref, Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)))
                 else MediaImage(circleId, ref, Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)))
-                if (text.isNotBlank()) Spacer(Modifier.size(6.dp))
+                if (text.isNotBlank() || m.music != null) Spacer(Modifier.size(6.dp))
             }
             if (text.isNotBlank()) LinkedText(text, color = Color.White, fontSize = 15.sp)
+            // A shared song renders as the same chip as in the feed.
+            m.music?.let { mus ->
+                if (text.isNotBlank()) Spacer(Modifier.size(6.dp))
+                MusicChip(mus)
+            }
         }
     }
 }

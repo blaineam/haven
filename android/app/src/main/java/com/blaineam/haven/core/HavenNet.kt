@@ -317,10 +317,11 @@ object HavenNet : InboundListener {
         runCatching { social.feed(circleId, nowMs(), null) }.getOrDefault(emptyList()).sortedBy { it.createdAt }
 
     /** Send a text DM into a circle and deliver it to the partner. */
-    fun sendDm(circleId: String, body: String, media: List<String> = emptyList()) {
-        if (body.isBlank() && media.isEmpty()) return
+    fun sendDm(circleId: String, body: String, media: List<String> = emptyList(),
+               music: uniffi.haven_ffi.TrackRefFfi? = null) {
+        if (body.isBlank() && media.isEmpty() && music == null) return
         val env = runCatching {
-            social.post(circleId, body, media, null, null, false, false, nowMs())
+            social.post(circleId, body, media, music, null, false, false, nowMs())
         }.getOrNull() ?: return
         afterAuthor(circleId, env)
         scope.launch { media.forEach { uploadMedia(circleId, it) } }
