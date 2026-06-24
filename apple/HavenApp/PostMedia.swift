@@ -23,7 +23,7 @@ struct MediaZoomViewer: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(1 - min(0.6, abs(dismissOffset) / 600)).ignoresSafeArea()
+            Color.black.opacity(1 - min(0.6, Double(abs(dismissOffset)) / 600)).ignoresSafeArea()
             TabView(selection: $index) {
                 ForEach(Array(refs.enumerated()), id: \.offset) { i, ref in
                     ZoomablePage(ref: ref, zoomed: $zoomed).tag(i)
