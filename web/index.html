@@ -24,14 +24,14 @@
 
 <header class="nav">
   <div class="nav-inner">
-    <a class="brand" href="index.html">Haven</a>
+    <a class="brand" href="./">Haven</a>
     <button class="nav-toggle" aria-label="Open menu" aria-expanded="false" aria-controls="nav-links">☰</button>
     <nav class="nav-links" id="nav-links" aria-label="Primary">
-      <a href="index.html" class="active">Home</a>
-      <a href="features.html">Features</a>
-      <a href="relay.html">Relays</a>
-      <a href="index.html#privacy">Privacy</a>
-      <a href="docs.html">Docs</a>
+      <a href="./" class="active">Home</a>
+      <a href="features/">Features</a>
+      <a href="relay/">Relays</a>
+      <a href="#privacy">Privacy</a>
+      <a href="docs/">Docs</a>
       <a href="https://github.com/blaineam/haven" rel="noopener">GitHub</a>
       <a href="#download" class="cta">Get Haven</a>
     </nav>
@@ -64,8 +64,8 @@
             Nothing you share ever leaves your circle.
           </p>
           <div class="btn-row" style="justify-content:flex-start">
-            <a class="btn" href="features.html">See everything Haven does</a>
-            <a class="btn ghost" href="relay.html">Run your own relay</a>
+            <a class="btn" href="features/">See everything Haven does</a>
+            <a class="btn ghost" href="relay/">Run your own relay</a>
           </div>
           <div class="platforms" style="justify-content:flex-start;margin-top:26px">
             <span class="pill"><span class="ic"></span>iPhone &amp; iPad</span>
@@ -237,7 +237,7 @@
         </figure>
       </div>
       <div class="btn-row reveal">
-        <a class="btn" href="features.html">Explore every feature</a>
+        <a class="btn" href="features/">Explore every feature</a>
       </div>
     </div>
   </section>
@@ -291,7 +291,7 @@
 
       <div class="callout reveal" style="margin-top:18px">
         <b>The promise:</b> never logged, never linked to you, optionally fully hidden. For the full picture,
-        read the <a class="inline" href="docs.html">threat model and architecture docs</a>.
+        read the <a class="inline" href="docs/">threat model and architecture docs</a>.
       </div>
     </div>
   </section>
@@ -310,7 +310,7 @@
               free to run on an old laptop or a Raspberry Pi.
             </p>
             <div class="btn-row" style="justify-content:flex-start">
-              <a class="btn" href="relay.html">Set up a relay</a>
+              <a class="btn" href="relay/">Set up a relay</a>
             </div>
           </div>
           <div class="card flat" style="padding:18px">
@@ -378,7 +378,7 @@ haven-relay run --link "haven-relay://circle#…"</code></pre>
   <div class="container">
     <div class="foot-grid">
       <div>
-        <a class="brand" href="index.html">Haven</a>
+        <a class="brand" href="./">Haven</a>
         <p class="blurb">A private, peer-to-peer, end-to-end-encrypted social app for your close circle. No servers, no ads, no tracking.</p>
         <div class="platforms" style="justify-content:flex-start">
           <span class="pill">iOS</span><span class="pill">macOS</span><span class="pill">Android</span>
@@ -387,17 +387,17 @@ haven-relay run --link "haven-relay://circle#…"</code></pre>
       </div>
       <div>
         <h5>Product</h5>
-        <a href="features.html">Features</a>
-        <a href="relay.html">Relays</a>
-        <a href="index.html#privacy">Privacy</a>
-        <a href="docs.html">Documentation</a>
+        <a href="features/">Features</a>
+        <a href="relay/">Relays</a>
+        <a href="#privacy">Privacy</a>
+        <a href="docs/">Documentation</a>
       </div>
       <div>
         <h5>Learn more</h5>
-        <a href="docs.html#architecture">How it works</a>
-        <a href="docs.html#threat">Threat model</a>
-        <a href="docs.html#cost">Operating costs</a>
-        <a href="relay.html#byo">Bring your own storage</a>
+        <a href="docs/#architecture">How it works</a>
+        <a href="docs/#threat">Threat model</a>
+        <a href="docs/#cost">Operating costs</a>
+        <a href="relay/#byo">Bring your own storage</a>
       </div>
       <div>
         <h5>Project</h5>
@@ -422,7 +422,7 @@ haven-relay run --link "haven-relay://circle#…"</code></pre>
 ────────────────────────────────────────────────────────────────────────── */
 (function () {
   var APP_STORE_URL = "";   // set when live on the App Store
-  var GET_URL = "features.html";
+  var GET_URL = "features/";
 
   function detectInvite() {
     var h = location.hash.replace(/^#/, "");
