@@ -458,9 +458,14 @@ final class CameraViewController: UIViewController,
     private func configurePreviewConnection() {
         let angle = havenPreviewRotationAngle()
         let mirrorFront = position == .front
-        videoDataOutput.connection(with: .video)?.applyPreviewOrientation(angle: angle, mirroredFront: mirrorFront)
+        // Preview (data output): rotate ONLY — never mirror here. `isVideoMirrored` on a data-output
+        // connection composes badly with `videoRotationAngle` and left the selfie preview rotated
+        // 90°; the Metal preview mirrors the selfie in render instead. The file outputs (movie/photo)
+        // mirror normally — their captured media is already correct.
+        videoDataOutput.connection(with: .video)?.applyPreviewOrientation(angle: angle, mirroredFront: false)
         photoOutput.connection(with: .video)?.applyPreviewOrientation(angle: angle, mirroredFront: mirrorFront)
         movieOutput.connection(with: .video)?.applyPreviewOrientation(angle: angle, mirroredFront: mirrorFront)
+        DispatchQueue.main.async { [weak self] in self?.metalPreview?.mirrored = mirrorFront }
     }
 
     @objc private func orientationChanged() {

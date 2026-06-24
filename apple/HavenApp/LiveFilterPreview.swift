@@ -64,6 +64,11 @@ final class LiveFrameTap: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
 final class MetalCameraPreview: MTKView {
     /// The look to apply to every frame. Set instantly when the user taps a swatch.
     var filter: HavenFilter = .original
+    /// Mirror the frame horizontally (front/selfie camera). Done here in the render — NOT via
+    /// `isVideoMirrored` on the data-output connection, which composes badly with
+    /// `videoRotationAngle` and left the selfie preview rotated 90°. The data output is
+    /// rotate-only (the path the back camera already proves upright); we flip the selfie here.
+    var mirrored = false
 
     private let tap: LiveFrameTap
     private let commandQueue: MTLCommandQueue?
@@ -110,7 +115,10 @@ final class MetalCameraPreview: MTKView {
               let buffer = commandQueue.makeCommandBuffer(),
               let input = tap.latest else { return }
 
-        let look = (filter == .original) ? input : FilterEngine.apply(filter.spec, to: input)
+        let filtered = (filter == .original) ? input : FilterEngine.apply(filter.spec, to: input)
+        // Mirror the selfie here (horizontal flip, stays upright) rather than on the capture
+        // connection. `.upMirrored` resets the extent origin so the aspect-fill math below holds.
+        let look = mirrored ? filtered.oriented(.upMirrored) : filtered
 
         // Aspect-fill the frame into the drawable: scale to cover, then center.
         let dst = CGRect(origin: .zero, size: drawableSize)
@@ -137,17 +145,21 @@ final class MetalCameraPreview: MTKView {
 struct FilteredCameraPreview: UIViewRepresentable {
     let tap: LiveFrameTap
     var filter: HavenFilter
+    /// Mirror the preview for the front/selfie camera (flip done in render, not on the connection).
+    var mirrored: Bool = false
     var onThumbnail: ((PlatformImage) -> Void)? = nil
 
     func makeUIView(context: Context) -> MetalCameraPreview {
         let view = MetalCameraPreview(tap: tap, device: MTLCreateSystemDefaultDevice())
         view.filter = filter
+        view.mirrored = mirrored
         tap.onThumbnail = onThumbnail
         return view
     }
 
     func updateUIView(_ view: MetalCameraPreview, context: Context) {
         view.filter = filter
+        view.mirrored = mirrored
         tap.onThumbnail = onThumbnail
     }
 }
