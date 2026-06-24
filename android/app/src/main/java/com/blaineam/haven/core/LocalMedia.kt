@@ -30,11 +30,19 @@ object LocalMedia {
         val hash = sha256Hex(bytes)
         val toWrite = runCatching { HavenNet.engine.sealCircleMedia(circleId, bytes) }.getOrNull() ?: bytes
         runCatching { File(dir, hash).writeBytes(toWrite) }
-        return if (isVideo) "v:$hash" else hash
+        // Mint the SAME ref scheme as iOS (apple/HavenApp/Media.swift): the kind is encoded in the
+        // prefix so a recipient on either platform knows how to render it. iOS hard-rejects any ref
+        // without an img_/vid_/aud_ prefix, so bare hashes were being dropped cross-platform.
+        return if (isVideo) "vid_$hash" else "img_$hash"
     }
 
-    fun isVideo(ref: String): Boolean = ref.startsWith("v:")
-    private fun bareId(ref: String): String = ref.removePrefix("v:").removePrefix("i:")
+    fun isVideo(ref: String): Boolean = ref.startsWith("vid_") || ref.startsWith("v:")
+    fun isAudio(ref: String): Boolean = ref.startsWith("aud_")
+    // Strip the kind prefix (ours or iOS's) to the on-disk storage key. Legacy v:/i: kept for
+    // already-stored local media.
+    private fun bareId(ref: String): String =
+        ref.removePrefix("v:").removePrefix("i:")
+            .removePrefix("img_").removePrefix("vid_").removePrefix("aud_")
 
     /** Load + decrypt a stored media ref, or null if we don't have it. */
     fun load(circleId: String, ref: String): ByteArray? {
