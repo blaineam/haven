@@ -39,6 +39,9 @@ body{
   text-rendering:optimizeLegibility;
 }
 a{color:inherit}
+/* Global safety net: no image may ever exceed its container width on any screen.
+   Specific rules (.render caps, hero single-phone) still win via higher specificity. */
+img{max-width:100%;height:auto}
 
 /* ── Layout helpers ───────────────────────────────────────────────────── */
 .container{width:100%;max-width:var(--maxw);margin:0 auto;padding:0 22px}
