@@ -1169,8 +1169,53 @@ function initTheme() {
   });
 }
 
+// First-run welcome (parity with iOS/Android): on a fresh install the backend has NO identity or
+// engine, so we must show this BEFORE calling any engine command. "Create" mints a new identity;
+// "Link" adopts a transfer code from another device. Both relaunch the app into the normal flow.
+function renderOnboarding() {
+  const brandMark = el("div", { class: "brand-mark", style: "width:64px;height:64px;border-radius:20px" });
+  brandMark.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="width:34px;height:34px">
+      <circle cx="6" cy="7" r="1.6" fill="white"/><circle cx="18" cy="6" r="1.6" fill="white"/>
+      <circle cx="12" cy="13" r="1.8" fill="white"/><circle cx="5" cy="17" r="1.6" fill="white"/>
+      <circle cx="19" cy="17" r="1.6" fill="white"/>
+      <path d="M6 7l6 6 6-7M12 13l-7 4M12 13l7 4" opacity="0.85"/></svg>`;
+
+  const code = el("input", { placeholder: "haven-seed:…", style: "width:100%;margin-top:10px" });
+  const linkBox = el("div", { class: "col", style: "display:none;width:100%;margin-top:14px;gap:8px" },
+    el("div", { class: "muted small" }, "On your other device open You ▸ Link a new device, copy its transfer code, then paste it here."),
+    code,
+    el("button", { class: "btn primary", style: "width:100%", onclick: async () => {
+      const c = code.value.trim();
+      if (!c) { toast("Paste a transfer code first"); return; }
+      try { await invoke("onboard_link", { code: c }); } // relaunches into the linked identity
+      catch (e) { toast("Couldn't link: " + e); }
+    } }, "Link this device"),
+  );
+
+  const card = el("div", { style: "max-width:420px;width:100%;display:flex;flex-direction:column;align-items:center;text-align:center;gap:6px" },
+    brandMark,
+    el("h1", { style: "font-size:34px;font-weight:800;margin:10px 0 0" }, "Haven"),
+    el("p", { class: "muted", style: "margin:0 0 6px" }, "Your friends and your family. That's the whole product."),
+    el("button", { class: "btn primary", style: "width:100%;margin-top:18px;padding:12px", onclick: async () => {
+      try { await invoke("onboard_create"); } // relaunches into the new identity
+      catch (e) { toast("Couldn't create: " + e); }
+    } }, "Create my Haven"),
+    el("button", { class: "btn ghost", style: "width:100%", onclick: () => { linkBox.style.display = "flex"; code.focus(); } }, "Already use Haven? Link this device"),
+    linkBox,
+    el("p", { class: "muted small", style: "margin-top:18px" }, "No phone number. No email. Your keys never leave this device."),
+  );
+
+  const overlay = el("div", { id: "onboard-overlay", style: "position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;padding:32px;background:var(--bg, #0d0b1a)" }, card);
+  document.body.append(overlay);
+}
+
 async function boot() {
   initTheme();
+  // Fresh install → no identity/engine yet. Show the welcome screen and stop before touching any
+  // engine command (which would error). onboard_create/onboard_link relaunch into the real app.
+  try {
+    if (await invoke("needs_onboarding")) { renderOnboarding(); return; }
+  } catch (_) {}
   $$(".nav-btn").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.view)));
   try {
     const b = await invoke("bootstrap");

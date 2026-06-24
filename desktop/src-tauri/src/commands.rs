@@ -634,9 +634,14 @@ pub fn add_identity(engine: Eng, label: String) -> R<String> {
 /// Import an identity from a base64-encoded 32-byte seed (a transfer from another device).
 #[tauri::command]
 pub fn import_identity(engine: Eng, label: String, seed_b64: String) -> R<String> {
-    // Accept a `haven-seed:<base64>` transfer code from any client (iOS/Android/desktop) OR a raw
-    // base64 seed, in any base64 variant — so a code copied/scanned from a phone just works.
-    let s = seed_b64.trim();
+    let seed = decode_seed(&seed_b64)?;
+    engine.import_identity(&label, seed).map_err(|e| e.to_string())
+}
+
+/// Decode a 32-byte seed from a `haven-seed:<base64>` transfer code (from any client) OR a raw
+/// base64 seed, in any base64 variant — so a code copied/scanned from a phone just works.
+fn decode_seed(input: &str) -> R<[u8; 32]> {
+    let s = input.trim();
     let s = s.strip_prefix("haven-seed:").unwrap_or(s).trim();
     use base64::engine::general_purpose as b64;
     let raw = b64::STANDARD
@@ -645,8 +650,58 @@ pub fn import_identity(engine: Eng, label: String, seed_b64: String) -> R<String
         .or_else(|_| b64::STANDARD_NO_PAD.decode(s))
         .or_else(|_| b64::URL_SAFE_NO_PAD.decode(s))
         .map_err(|e| format!("bad seed base64: {e}"))?;
-    let seed: [u8; 32] = raw.try_into().map_err(|_| "seed is not 32 bytes".to_string())?;
-    engine.import_identity(&label, seed).map_err(|e| e.to_string())
+    raw.try_into().map_err(|_| "seed is not 32 bytes".to_string())
+}
+
+// ---- first-run onboarding ----------------------------------------------------------------
+//
+// The GUI no longer auto-mints an identity on a fresh install (parity with iOS/Android, which
+// both show a welcome screen first). On first launch the backend builds NO engine; the frontend
+// calls `needs_onboarding` and shows Create / Link. Both paths persist the chosen seed and then
+// `app.restart()` — the relaunch loads the now-present identity through the normal startup path.
+
+/// True on a truly fresh install (empty roster + no legacy seed) — the frontend shows the
+/// welcome screen instead of the app. Takes no engine, so it works before one exists.
+#[tauri::command]
+pub fn needs_onboarding() -> R<bool> {
+    let base = crate::store::Paths::resolve().map_err(|e| e.to_string())?;
+    let fresh = crate::store::Identities::load(&base).is_empty()
+        && crate::store::load_seed().map_err(|e| e.to_string())?.is_none();
+    Ok(fresh)
+}
+
+/// Persist `seed` as the first (active, legacy-root) identity, mirroring the legacy `master-seed`.
+fn save_first_identity(seed: [u8; 32]) -> R<()> {
+    let base = crate::store::Paths::resolve().map_err(|e| e.to_string())?;
+    let hex = haven_ffi::Account::from_seed(seed.to_vec())
+        .map_err(|e| format!("derive node id: {e}"))?
+        .node_id_hex();
+    crate::store::save_identity_seed(&hex, &seed).map_err(|e| e.to_string())?;
+    let mut ids = crate::store::Identities::load(&base);
+    ids.add(&hex, "Identity 1");
+    ids.save(&base).map_err(|e| e.to_string())?;
+    crate::store::save_seed(&seed).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// "Create my Haven" — mint a brand-new identity, then relaunch into it.
+#[tauri::command]
+pub fn onboard_create(app: tauri::AppHandle) -> R<()> {
+    let acct = haven_ffi::Account::generate();
+    let seed: [u8; 32] = acct
+        .secret_seed()
+        .try_into()
+        .map_err(|_| "generated seed is not 32 bytes".to_string())?;
+    save_first_identity(seed)?;
+    app.restart();
+}
+
+/// "Link an existing identity" — adopt a transfer code/seed from another device, then relaunch.
+#[tauri::command]
+pub fn onboard_link(app: tauri::AppHandle, code: String) -> R<()> {
+    let seed = decode_seed(&code)?;
+    save_first_identity(seed)?;
+    app.restart();
 }
 
 #[tauri::command]

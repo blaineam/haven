@@ -81,66 +81,114 @@ fn ensure_active_identity() -> Result<([u8; 32], Paths)> {
     Ok((seed, Paths::resolve_for(&entry.dir)?))
 }
 
+/// GUI variant of `ensure_active_identity`: returns `None` on a truly fresh install (empty roster
+/// + no legacy seed) instead of auto-minting. The GUI then shows a welcome screen and the user
+/// explicitly creates or links an identity (which persists the seed and relaunches into the
+/// normal startup path). A legacy single-seed install is still migrated and counts as existing.
+fn active_identity_if_exists() -> Result<Option<([u8; 32], Paths)>> {
+    let base = Paths::resolve()?;
+    let ids = store::Identities::load(&base);
+
+    if ids.is_empty() {
+        if let Some(seed) = store::load_seed()? {
+            // Pre-roster install: migrate the legacy seed into the roster (keeps its flat dir).
+            let hex = Account::from_seed(seed.to_vec())
+                .map_err(|e| anyhow!("derive node id: {e}"))?
+                .node_id_hex();
+            store::save_identity_seed(&hex, &seed)?;
+            let mut ids = ids;
+            ids.add(&hex, "Identity 1");
+            ids.save(&base)?;
+            return Ok(Some((seed, Paths::resolve_for("")?)));
+        }
+        return Ok(None); // fresh — no auto-create; the frontend onboards.
+    }
+
+    let entry = ids
+        .active_entry()
+        .cloned()
+        .ok_or_else(|| anyhow!("roster has no active identity"))?;
+    let seed = match store::load_identity_seed(&entry.node_hex)? {
+        Some(s) => s,
+        None => store::load_seed()?.ok_or_else(|| anyhow!("active identity seed missing"))?,
+    };
+    let _ = store::save_seed(&seed);
+    Ok(Some((seed, Paths::resolve_for(&entry.dir)?)))
+}
+
 /// Run the full GUI app.
 pub fn run() {
-    let (seed, paths) = ensure_active_identity().expect("load or create identity");
-    let engine = Engine::new(paths, seed).expect("build engine");
+    // Fresh install → no engine; the frontend shows the welcome screen and `onboard_*` relaunches.
+    let existing = active_identity_if_exists().expect("resolve identity");
 
-    let setup_engine = engine.clone();
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
-        ))
-        .manage(engine)
-        .setup(move |app| {
-            let handle = app.handle().clone();
-            setup_engine.set_app(handle.clone());
-            let e = setup_engine.clone();
-            tauri::async_runtime::spawn(async move {
-                e.start().await;
-                // If the user opted in, host the relay automatically — combined with
-                // launch-on-login this makes the desktop app a reboot-surviving relay.
-                if e.host_on_launch() {
-                    let _ = e.start_hosting().await;
-                }
-            });
+        ));
 
-            // System tray: show the window, toggle the relay, or quit. The relay keeps running
-            // when the window is closed, so the tray is the "invisible background relay" surface.
-            let show = MenuItem::with_id(app, "show", "Open Haven", true, None::<&str>)?;
-            let relay = MenuItem::with_id(app, "relay", "Host relay", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit Haven", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &relay, &quit])?;
-            let tray_engine = setup_engine.clone();
-            TrayIconBuilder::with_id("haven-tray")
-                .icon(app.default_window_icon().unwrap().clone())
-                .tooltip("Haven")
-                .menu(&menu)
-                .show_menu_on_left_click(true)
-                .on_menu_event(move |app, event| match event.id().as_ref() {
-                    "show" => {
-                        if let Some(w) = app.get_webview_window("main") {
-                            let _ = w.show();
-                            let _ = w.set_focus();
+    let builder = match existing {
+        Some((seed, paths)) => {
+            let engine = Engine::new(paths, seed).expect("build engine");
+            let setup_engine = engine.clone();
+            builder.manage(engine).setup(move |app| {
+                let handle = app.handle().clone();
+                setup_engine.set_app(handle.clone());
+                let e = setup_engine.clone();
+                tauri::async_runtime::spawn(async move {
+                    e.start().await;
+                    // If the user opted in, host the relay automatically — combined with
+                    // launch-on-login this makes the desktop app a reboot-surviving relay.
+                    if e.host_on_launch() {
+                        let _ = e.start_hosting().await;
+                    }
+                });
+
+                // System tray: show the window, toggle the relay, or quit. The relay keeps running
+                // when the window is closed, so the tray is the "invisible background relay" surface.
+                let show = MenuItem::with_id(app, "show", "Open Haven", true, None::<&str>)?;
+                let relay = MenuItem::with_id(app, "relay", "Host relay", true, None::<&str>)?;
+                let quit = MenuItem::with_id(app, "quit", "Quit Haven", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&show, &relay, &quit])?;
+                let tray_engine = setup_engine.clone();
+                TrayIconBuilder::with_id("haven-tray")
+                    .icon(app.default_window_icon().unwrap().clone())
+                    .tooltip("Haven")
+                    .menu(&menu)
+                    .show_menu_on_left_click(true)
+                    .on_menu_event(move |app, event| match event.id().as_ref() {
+                        "show" => {
+                            if let Some(w) = app.get_webview_window("main") {
+                                let _ = w.show();
+                                let _ = w.set_focus();
+                            }
                         }
-                    }
-                    "relay" => {
-                        let e = tray_engine.clone();
-                        tauri::async_runtime::spawn(async move {
-                            let _ = e.start_hosting().await;
-                        });
-                    }
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .build(app)?;
-            Ok(())
-        })
+                        "relay" => {
+                            let e = tray_engine.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let _ = e.start_hosting().await;
+                            });
+                        }
+                        "quit" => app.exit(0),
+                        _ => {}
+                    })
+                    .build(app)?;
+                Ok(())
+            })
+        }
+        // No identity yet: bring up the window with no engine. The frontend's `needs_onboarding`
+        // check renders the welcome screen; `onboard_create`/`onboard_link` relaunch into the app.
+        None => builder.setup(|_app| Ok(())),
+    };
+
+    builder
         .invoke_handler(tauri::generate_handler![
+            commands::needs_onboarding,
+            commands::onboard_create,
+            commands::onboard_link,
             commands::bootstrap,
             commands::self_test,
             commands::get_profile,
