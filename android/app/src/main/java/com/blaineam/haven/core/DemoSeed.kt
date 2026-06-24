@@ -69,6 +69,7 @@ object DemoSeeder {
         val emoji: String,
         val bio: String,
         val seedByte: Int,    // fills a deterministic 32-byte account seed
+        val avatar: String,   // bundled demo avatar asset name (assets/demo/<avatar>.jpg)
     ) {
         var engine: HavenSocial? = null
         var hex: String = ""
@@ -90,16 +91,17 @@ object DemoSeeder {
         me.bio = "designer · plant hoarder · weekend hiker 🌄"
         me.link = "rileyavery.studio"
         me.save()
+        me.setAvatar(avatarB64(context, "avatar-me"))   // my own photo avatar
 
         val mainHex = HavenNet.nodeIdHex
         runCatching { main.createCircle(DEFAULT_CIRCLE, "Your circle") }
 
         // ── The cast ──────────────────────────────────────────────────────────────────────
         val people = listOf(
-            Persona("Maya Quinn", "🌸", "ceramics & cold brew", 0xA1),
-            Persona("Theo Park", "🦊", "trail runner, map nerd", 0xB2),
-            Persona("Nina Brooks", "🦋", "film photography", 0xC3),
-            Persona("Sam Rivera", "🌊", "surf + sourdough", 0xD4),
+            Persona("Maya Quinn", "🌸", "ceramics & cold brew", 0xA1, "avatar-maya"),
+            Persona("Theo Park", "🦊", "trail runner, map nerd", 0xB2, "avatar-theo"),
+            Persona("Nina Brooks", "🦋", "film photography", 0xC3, "avatar-nina"),
+            Persona("Sam Rivera", "🌊", "surf + sourdough", 0xD4, "avatar-sam"),
         )
 
         for (p in people) {
@@ -112,6 +114,7 @@ object DemoSeeder {
             p.hex = hex
             if (hex.isEmpty()) continue
             HavenNet.demoAddContact(hex, p.name, runCatching { engine.verificationHex() }.getOrNull() ?: "")
+            AvatarStore.put(hex, avatarB64(context, p.avatar), p.emoji)   // real photo avatars in demo
         }
         val valid = people.filter { it.engine != null && it.hex.isNotEmpty() }
         callParticipants = valid.take(3).map { it.hex }
@@ -325,6 +328,12 @@ object DemoSeeder {
             LocalMedia.storeUnderRef(DEFAULT_CIRCLE, ref, bytes)
         }
     }
+
+    /** Base64 of a bundled demo avatar JPEG (assets/demo/<name>.jpg), or "" if missing. */
+    private fun avatarB64(context: Context, asset: String): String =
+        runCatching {
+            android.util.Base64.encodeToString(context.assets.open("demo/$asset.jpg").use { it.readBytes() }, android.util.Base64.NO_WRAP)
+        }.getOrDefault("")
 
     /** A soft two-tone diagonal gradient JPEG — clearly synthetic, contains no people / PII. */
     private fun gradientJpeg(hueA: Float, hueB: Float, w: Int = 1080, h: Int = 1350): ByteArray {

@@ -219,6 +219,9 @@ object HavenNet : InboundListener {
         if (blocked.contains(idHex)) return   // a blocked node can't handshake back in
         val actualVerify = runCatching { social.bundleVerificationHex(hello.bundle) }.getOrNull() ?: return
         val name = runCatching { social.verifyProfile(hello.bundle, hello.signedProfile) }.getOrNull() ?: "Someone"
+        // Capture the full profile card (avatar + emoji) so the feed/people/story-tray show real photos.
+        runCatching { social.verifyProfileCard(hello.bundle, hello.signedProfile) }.getOrNull()
+            ?.let { AvatarStore.put(idHex, it.avatar, it.emoji) }
 
         // DM circles encode both full node ids — only those two may ever join (MITM/contamination guard).
         if (hello.circleId.startsWith("dm:") && !dmAllows(hello.circleId, idHex)) return
@@ -384,7 +387,7 @@ object HavenNet : InboundListener {
         val name = profile.displayName.ifBlank { "Someone" }
         val circleName = social.circles().firstOrNull { it.id == circleId }?.name ?: "My Circle"
         val bundle = social.myBundle()
-        val signed = social.mySignedProfile(name, profile.bio, profile.link, "", profile.emoji)
+        val signed = social.mySignedProfile(name, profile.bio, profile.link, profile.avatarB64, profile.emoji)
         return Wire.helloPayload(circleId, circleName, bundle, signed)
     }
 
@@ -843,6 +846,7 @@ object HavenNet : InboundListener {
         relayNodes.clear(); relayClients.clear(); seenMailbox.clear()
         Presign.reset()
         CircleLock.reset()
+        AvatarStore.clear()
         relayActive.value = false
         activeCircle.value = DEFAULT_CIRCLE
         prefs.edit().clear().apply()

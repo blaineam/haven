@@ -84,10 +84,7 @@ fun PeopleScreen(onAddFriend: () -> Unit, onClose: () -> Unit) {
                     verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     items(contacts, key = { it.idHex }) { c ->
                         Row(Modifier.fillMaxWidth().havenCard().padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.size(44.dp).clip(CircleShape).background(HavenTheme.brand),
-                                contentAlignment = Alignment.Center) {
-                                Text(c.name.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold)
-                            }
+                            HavenAvatar(c.idHex, c.name, 44.dp)
                             Spacer(Modifier.size(12.dp))
                             Column(Modifier.weight(1f)) {
                                 Text(c.name, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)

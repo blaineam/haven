@@ -10,6 +10,7 @@ class HavenApplication : Application() {
         super.onCreate()
         Notifications.ensureChannel(this)
         com.blaineam.haven.core.CircleLock.init(this)   // cheap; avoids an uninit access during first compose
+        com.blaineam.haven.core.AvatarStore.init(this)  // photo avatars for feed/people/story-tray
         SyncWorker.schedule(this)
     }
 }

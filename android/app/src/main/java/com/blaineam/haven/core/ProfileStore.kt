@@ -19,6 +19,8 @@ class ProfileStore private constructor(context: Context) {
     var bio by mutableStateOf(prefs.getString(KEY_BIO, "") ?: "")
     var link by mutableStateOf(prefs.getString(KEY_LINK, "") ?: "")
     var emoji by mutableStateOf(prefs.getString(KEY_EMOJI, "🌅") ?: "🌅")
+    /** Base64 of a small JPEG avatar (empty = none); rides the signed profile card to the circle. */
+    var avatarB64 by mutableStateOf(prefs.getString(KEY_AVATAR, "") ?: "")
 
     /** Auto-expire posts older than this many days (0 = keep forever). Parity with iOS retention. */
     var retentionDays by mutableStateOf(prefs.getInt(KEY_RETENTION, 0))
@@ -48,7 +50,15 @@ class ProfileStore private constructor(context: Context) {
             .putString(KEY_BIO, bio)
             .putString(KEY_LINK, link)
             .putString(KEY_EMOJI, emoji)
+            .putString(KEY_AVATAR, avatarB64)
             .apply()
+    }
+
+    /** Set + persist my avatar, and mirror it into [AvatarStore] so my own posts show it too. */
+    fun setAvatar(base64: String) {
+        avatarB64 = base64
+        prefs.edit().putString(KEY_AVATAR, base64).apply()
+        AvatarStore.put(HavenNet.nodeIdHex, base64, emoji)
     }
 
     fun reset() {
@@ -65,6 +75,7 @@ class ProfileStore private constructor(context: Context) {
         private const val KEY_BIO = "bio"
         private const val KEY_LINK = "link"
         private const val KEY_EMOJI = "emoji"
+        private const val KEY_AVATAR = "avatar"
         private const val KEY_RETENTION = "retentionDays"
 
         @Volatile private var instance: ProfileStore? = null

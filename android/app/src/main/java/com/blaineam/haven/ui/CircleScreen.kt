@@ -513,13 +513,8 @@ fun PostCard(item: FeedItemFfi, circleId: String = DEFAULT_CIRCLE) {
 
     Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                Modifier.size(34.dp).clip(CircleShape).background(HavenTheme.brand),
-                contentAlignment = Alignment.Center,
-            ) {
-                val authorName = if (item.isMe) "You" else HavenNet.displayName(item.authorShort)
-                Text(if (item.isMe) "•" else authorName.take(1).uppercase(), color = Color.White, fontSize = 14.sp)
-            }
+            HavenAvatar(item.authorShort, if (item.isMe) "You" else HavenNet.displayName(item.authorShort),
+                34.dp, isMe = item.isMe)
             Spacer(Modifier.size(10.dp))
             Text(
                 if (item.isMe) "You" else HavenNet.displayName(item.authorShort),
