@@ -17,10 +17,8 @@
 
 use std::collections::BTreeMap;
 
-use base64::Engine as _;
-use serde::{Deserialize, Serialize};
-
 use crate::store::{Contact, Paths, Prefs};
+use haven_ffi::multidevice::{decode_circle_sync, encode_circle_sync};
 use haven_ffi::HavenSocial;
 
 /// Load (or first-time generate) this device's stable 32-byte self-sync id. All of a user's
@@ -42,27 +40,10 @@ pub fn device_id(paths: &Paths) -> [u8; 32] {
     id
 }
 
-/// A circle's portable structure: its name, every member's public bundle (base64), and the relay
-/// nodes that hold its mailbox — enough for another device to reconstruct it and seal to all
-/// members. The field names (`members`/`name`/`relays`), base64 member encoding, and sorted vecs
-/// MUST match iOS so the encoded bytes are byte-identical cross-platform.
-///
-/// CRITICAL: iOS encodes this with `JSONEncoder.outputFormatting = [.sortedKeys]`, which emits
-/// the keys in ALPHABETICAL order: `members`, `name`, `relays`. serde_json emits struct fields in
-/// DECLARATION order, so the fields here are declared alphabetically to reproduce iOS's bytes
-/// exactly. Do NOT reorder. The vecs are pre-sorted so equal state encodes identically (otherwise
-/// the fold's encoded-bytes diff would re-stamp every sync and the devices would ping-pong).
-#[derive(Serialize, Deserialize, PartialEq, Eq)]
-struct CircleSync {
-    members: Vec<String>,
-    name: String,
-    relays: Vec<String>,
-}
-
 /// Namespaces whose keys are dynamic (set-like) — used to detect LOCAL removals so they
-/// propagate as tombstones (unblock, delete contact). Scalar namespaces (`profile:`/`setting:`)
-/// are always present, so they're never spuriously removed.
-pub const DYNAMIC_PREFIXES: [&str; 2] = ["contact:", "blocked:"];
+/// propagate as tombstones (unblock, delete contact, leave a circle). Scalar namespaces
+/// (`profile:`/`setting:`) are always present, so they're never spuriously removed.
+pub const DYNAMIC_PREFIXES: [&str; 3] = ["contact:", "blocked:", "circle:"];
 
 /// The current local state as namespaced key → value bytes (no stamps). `prefs` contributes
 /// profile/settings/contacts/blocked; `social` contributes the circle structure (name + member
@@ -92,23 +73,19 @@ pub fn current_local(prefs: &Prefs, social: &HavenSocial) -> BTreeMap<String, Ve
     }
 
     // Circles: name + member bundles + relay nodes, so another device can reconstruct each circle
-    // and seal to every member. (Additive — member/circle removal is a follow-up, matching iOS.)
+    // and seal to every member. Encoded via the shared FFI encoder so the bytes are byte-identical
+    // to iOS/Android (it base64's the RAW bundles, sorts members/relays, alphabetical-key JSON).
     for ci in social.circles() {
         // Skip DM pseudo-circles — they reconstruct from the contact pair, not from sync.
         if ci.id.starts_with("dm:") {
             continue;
         }
-        let mut members: Vec<String> = social
-            .circle_member_bundles(ci.id.clone())
-            .iter()
-            .map(|b| base64::engine::general_purpose::STANDARD.encode(b))
-            .collect();
-        members.sort();
+        let member_bundles = social.circle_member_bundles(ci.id.clone());
         let mut relays: Vec<String> = prefs.relays.get(&ci.id).cloned().unwrap_or_default();
         relays.sort();
         relays.dedup();
-        let cs = CircleSync { members, name: ci.name.clone(), relays };
-        if let Ok(data) = serde_json::to_vec(&cs) {
+        let data = encode_circle_sync(ci.name.clone(), member_bundles, relays);
+        if !data.is_empty() {
             m.insert(format!("circle:{}", ci.id), data);
         }
     }
@@ -234,12 +211,18 @@ pub fn apply_local(
     }
 
     // Circles: reconstruct each synced circle — create it, register every member's bundle (so
-    // this device can seal to them), and record its relay mailbox(es). Additive (no removal).
+    // this device can seal to them), and record its relay mailbox(es). The synced record is the
+    // AUTHORITATIVE member set, so we also remove locally-present members that were dropped on
+    // another device, and `leave_circle` for circles tombstoned (LEFT) elsewhere.
     let existing: Vec<(String, String)> =
         social.circles().into_iter().map(|c| (c.id, c.name)).collect();
+    // The set of circle ids the converged state still has live (decoded successfully).
+    let mut synced_circle_ids: std::collections::BTreeSet<String> =
+        std::collections::BTreeSet::new();
     for (k, v) in entries {
         let Some(id) = k.strip_prefix("circle:") else { continue };
-        let Ok(cs) = serde_json::from_slice::<CircleSync>(v) else { continue };
+        let Some(cs) = decode_circle_sync(v.clone()) else { continue };
+        synced_circle_ids.insert(id.to_string());
         match existing.iter().find(|(cid, _)| cid == id) {
             None => {
                 social.create_circle(id.to_string(), cs.name.clone());
@@ -252,9 +235,24 @@ pub fn apply_local(
                 }
             }
         }
-        for b64 in &cs.members {
-            if let Ok(bundle) = base64::engine::general_purpose::STANDARD.decode(b64) {
-                let _ = social.add_contact_bundle(id.to_string(), bundle);
+        // Register every synced member bundle so this device can seal to them.
+        for bundle in &cs.member_bundles {
+            let _ = social.add_contact_bundle(id.to_string(), bundle.clone());
+        }
+        // Remove members present locally but NOT in the authoritative synced set.
+        let want_node_hex: std::collections::BTreeSet<String> = cs
+            .member_bundles
+            .iter()
+            .filter_map(|b| {
+                p2pcore::identity::HavenId::from_bytes(b)
+                    .ok()
+                    .map(|id| hex::encode(id.node_id_bytes()))
+            })
+            .collect();
+        for node_hex in social.contact_node_ids(id.to_string()) {
+            if !want_node_hex.contains(&node_hex) {
+                social.remove_from_circle(id.to_string(), node_hex);
+                changed = true;
             }
         }
         if !cs.relays.is_empty() {
@@ -267,6 +265,18 @@ pub fn apply_local(
             }
         }
     }
+    // Tombstoned circles: a circle LEFT on another device is absent from the synced set but still
+    // exists locally — leave it here too so the removal converges. (Skip the default + DM circles,
+    // which are never synced as leave-able and would only churn.)
+    for (cid, _) in &existing {
+        if cid == "default" || cid.starts_with("dm:") {
+            continue;
+        }
+        if !synced_circle_ids.contains(cid) {
+            social.leave_circle(cid.clone());
+            changed = true;
+        }
+    }
 
     changed
 }
@@ -276,21 +286,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn circle_sync_encodes_deterministically_and_matches_field_order() {
-        // Field order name/members/relays, members & relays sorted ⇒ byte-stable, iOS-compatible.
-        let cs = CircleSync {
-            members: vec!["AAA".into(), "BBB".into()],
-            name: "Home".into(),
-            relays: vec!["node1".into()],
-        };
-        let json = serde_json::to_string(&cs).unwrap();
-        // Alphabetical key order, matching iOS `JSONEncoder.outputFormatting = [.sortedKeys]`.
-        assert_eq!(json, r#"{"members":["AAA","BBB"],"name":"Home","relays":["node1"]}"#);
+    fn shared_circle_encoder_is_deterministic_and_alphabetical_and_round_trips() {
+        // The desktop now defers to the shared FFI encoder for byte-parity with iOS/Android.
+        // Raw bundle bytes (the encoder base64's them itself): 0xAA0001 -> "qgAB", 0x000102 -> "AAEC".
+        let bundles = vec![vec![0xAAu8, 0x00, 0x01], vec![0x00u8, 0x01, 0x02]];
+        let bytes = encode_circle_sync("Home".into(), bundles.clone(), vec!["node1".into()]);
+        let json = String::from_utf8(bytes.clone()).unwrap();
+        // Alphabetical keys, sorted base64 members ("AAEC" < "qgAB"), matching iOS sortedKeys.
+        assert_eq!(json, r#"{"members":["AAEC","qgAB"],"name":"Home","relays":["node1"]}"#);
+        // Round-trips back to the same raw bundle bytes (order-independent set membership).
+        let rec = decode_circle_sync(bytes).unwrap();
+        assert_eq!(rec.name, "Home");
+        assert_eq!(rec.relays, vec!["node1".to_string()]);
+        assert!(rec.member_bundles.contains(&bundles[0]));
+        assert!(rec.member_bundles.contains(&bundles[1]));
     }
 
     #[test]
-    fn dynamic_prefixes_cover_contact_and_blocked() {
+    fn dynamic_prefixes_cover_contact_blocked_and_circle() {
         assert!(DYNAMIC_PREFIXES.contains(&"contact:"));
         assert!(DYNAMIC_PREFIXES.contains(&"blocked:"));
+        assert!(DYNAMIC_PREFIXES.contains(&"circle:"));
     }
 }

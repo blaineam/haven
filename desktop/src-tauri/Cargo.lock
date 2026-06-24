@@ -2307,6 +2307,7 @@ version = "0.0.1"
 dependencies = [
  "data-encoding",
  "haven-net",
+ "haven-s3",
  "jni 0.21.1",
  "ndk-context",
  "p2pcore",

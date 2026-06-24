@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.blaineam.haven.core.HavenNet
 import com.blaineam.haven.core.ProfileStore
+import com.blaineam.haven.core.StorageStore
 import com.blaineam.haven.core.startOver
 
 /** Settings (the ⚙️ behind You): retention, blocked people, start over. Parity with iOS SettingsView. */
@@ -182,6 +183,9 @@ fun SettingsScreen(onBack: () -> Unit) {
                         HavenNet.adoptRelay(relayInput); relayInput = ""
                     }.padding(8.dp))
             }
+
+            Spacer(Modifier.height(16.dp))
+            StorageSyncCard(context)
 
             Spacer(Modifier.height(16.dp))
             Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
@@ -375,6 +379,82 @@ private fun SettingsCheck(title: String, ok: Boolean) {
         Spacer(Modifier.size(10.dp))
         Text(title, color = Color.White, fontSize = 14.sp)
     }
+}
+
+/**
+ * BYO-storage (S3-compatible bucket) for multi-device self-sync — the Android counterpart of iOS's
+ * owner-S3 transport. With these 5 fields, self-sync converges your own devices over your OWN bucket
+ * with NO relay required (profile/settings/contacts/blocked/circles). Credentials stay on-device.
+ */
+@Composable
+private fun StorageSyncCard(context: android.content.Context) {
+    var saved by remember { mutableStateOf(StorageStore.load(context)) }
+    var endpoint by remember { mutableStateOf(saved.endpoint) }
+    var region by remember { mutableStateOf(saved.region) }
+    var bucket by remember { mutableStateOf(saved.bucket) }
+    var accessKey by remember { mutableStateOf(saved.accessKey) }
+    var secretKey by remember { mutableStateOf(saved.secretKey) }
+
+    val candidate = StorageStore.Config(endpoint, region, bucket, accessKey, secretKey)
+    val dirty = candidate != saved
+
+    Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
+        Text("Sync across your devices", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+        Spacer(Modifier.height(4.dp))
+        Text(
+            if (saved.isConfigured)
+                "Using your own S3 bucket — your phones, tablets and computers stay in sync with no relay needed."
+            else "Add your own S3-compatible bucket so your devices keep your profile, contacts and circles in sync — even with no relay. Credentials never leave this device.",
+            color = HavenTheme.textSecondary, fontSize = 12.sp,
+        )
+        Spacer(Modifier.height(12.dp))
+
+        StorageField("Endpoint (e.g. https://s3.us-east-1.amazonaws.com)", endpoint) { endpoint = it }
+        Spacer(Modifier.height(8.dp))
+        StorageField("Region (e.g. us-east-1)", region) { region = it }
+        Spacer(Modifier.height(8.dp))
+        StorageField("Bucket", bucket) { bucket = it }
+        Spacer(Modifier.height(8.dp))
+        StorageField("Access key", accessKey) { accessKey = it }
+        Spacer(Modifier.height(8.dp))
+        StorageField("Secret key", secretKey, secret = true) { secretKey = it }
+
+        Spacer(Modifier.height(10.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                if (saved.isConfigured) "Save changes" else "Save",
+                color = if (dirty) HavenTheme.pink else HavenTheme.textSecondary,
+                fontWeight = FontWeight.SemiBold, fontSize = 14.sp,
+                modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(enabled = dirty) {
+                    StorageStore.save(context, candidate)
+                    saved = StorageStore.load(context)
+                }.padding(8.dp),
+            )
+            if (saved.isConfigured) {
+                Spacer(Modifier.size(8.dp))
+                Text("Remove", color = Color(0xFFF87171), fontSize = 14.sp,
+                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable {
+                        StorageStore.clear(context)
+                        saved = StorageStore.load(context)
+                        endpoint = ""; region = ""; bucket = ""; accessKey = ""; secretKey = ""
+                    }.padding(8.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun StorageField(label: String, value: String, secret: Boolean = false, onChange: (String) -> Unit) {
+    androidx.compose.material3.OutlinedTextField(
+        value = value, onValueChange = onChange,
+        label = { Text(label) }, singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(12.dp),
+        visualTransformation = if (secret) androidx.compose.ui.text.input.PasswordVisualTransformation()
+            else androidx.compose.ui.text.input.VisualTransformation.None,
+        colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = HavenTheme.pink, cursorColor = HavenTheme.pink, focusedLabelColor = HavenTheme.pink),
+    )
 }
 
 @Composable

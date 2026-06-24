@@ -1,15 +1,20 @@
 package com.blaineam.haven.core
 
 import android.content.Context
-import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import org.json.JSONArray
 import org.json.JSONObject
 import uniffi.haven_ffi.AccountStateHandle
+import uniffi.haven_ffi.CircleSyncRecord
 import uniffi.haven_ffi.HavenSocial
+import uniffi.haven_ffi.S3ConfigFfi
+import uniffi.haven_ffi.decodeCircleSync
+import uniffi.haven_ffi.encodeCircleSync
 import uniffi.haven_ffi.openAccountState
+import uniffi.haven_ffi.s3Get
+import uniffi.haven_ffi.s3List
+import uniffi.haven_ffi.s3Put
 import uniffi.haven_ffi.sealAccountState
 import uniffi.haven_ffi.selfSyncSlotKey
 import uniffi.haven_ffi.selfSyncSlotPrefix
@@ -29,14 +34,15 @@ import java.security.SecureRandom
  * (name + member bundles + relay nodes). Scalar keys (profile/setting) apply via [get]; set-like
  * state (contacts/blocked) reconciles via [entries], with local removals propagated as tombstones.
  *
- * Transport: RELAY-ONLY for now. Android's S3 path ([Presign]) is pre-signed-URL/circle-scoped, not
- * an arbitrary-key bucket, so it cannot host the `haven/<account>/selfsync/<device>` slot keys.
- * TODO: add a direct-bucket S3 self-sync path (own credentials) so sync works with no relay at all,
- * matching iOS's `SharedStore.ownerS3()` transport.
+ * Transport: a RELAY (Haven relay node) OR a user-owned S3 bucket ([StorageStore]) — either alone
+ * is enough, so self-sync works with no relay at all, matching iOS's `SharedStore.ownerS3()`. The
+ * S3 path uses the FFI `s3List`/`s3Get`/`s3Put` against an arbitrary-key bucket with the FULL slot
+ * keys (`haven/<account>/selfsync/<device>`).
  *
- * The encodings of profile/setting/blocked/circle entries are byte-identical to iOS so the two
- * platforms converge on the same CRDT values (bool = 1 byte, retentionDays = Int32 LE, circle JSON
- * = sorted keys `{"members":[...],"name":"...","relays":[...]}` with base64 member bundles).
+ * The encodings of profile/setting/blocked entries are byte-identical to iOS so the two platforms
+ * converge on the same CRDT values (bool = 1 byte, retentionDays = Int32 LE). Circles use the
+ * SHARED Rust encoder ([encodeCircleSync]/[decodeCircleSync]) so the circle bytes are identical on
+ * iOS/Android/desktop with no hand-rolled JSON (fixes name-escaping drift).
  */
 object SelfSyncCoordinator {
 
@@ -45,8 +51,9 @@ object SelfSyncCoordinator {
     private const val KEY_DEVICE_ID = "haven.selfsync.deviceId"
 
     /** Namespaces whose keys are dynamic (set-like) — used to detect LOCAL removals so they
-     *  propagate as tombstones (unblock, delete contact). Scalar namespaces are never removed. */
-    private val dynamicPrefixes = listOf("contact:", "blocked:")
+     *  propagate as tombstones (unblock, delete contact, LEAVE a circle). Scalar namespaces are
+     *  never removed. */
+    private val dynamicPrefixes = listOf("contact:", "blocked:", "circle:")
 
     private lateinit var appContext: Context
     private val mutex = Mutex()          // coalesce concurrent syncs (iOS `inFlight`)
@@ -110,13 +117,14 @@ object SelfSyncCoordinator {
             m["blocked:$hex"] = byteArrayOf(1)
         }
         // Circles: name + member bundles + relay nodes, so another device can reconstruct each
-        // circle and seal to every member. (Additive in v1 — member/circle removal is a follow-up.)
+        // circle and seal to every member. Encoded by the SHARED Rust encoder so the bytes are
+        // identical across iOS/Android/desktop (member set is authoritative — see applyLocal).
         if (social != null) {
             for (ci in runCatching { social.circles() }.getOrDefault(emptyList())) {
                 val members = runCatching { social.circleMemberBundles(ci.id) }.getOrDefault(emptyList())
-                    .map { Base64.encodeToString(it, Base64.NO_WRAP) }.sorted()
-                val relays = HavenNet.relaysForCircle(ci.id).sorted()
-                m["circle:${ci.id}"] = encodeCircle(ci.name, members, relays)
+                val relays = HavenNet.relaysForCircle(ci.id)
+                m["circle:${ci.id}"] = runCatching { encodeCircleSync(ci.name, members, relays) }.getOrNull()
+                    ?: continue
             }
         }
         return m
@@ -166,21 +174,44 @@ object SelfSyncCoordinator {
         for (hex in wantBlocked - haveBlocked) HavenNet.selfSyncSetBlocked(hex, true)
         for (hex in haveBlocked - wantBlocked) HavenNet.selfSyncSetBlocked(hex, false)
 
-        // Circles: reconstruct each synced circle — create it, register every member's bundle (so
-        // this device can seal to them), and record its relay mailbox(es). Additive in v1.
+        // Circles: reconcile each synced circle — create it, register every member's bundle (so
+        // this device can seal to them), record its relay mailbox(es), and PRUNE locals that the
+        // converged record no longer holds (the decoded member set is AUTHORITATIVE). A circle that
+        // a peer device LEFT is tombstoned out of the converged state, so we leave it here too.
         if (social != null) {
+            // Synced circle ids present in the converged state (the rest are tombstoned → leave).
+            val syncedCircleIds = HashSet<String>()
             val existing = runCatching { social.circles() }.getOrDefault(emptyList())
             for (e in live) if (e.key.startsWith("circle:")) {
                 val id = e.key.removePrefix("circle:")
-                val cs = decodeCircle(e.value) ?: continue
+                val cs = decodeCircleSync(e.value) ?: continue
+                syncedCircleIds.add(id)
                 runCatching { social.createCircle(id, cs.name) }   // no-op if it already exists
                 val cur = existing.firstOrNull { it.id == id }
                 if (cur != null && cur.name != cs.name) runCatching { social.renameCircle(id, cs.name) }
-                for (b64 in cs.members) {
-                    val bundle = runCatching { Base64.decode(b64, Base64.NO_WRAP) }.getOrNull() ?: continue
-                    runCatching { social.addContactBundle(id, bundle) }
+
+                // Add every synced member's bundle (addContactBundle returns the member's node hex,
+                // and is a no-op if already present) — collect the authoritative node-id set.
+                val wantMembers = HashSet<String>()
+                for (bundle in cs.memberBundles) {
+                    val hex = runCatching { social.addContactBundle(id, bundle) }.getOrNull()
+                        ?: nodeHex(bundle)   // fall back to the bundle's first-32-bytes node id
+                    if (hex.length == 64) wantMembers.add(hex.lowercase())
+                }
+                // Remove members present locally but NOT in the synced set (membership propagation).
+                val haveMembers = runCatching { social.contactNodeIds(id) }.getOrDefault(emptyList())
+                for (nodeHex in haveMembers) {
+                    if (nodeHex.lowercase() !in wantMembers) {
+                        runCatching { social.removeFromCircle(id, nodeHex) }
+                    }
                 }
                 for (node in cs.relays) HavenNet.selfSyncAddRelay(id, node)
+            }
+            // Leave circles tombstoned on another device (present locally, absent from the converged
+            // state). DM circles + the default circle are never auto-left.
+            for (ci in existing) {
+                if (ci.id == DEFAULT_CIRCLE || ci.id.startsWith("dm:")) continue
+                if (ci.id !in syncedCircleIds) runCatching { social.leaveCircle(ci.id) }
             }
         }
     }
@@ -190,8 +221,8 @@ object SelfSyncCoordinator {
     /**
      * One full sync pass: fold local changes into the base with fresh stamps, merge every peer slot,
      * apply the converged result locally, persist, and re-publish our own slot. Safe to call on a
-     * timer; coalesces if already running. No-op without an account or any relay. Returns true if the
-     * merge brought in changes from another device (so the caller can refresh the UI).
+     * timer; coalesces if already running. No-op without an account or any transport (relay OR S3).
+     * Returns true if the merge brought in changes from another device (so the caller can refresh).
      */
     suspend fun sync(social: HavenSocial?): Boolean {
         if (!initialized) return false
@@ -199,12 +230,58 @@ object SelfSyncCoordinator {
         return mutex.withLock { syncLocked(social) }
     }
 
+    /**
+     * A self-sync transport: list/get/put the per-device slots. Either a Haven RELAY node or a
+     * user-owned S3 bucket — self-sync needs only ONE, matching iOS's relay-or-ownerS3() choice.
+     */
+    private interface Transport {
+        suspend fun list(prefix: String): List<String>?
+        suspend fun get(key: String): ByteArray?
+        suspend fun put(key: String, data: ByteArray): Boolean
+    }
+
+    private class RelayTransport(val nodeHex: String) : Transport {
+        override suspend fun list(prefix: String): List<String>? {
+            val client = HavenNet.selfSyncRelayClient(nodeHex) ?: return null
+            val keys = runCatching { client.list(prefix) }.getOrNull()
+            if (keys == null) HavenNet.selfSyncRelayFailed(nodeHex) else HavenNet.selfSyncRelayOk(nodeHex)
+            return keys
+        }
+        override suspend fun get(key: String): ByteArray? {
+            val client = HavenNet.selfSyncRelayClient(nodeHex) ?: return null
+            return runCatching { client.get(key) }.getOrNull()
+        }
+        override suspend fun put(key: String, data: ByteArray): Boolean {
+            val client = HavenNet.selfSyncRelayClient(nodeHex) ?: return false
+            return runCatching { client.put(key, data) }
+                .onSuccess { HavenNet.selfSyncRelayOk(nodeHex) }
+                .onFailure { Log.d(TAG, "slot put failed ($nodeHex): ${it.message}"); HavenNet.selfSyncRelayFailed(nodeHex) }
+                .isSuccess
+        }
+    }
+
+    private class S3Transport(val config: S3ConfigFfi) : Transport {
+        override suspend fun list(prefix: String): List<String>? =
+            runCatching { s3List(config, prefix) }.getOrElse { Log.d(TAG, "s3 list failed: ${it.message}"); null }
+        override suspend fun get(key: String): ByteArray? =
+            runCatching { s3Get(config, key) }.getOrNull()
+        override suspend fun put(key: String, data: ByteArray): Boolean =
+            runCatching { s3Put(config, key, data) }
+                .onFailure { Log.d(TAG, "s3 put failed: ${it.message}") }
+                .isSuccess
+    }
+
     private suspend fun syncLocked(social: HavenSocial?): Boolean {
         val seed = HavenNet.accountSeed
         val accountHex = HavenNet.accountNodeHex
         if (accountHex.isEmpty()) return false
-        val relays = HavenNet.selfSyncRelays()
-        if (relays.isEmpty()) return false   // relay-only transport: nothing to sync over
+
+        // Transports = every relay (existing) + the user's own S3 bucket if configured. Self-sync
+        // now works with a relay OR an S3 bucket (no relay required) — matching iOS/desktop.
+        val transports = ArrayList<Transport>()
+        for (nodeHex in HavenNet.selfSyncRelays()) transports.add(RelayTransport(nodeHex))
+        StorageStore.s3Config(appContext)?.let { transports.add(S3Transport(it)) }
+        if (transports.isEmpty()) return false   // nothing to sync over
 
         // 1. Base = last converged state (or empty).
         val base: AccountStateHandle = run {
@@ -221,8 +298,8 @@ object SelfSyncCoordinator {
                 runCatching { base.set(key, value, now, deviceId) }
             }
         }
-        // Detect local removals in dynamic namespaces (a contact deleted, a peer unblocked) and
-        // tombstone them so the removal propagates instead of a peer device re-adding them.
+        // Detect local removals in dynamic namespaces (a contact deleted, a peer unblocked, a circle
+        // left) and tombstone them so the removal propagates instead of a peer device re-adding them.
         for (e in base.entries()) {
             if (dynamicPrefixes.any { e.key.startsWith(it) } && !local.containsKey(e.key)) {
                 runCatching { base.remove(e.key, now, deviceId) }
@@ -232,17 +309,14 @@ object SelfSyncCoordinator {
         // Snapshot post-fold so we can tell whether the merge below actually brought anything new.
         val preMerge = base.toBytes()
 
-        // 3. Pull + merge every peer slot from every relay.
+        // 3. Pull + merge every peer slot from every transport (FULL keys: haven/<slot>).
         val prefix = "haven/" + selfSyncSlotPrefix(accountHex)
         val ownKey = "haven/" + selfSyncSlotKey(accountHex, deviceHex)
-        for (nodeHex in relays) {
-            val client = HavenNet.selfSyncRelayClient(nodeHex) ?: continue
-            val keys = runCatching { client.list(prefix) }.getOrNull()
-            if (keys == null) { HavenNet.selfSyncRelayFailed(nodeHex); continue }
-            HavenNet.selfSyncRelayOk(nodeHex)
+        for (t in transports) {
+            val keys = t.list(prefix) ?: continue
             for (key in keys) {
                 if (key == ownKey) continue
-                val blob = runCatching { client.get(key) }.getOrNull() ?: continue
+                val blob = t.get(key) ?: continue
                 val peer = runCatching { openAccountState(seed, blob) }.getOrNull() ?: continue
                 base.merge(peer)
             }
@@ -256,57 +330,13 @@ object SelfSyncCoordinator {
             .onFailure { Log.e(TAG, "persist base failed", it) }
         if (changed) HavenNet.selfSyncDidApply()
 
-        // 5. Re-publish our own slot (sealed) to every relay for redundancy.
+        // 5. Re-publish our own slot (sealed) to every transport for redundancy.
         val sealed = runCatching { sealAccountState(seed, base) }.getOrNull() ?: return changed
-        for (nodeHex in relays) {
-            val client = HavenNet.selfSyncRelayClient(nodeHex) ?: continue
-            runCatching { client.put(ownKey, sealed) }
-                .onSuccess { HavenNet.selfSyncRelayOk(nodeHex) }
-                .onFailure { Log.d(TAG, "slot put failed ($nodeHex): ${it.message}"); HavenNet.selfSyncRelayFailed(nodeHex) }
-        }
+        for (t in transports) t.put(ownKey, sealed)
         return changed
     }
 
     // MARK: encodings (byte-identical to iOS)
-
-    private data class CircleSync(val name: String, val members: List<String>, val relays: List<String>)
-
-    /**
-     * A circle's portable structure as deterministic JSON with SORTED keys, so equal state encodes
-     * to identical bytes on both platforms. Matches Swift's `JSONEncoder(.sortedKeys)` output:
-     * `{"members":[...],"name":"...","relays":[...]}` (alphabetical keys, no whitespace). Members
-     * are base64 member bundles (sorted), relays are node hexes (sorted). Strings escaped per JSON.
-     */
-    private fun encodeCircle(name: String, members: List<String>, relays: List<String>): ByteArray {
-        val sb = StringBuilder()
-        sb.append("{\"members\":")
-        sb.append(jsonStringArray(members))
-        sb.append(",\"name\":")
-        sb.append(JSONObject.quote(name))
-        sb.append(",\"relays\":")
-        sb.append(jsonStringArray(relays))
-        sb.append("}")
-        return sb.toString().toByteArray(Charsets.UTF_8)
-    }
-
-    private fun jsonStringArray(items: List<String>): String {
-        val sb = StringBuilder("[")
-        for ((i, s) in items.withIndex()) {
-            if (i > 0) sb.append(",")
-            sb.append(JSONObject.quote(s))
-        }
-        sb.append("]")
-        return sb.toString()
-    }
-
-    private fun decodeCircle(bytes: ByteArray): CircleSync? = runCatching {
-        val o = JSONObject(String(bytes, Charsets.UTF_8))
-        val members = ArrayList<String>()
-        o.optJSONArray("members")?.let { for (i in 0 until it.length()) members.add(it.getString(i)) }
-        val relays = ArrayList<String>()
-        o.optJSONArray("relays")?.let { for (i in 0 until it.length()) relays.add(it.getString(i)) }
-        CircleSync(o.optString("name", ""), members, relays)
-    }.getOrNull()
 
     /** Stable Android contact JSON. Need NOT match iOS (structs differ) — just stable on Android. */
     private fun encodeContact(c: Contact): ByteArray =
