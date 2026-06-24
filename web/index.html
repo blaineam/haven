@@ -337,12 +337,33 @@ haven-relay run --link "haven-relay://circle#…"</code></pre>
   </section>
 
   <!-- ── Final CTA ── -->
+  <!-- ════════════════════════════════════════════════════════════════════
+       DOWNLOAD THE BETA — per-platform links pulled live from the GitHub release
+  ═════════════════════════════════════════════════════════════════════ -->
+  <section class="section" id="download">
+    <div class="container">
+      <div class="center reveal">
+        <span class="eyebrow">The beta is here</span>
+        <h2 style="font-size:clamp(26px,4.5vw,40px)">Get <span class="h-grad">Haven</span> on every screen</h2>
+        <p class="lead">iPhone, iPad and Mac via TestFlight; Windows, Linux and Steam&nbsp;Deck straight from the latest release; a tiny relay for a Pi or server.</p>
+      </div>
+      <div class="dl-grid reveal" id="download-grid" aria-live="polite">
+        <p class="muted center" id="download-loading">Loading the latest release…</p>
+      </div>
+      <p class="muted small center" style="margin-top:16px">
+        Desktop &amp; relay builds come from the
+        <a class="inline" id="download-release-link" href="https://github.com/blaineam/haven/releases/latest" rel="noopener">latest GitHub release</a>.
+        It's an early beta — expect rough edges.
+      </p>
+    </div>
+  </section>
+
   <section class="section center">
     <div class="container reveal">
       <h2 style="font-size:clamp(28px,5vw,44px)">A smaller, kinder internet —<br /><span class="h-grad">just for your people.</span></h2>
       <p class="lead">Bring your circle home to Haven.</p>
       <div class="btn-row">
-        <a class="btn" href="features.html">Get started</a>
+        <a class="btn" href="#download">Get the beta</a>
         <a class="btn ghost" href="https://github.com/blaineam/haven" rel="noopener">View the source on GitHub</a>
       </div>
     </div>
@@ -456,6 +477,70 @@ haven-relay run --link "haven-relay://circle#…"</code></pre>
   window.addEventListener("hashchange", render);
 })();
 </script>
+
+<!-- Download section — fills per-platform links from the latest GitHub release. -->
+<script>
+(function () {
+  var REPO = "blaineam/haven";
+  // Public TestFlight invite link — set this once external testing is enabled in App Store Connect.
+  var APPLE_BETA_URL = "";
+  var grid = document.getElementById("download-grid");
+  if (!grid) return;
+
+  function btn(href, label, primary) {
+    if (!href) return '<span class="muted small">Building…</span>';
+    return '<a class="btn ' + (primary ? "" : "ghost") + '" href="' + href + '" rel="noopener">' + label + '</a>';
+  }
+  function card(title, sub, btns) {
+    return '<div class="dl-card"><h4>' + title + '</h4><div class="muted small">' + sub +
+           '</div><div class="dl-btns">' + btns.join("") + '</div></div>';
+  }
+  function appleCard() {
+    var b = APPLE_BETA_URL
+      ? btn(APPLE_BETA_URL, "Join the TestFlight beta", true)
+      : '<span class="muted small">TestFlight beta — invite required for now</span>';
+    return card("Apple — iPhone · iPad · Mac", "via TestFlight", [b]);
+  }
+
+  fetch("https://api.github.com/repos/" + REPO + "/releases/latest", { headers: { Accept: "application/vnd.github+json" } })
+    .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+    .then(function (rel) {
+      var assets = rel.assets || [];
+      var pick = function (re) { for (var i = 0; i < assets.length; i++) if (re.test(assets[i].name)) return assets[i].browser_download_url; return null; };
+      var any = function (re) { return assets.some(function (a) { return re.test(a.name); }); };
+      var link = document.getElementById("download-release-link");
+      if (link && rel.html_url) link.href = rel.html_url;
+
+      var winBtns = [];
+      var exe = pick(/setup\.exe$/i) || pick(/\.exe$/i), msi = pick(/\.msi$/i);
+      if (exe) winBtns.push(btn(exe, "Installer (.exe)", true));
+      if (msi) winBtns.push(btn(msi, ".msi", false));
+
+      var linuxBtns = [];
+      var deb = pick(/_amd64\.deb$/i) || pick(/\.deb$/i), appimg = pick(/\.AppImage$/i), rpm = pick(/\.rpm$/i);
+      if (deb) linuxBtns.push(btn(deb, ".deb", true));
+      if (appimg) linuxBtns.push(btn(appimg, "AppImage", false));
+      if (rpm) linuxBtns.push(btn(rpm, ".rpm", false));
+
+      var flat = pick(/\.flatpak$/i);
+      var hasRelay = any(/^haven-relay-/i);
+
+      grid.innerHTML = [
+        appleCard(),
+        card("Windows", "x86-64", winBtns.length ? winBtns : [btn(null)]),
+        card("Linux", "Ubuntu · Debian · Fedora · Arch", linuxBtns.length ? linuxBtns : [btn(null)]),
+        card("SteamOS · Steam Deck", "Flatpak", [flat ? btn(flat, "Download Flatpak", true) : (rel.html_url ? btn(rel.html_url, "Get on GitHub", false) : btn(null))]),
+        card("Headless relay", "Pi · server · always-on", [hasRelay ? btn(rel.html_url, "All relay binaries", false) : btn(null)])
+      ].join("");
+    })
+    .catch(function () {
+      grid.innerHTML = appleCard() +
+        '<div class="dl-card"><h4>Windows · Linux · Steam Deck</h4><div class="muted small">desktop &amp; relay</div>' +
+        '<div class="dl-btns">' + btn("https://github.com/" + REPO + "/releases/latest", "Browse downloads on GitHub", true) + '</div></div>';
+    });
+})();
+</script>
+
 <script src="app.js" defer></script>
 </body>
 </html>
