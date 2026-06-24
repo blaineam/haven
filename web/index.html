@@ -491,15 +491,31 @@ haven-relay run --link "haven-relay://circle#…"</code></pre>
     if (!href) return '<span class="muted small">Building…</span>';
     return '<a class="btn ' + (primary ? "" : "ghost") + '" href="' + href + '" rel="noopener">' + label + '</a>';
   }
-  function card(title, sub, btns) {
-    return '<div class="dl-card"><h4>' + title + '</h4><div class="muted small">' + sub +
+  function card(title, sub, btns, recommended) {
+    return '<div class="dl-card' + (recommended ? " recommended" : "") + '">' +
+           (recommended ? '<span class="dl-badge">★ Best for your device</span>' : "") +
+           '<h4>' + title + '</h4><div class="muted small">' + sub +
            '</div><div class="dl-btns">' + btns.join("") + '</div></div>';
   }
-  function appleCard() {
+  function appleCard(recommended) {
     var b = APPLE_BETA_URL
       ? btn(APPLE_BETA_URL, "Join the TestFlight beta", true)
       : '<span class="muted small">TestFlight beta — invite required for now</span>';
-    return card("Apple — iPhone · iPad · Mac", "via TestFlight", [b]);
+    return card("Apple — iPhone · iPad · Mac", "via TestFlight", [b], recommended);
+  }
+
+  // Detect the visitor's platform from the standard, browser-provided UA platform — no
+  // fingerprinting, no IP geolocation, nothing stored. Just used to surface the right download
+  // first; every platform stays one click away.
+  function detectPlatform() {
+    var ua = navigator.userAgent || "";
+    var p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
+    if (/Android/i.test(ua)) return "android";
+    // iPadOS reports as "MacIntel" with touch — treat as Apple either way.
+    if (/iPhone|iPad|iPod/i.test(ua) || /Mac/i.test(p) || /Macintosh/i.test(ua)) return "apple";
+    if (/Win/i.test(p) || /Windows/i.test(ua)) return "windows";
+    if (/Linux|X11|CrOS/i.test(p) || /Linux/i.test(ua)) return "linux";
+    return null;
   }
 
   fetch("https://api.github.com/repos/" + REPO + "/releases/latest", { headers: { Accept: "application/vnd.github+json" } })
@@ -526,14 +542,20 @@ haven-relay run --link "haven-relay://circle#…"</code></pre>
       var hasRelay = any(/^haven-relay-/i);
       var apk = pick(/universal.*\.apk$/i) || pick(/\.apk$/i);
 
-      grid.innerHTML = [
-        appleCard(),
-        card("Android", "APK — sideload", [apk ? btn(apk, "Download APK", true) : btn(null)]),
-        card("Windows", "x86-64", winBtns.length ? winBtns : [btn(null)]),
-        card("Linux", "Ubuntu · Debian · Fedora · Arch", linuxBtns.length ? linuxBtns : [btn(null)]),
-        card("SteamOS · Steam Deck", "Flatpak", [flat ? btn(flat, "Download Flatpak", true) : (rel.html_url ? btn(rel.html_url, "Get on GitHub", false) : btn(null))]),
-        card("Headless relay", "Pi · server · always-on", [hasRelay ? btn(rel.html_url, "All relay binaries", false) : btn(null)])
-      ].join("");
+      var plat = detectPlatform();
+      var rec = function (k) { return plat === k; };
+      // Each entry tagged with its platform key; the matching card gets the badge and floats first.
+      var entries = [
+        { p: "apple",   html: appleCard(rec("apple")) },
+        { p: "android", html: card("Android", "APK — sideload", [apk ? btn(apk, "Download APK", true) : btn(null)], rec("android")) },
+        { p: "windows", html: card("Windows", "x86-64", winBtns.length ? winBtns : [btn(null)], rec("windows")) },
+        { p: "linux",   html: card("Linux", "Ubuntu · Debian · Fedora · Arch", linuxBtns.length ? linuxBtns : [btn(null)], rec("linux")) },
+        { p: null,      html: card("SteamOS · Steam Deck", "Flatpak", [flat ? btn(flat, "Download Flatpak", true) : (rel.html_url ? btn(rel.html_url, "Get on GitHub", false) : btn(null))]) },
+        { p: null,      html: card("Headless relay", "Pi · server · always-on", [hasRelay ? btn(rel.html_url, "All relay binaries", false) : btn(null)]) }
+      ];
+      var ordered = entries.filter(function (e) { return e.p === plat; })
+        .concat(entries.filter(function (e) { return e.p !== plat; }));
+      grid.innerHTML = ordered.map(function (e) { return e.html; }).join("");
     })
     .catch(function () {
       grid.innerHTML = appleCard() +
