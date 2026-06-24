@@ -106,8 +106,11 @@ jobs:
           cp "core/target/${{ matrix.target }}/release/haven-relay" "dist/haven-relay-${{ matrix.target }}"
       - name: Build .deb
         if: matrix.deb
+        # --no-strip: the host x86_64 `strip` can't strip a cross-built arm binary.
+        # continue-on-error: a .deb hiccup must never block the (critical) binary + publish.
+        continue-on-error: true
         working-directory: core
-        run: cargo deb -p haven-relay --no-build --target ${{ matrix.target }} --output ../dist/
+        run: cargo deb -p haven-relay --no-build --no-strip --target ${{ matrix.target }} --output ../dist/
       - uses: actions/upload-artifact@v4
         with:
           name: relay-${{ matrix.target }}

@@ -61,9 +61,10 @@ jobs:
 
       - name: Build .deb (${{ matrix.target }})
         if: matrix.deb
+        continue-on-error: true   # host strip can't strip cross arm binaries; never block the binary
         working-directory: core
         run: |
-          cargo deb -p haven-relay --no-build --target ${{ matrix.target }} --output ../dist/
+          cargo deb -p haven-relay --no-build --no-strip --target ${{ matrix.target }} --output ../dist/
         # --no-build reuses the zigbuild artifact above; cargo-deb maps the .deb arch
         # (amd64/arm64/armhf) from the target triple automatically.
 
