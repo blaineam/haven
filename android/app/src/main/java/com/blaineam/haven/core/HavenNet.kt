@@ -119,6 +119,11 @@ object HavenNet : InboundListener {
         loadContacts()
         loadBlocked()
         loadRelayNodes()
+        // Restore the last-selected circle (if it still exists), so it survives relaunch.
+        val savedCircle = prefs.getString("activeCircle", DEFAULT_CIRCLE) ?: DEFAULT_CIRCLE
+        activeCircle.value = if (savedCircle == DEFAULT_CIRCLE ||
+            runCatching { social.circles().any { it.id == savedCircle } }.getOrDefault(false)
+        ) savedCircle else DEFAULT_CIRCLE
         ready = true
     }
 
@@ -172,7 +177,7 @@ object HavenNet : InboundListener {
         val id = "circle-${nodeIdHex.take(8)}-${System.nanoTime()}"
         runCatching { social.createCircle(id, name) }
         persist(); bumpCircles()
-        activeCircle.value = id
+        setActiveCircle(id)
         return id
     }
 
@@ -194,7 +199,10 @@ object HavenNet : InboundListener {
         sendHello(circleId, contactIdHex)
     }
 
-    fun setActiveCircle(id: String) { activeCircle.value = id }
+    fun setActiveCircle(id: String) {
+        activeCircle.value = id
+        prefs.edit().putString("activeCircle", id).apply()   // survive relaunch
+    }
 
     private fun bumpCircles() { scope.launch(Dispatchers.Main) { circlesVersion.value++ } }
 

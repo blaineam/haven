@@ -61,7 +61,9 @@ struct MessagesView: View {
             PeerAvatar(nodeHex: store.dmPartnerHex(circleId) ?? "", name: name, size: 40)
             VStack(alignment: .leading, spacing: 2) {
                 Text(name).font(.subheadline.weight(.medium))
-                if let last = store.messages(in: circleId).last {
+                // Most RECENT message by time — `.last` alone is storage order, not chronological,
+                // so it was showing the wrong (often first) message.
+                if let last = store.messages(in: circleId).max(by: { $0.createdAt < $1.createdAt }) {
                     Text(last.unsent ? "Message unsent" : (SecretMessages.isSecret(last.body) ? "🔒 Secret message" : last.body))
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
