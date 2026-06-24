@@ -32,27 +32,32 @@ final class PlayerLayerView: NSView {
 #if !os(macOS)
 struct VideoSurface: UIViewRepresentable {
     let player: AVPlayer
+    /// Fill the surface (crop overflow) instead of letterboxing. Default fit for back-compat.
+    var fill: Bool = false
     func makeUIView(context: Context) -> PlayerLayerView {
         let v = PlayerLayerView()
         v.playerLayer.player = player
-        v.playerLayer.videoGravity = .resizeAspect
+        v.playerLayer.videoGravity = fill ? .resizeAspectFill : .resizeAspect
         return v
     }
     func updateUIView(_ v: PlayerLayerView, context: Context) {
         if v.playerLayer.player !== player { v.playerLayer.player = player }
+        v.playerLayer.videoGravity = fill ? .resizeAspectFill : .resizeAspect
     }
 }
 #else
 struct VideoSurface: NSViewRepresentable {
     let player: AVPlayer
+    var fill: Bool = false
     func makeNSView(context: Context) -> PlayerLayerView {
         let v = PlayerLayerView()
         v.playerLayer.player = player
-        v.playerLayer.videoGravity = .resizeAspect
+        v.playerLayer.videoGravity = fill ? .resizeAspectFill : .resizeAspect
         return v
     }
     func updateNSView(_ v: PlayerLayerView, context: Context) {
         if v.playerLayer.player !== player { v.playerLayer.player = player }
+        v.playerLayer.videoGravity = fill ? .resizeAspectFill : .resizeAspect
     }
 }
 #endif

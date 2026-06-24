@@ -95,9 +95,9 @@ struct StoryViewer: View {
                     }
                     Group {
                         if let player {
-                            VideoSurface(player: player)   // fit (letterbox) so the backdrop shows through
+                            VideoSurface(player: player, fill: true)   // full-bleed, matching the editor
                         } else if let ref = s.media.first, let img = MediaStore.shared.item(ref)?.image {
-                            Image(platformImage: img).resizable().scaledToFit()
+                            Image(platformImage: img).resizable().scaledToFill()
                         } else {
                             missing
                         }
@@ -182,24 +182,34 @@ struct StoryViewer: View {
             }
             .padding(.horizontal).padding(.top, 4)
             Spacer()
-            if let m = s.music {
-                HStack(spacing: 8) {
-                    Image(systemName: "music.note").font(.caption)
-                    Text("\(m.title) · \(m.artist)").font(.caption.weight(.medium)).lineLimit(1)
+            // Bottom controls sit over a fade-to-black scrim so the (white) song chip + reply
+            // field stay legible even when the story image is near-white at the bottom.
+            VStack(spacing: 0) {
+                if let m = s.music {
+                    HStack(spacing: 8) {
+                        Image(systemName: "music.note").font(.caption)
+                        Text("\(m.title) · \(m.artist)").font(.caption.weight(.medium)).lineLimit(1)
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 12).padding(.vertical, 7)
+                    .background(.black.opacity(0.4), in: Capsule())
+                    .padding(.bottom, 8)
                 }
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(.black.opacity(0.4), in: Capsule())
-                .padding(.bottom, 8)
+                // Reply to start a DM with the author (not on your own story). SwiftUI lifts
+                // the focused field above the keyboard on its own — no manual offset (that
+                // double-lifted it way too high).
+                if !s.isMe {
+                    storyReply(s).padding(.bottom, 18)
+                } else {
+                    Color.clear.frame(height: 18)
+                }
             }
-            // Reply to start a DM with the author (not on your own story). SwiftUI lifts
-            // the focused field above the keyboard on its own — no manual offset (that
-            // double-lifted it way too high).
-            if !s.isMe {
-                storyReply(s).padding(.bottom, 18)
-            } else {
-                Color.clear.frame(height: 18)
-            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 44)
+            .background(
+                LinearGradient(colors: [.clear, .black.opacity(0.5)], startPoint: .top, endPoint: .bottom)
+                    .allowsHitTesting(false)
+            )
         }
     }
 

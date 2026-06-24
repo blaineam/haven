@@ -1045,9 +1045,11 @@ struct StoryComposerView: View {
                         // and the highlight fill renders as a mile-high white bar. Fixing vertical
                         // too makes it size to the text height — a proper hugging pill.
                         .fixedSize(horizontal: highlightActive, vertical: highlightActive)
-                        .padding(.horizontal, highlightActive ? 12 : 0)
-                        .padding(.vertical, highlightActive ? 6 : 0)
-                        .background { if highlightActive, let bg = StoryCaptions.bgColor(captionSpec) { RoundedRectangle(cornerRadius: 8).fill(bg) } }
+                        // Match StyledCaption.highlighted's pill EXACTLY (padding 10/3, r8 continuous)
+                        // so the live preview equals the final rendered caption.
+                        .padding(.horizontal, highlightActive ? 10 : 0)
+                        .padding(.vertical, highlightActive ? 3 : 0)
+                        .background { if highlightActive, let bg = StoryCaptions.bgColor(captionSpec) { RoundedRectangle(cornerRadius: 8, style: .continuous).fill(bg) } }
                         .padding(.horizontal, 24)
                         .onAppear {
                             // Focus must be set *after* the field is in the hierarchy.
@@ -1579,18 +1581,18 @@ struct StoryMediaCanvas: View {
                             .blur(radius: 28)
                             .overlay(Color.black.opacity(0.28))
                     }
-                    // Foreground: the media aspect-FITS the canvas (letterboxed, never cropped),
-                    // exactly matching the story PLAYER (StoryViewer uses VideoSurface .resizeAspect
-                    // + scaledToFit for images, with this same blurred backdrop filling the bands).
-                    // Keeping the composer preview identical to the player means WYSIWYG — the
-                    // author sees the media framed and the caption positioned just as viewers will.
+                    // Foreground: the media aspect-FILLS the canvas (full-bleed, overflow cropped),
+                    // exactly matching the story PLAYER (StoryViewer uses VideoSurface fill +
+                    // scaledToFill for images). Keeping the composer preview identical to the player
+                    // means WYSIWYG — the author frames the media and positions the caption just as
+                    // viewers will. The blurred backdrop stays as a safety base if fill leaves a gap.
                     Group {
                         if m.kind == .video, let url = m.videoURL {
                             // Video previews WITH the chosen filter (same FilterEngine pipeline,
                             // applied per-frame), matching the live camera and the baked export.
-                            LoopingVideo(url: url, fill: false, filter: filter)
+                            LoopingVideo(url: url, fill: true, filter: filter)
                         } else if let img = still {
-                            Image(platformImage: img).resizable().scaledToFit()
+                            Image(platformImage: img).resizable().scaledToFill()
                                 .frame(width: geo.size.width, height: geo.size.height)
                         }
                     }

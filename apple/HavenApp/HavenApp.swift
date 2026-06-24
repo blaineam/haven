@@ -123,6 +123,14 @@ struct HavenApp: App {
         WindowGroup(id: "main") {
             RootView()
                 .onAppear {
+                    #if os(iOS)
+                    // Seed the post-audio autoplay default from the hardware silent switch on open:
+                    // silenced → start muted (no autoplay until the user taps unmute); ringer on →
+                    // autoplay until they mute. The user's in-app tap overrides for the session.
+                    SilentSwitch.detectSilenced { silenced in
+                        if SettingsStore.shared.silent != silenced { SettingsStore.shared.silent = silenced }
+                    }
+                    #endif
                     // Screenshot/offline harness: never raise the system notification prompt or
                     // touch the push relay — it would photobomb the captures and needs the network.
                     guard ProcessInfo.processInfo.environment["HAVEN_NO_NET"] != "1" else { return }
