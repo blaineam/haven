@@ -255,6 +255,13 @@ struct StoryViewer: View {
                 .focused($replyFocused)
                 .submitLabel(.send)
                 .onSubmit { sendReply(to: s) }
+                // The story view isn't a scroll, so add a keyboard Done to dismiss it.
+                .toolbar {
+                    ToolbarItemGroup(placement: .keyboard) {
+                        Spacer()
+                        Button("Done") { replyFocused = false }
+                    }
+                }
                 .padding(.horizontal, 16).padding(.vertical, 11)
                 .background(.white.opacity(0.14), in: Capsule())
                 .overlay(Capsule().strokeBorder(.white.opacity(0.25)))

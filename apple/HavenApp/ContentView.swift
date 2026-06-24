@@ -37,7 +37,10 @@ struct YouView: View {
                 }
                 .scrollDismissesKeyboard(.interactively)
             }
-            .navigationTitle("You")
+            // No big "You" header — the profile header below already identifies the tab. Keep a
+            // slim inline bar so the settings gear stays in the toolbar.
+            .navigationTitle("")
+            .havenInlineNavTitle()
             .toolbar {
                 ToolbarItem(placement: .havenTrailing) {
                     NavigationLink {

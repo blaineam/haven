@@ -2402,6 +2402,14 @@ struct PostCard: View {
                     .font(.caption).padding(.horizontal, 12).padding(.vertical, 8)
                     .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
                     .focused($commentFieldFocused)
+                    // A keyboard Done button so the field can always be dismissed (the You-tab
+                    // scroll wasn't reliably dismissing it).
+                    .toolbar {
+                        ToolbarItemGroup(placement: .keyboard) {
+                            Spacer()
+                            Button("Done") { commentFieldFocused = false }
+                        }
+                    }
                     // When the field gains focus, ask the enclosing scroll view to lift this post
                     // above the keyboard so the text being typed is visible.
                     .onChange(of: commentFieldFocused) { _, focused in

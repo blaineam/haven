@@ -263,7 +263,9 @@ struct RootView: View {
                 .id(accountStore.account.nodeIdHex())
                 .tag("circle")
                 .tabItem { Label("Circle", systemImage: "sparkles") }
-                .badge(feedStore.unseenCircle)
+                // Pending circle-approval prompts surface on the Circle tab (that's where the
+                // banner lives), alongside unseen posts — NOT on You.
+                .badge(feedStore.unseenCircle + connections.pending.count)
             NavigationStack { MessagesView(account: accountStore.account) }
                 .tag("messages")
                 .tabItem { Label("Messages", systemImage: "bubble.left.and.bubble.right.fill") }
@@ -277,7 +279,6 @@ struct RootView: View {
             )
             .tag("you")
             .tabItem { Label("You", systemImage: "person.crop.circle.fill") }
-            .badge(connections.pending.count)
         }
         .tint(HavenTheme.pink)
         .onChange(of: tab) { _, t in
