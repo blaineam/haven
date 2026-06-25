@@ -82,7 +82,7 @@ fun StoriesTray(groups: List<StoryGroup>, onAddStory: () -> Unit, onOpen: (Int) 
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(
                     Modifier.size(64.dp).clip(CircleShape)
-                        .background(HavenTheme.brand).clickable { onOpen(idx) },
+                        .background(HavenTheme.brandHorizontal).clickable { onOpen(idx) },
                     contentAlignment = Alignment.Center,
                 ) {
                     Box(

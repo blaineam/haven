@@ -128,10 +128,21 @@ private fun MainScaffold() {
         bottomBar = {
             NavigationBar(containerColor = HavenTheme.card) {
                 Tab.entries.forEach { t ->
+                    // Badge the Circle tab with the number of pending connection requests (parity with
+                    // iOS, which badges the circle tab). `pending` is a SnapshotStateList so this updates live.
+                    val badgeCount = if (t == Tab.Circle) HavenNet.pending.size else 0
                     NavigationBarItem(
                         selected = tab == t,
                         onClick = { tab = t },
-                        icon = { Icon(t.icon, contentDescription = t.label) },
+                        icon = {
+                            if (badgeCount > 0) {
+                                androidx.compose.material3.BadgedBox(
+                                    badge = { androidx.compose.material3.Badge(containerColor = HavenTheme.pink) { Text("$badgeCount") } },
+                                ) { Icon(t.icon, contentDescription = t.label) }
+                            } else {
+                                Icon(t.icon, contentDescription = t.label)
+                            }
+                        },
                         label = { Text(t.label) },
                         colors = NavigationBarItemDefaults.colors(
                             selectedIconColor = HavenTheme.pink,

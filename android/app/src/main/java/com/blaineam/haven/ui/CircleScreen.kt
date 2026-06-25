@@ -36,6 +36,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -364,11 +369,34 @@ fun MediaViewer(circleId: String, refs: List<String>, startIndex: Int, onClose: 
     val context = LocalContext.current
     val scope = androidx.compose.runtime.rememberCoroutineScope()
     var saved by remember { mutableStateOf(false) }
+    // Pinch-to-zoom + pan on the current photo (parity with iOS PostMedia). Resets on page change; while
+    // zoomed, drag pans the image instead of swiping to the next item.
+    var scale by remember { mutableFloatStateOf(1f) }
+    var offset by remember { mutableStateOf(Offset.Zero) }
+    LaunchedEffect(pager.currentPage) { scale = 1f; offset = Offset.Zero }
     Box(Modifier.fillMaxSize().background(Color.Black).clickable { onClose() }) {
-        androidx.compose.foundation.pager.HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { page ->
+        androidx.compose.foundation.pager.HorizontalPager(
+            state = pager,
+            modifier = Modifier.fillMaxSize(),
+            userScrollEnabled = scale <= 1f,
+        ) { page ->
             val ref = refs[page]
-            if (LocalMedia.isVideo(ref)) VideoTile(circleId, ref, Modifier.fillMaxSize())
-            else MediaImage(circleId, ref, Modifier.fillMaxSize(), contentScale = ContentScale.Fit)
+            if (LocalMedia.isVideo(ref)) {
+                VideoTile(circleId, ref, Modifier.fillMaxSize())
+            } else {
+                MediaImage(
+                    circleId, ref,
+                    Modifier.fillMaxSize()
+                        .pointerInput(Unit) {
+                            detectTransformGestures { _, pan, zoom, _ ->
+                                scale = (scale * zoom).coerceIn(1f, 5f)
+                                offset = if (scale > 1f) offset + pan else Offset.Zero
+                            }
+                        }
+                        .graphicsLayer(scaleX = scale, scaleY = scale, translationX = offset.x, translationY = offset.y),
+                    contentScale = ContentScale.Fit,
+                )
+            }
         }
         Box(Modifier.align(Alignment.TopStart).padding(16.dp).size(42.dp).clip(CircleShape)
             .background(Color.Black.copy(alpha = 0.4f)).clickable { onClose() }, contentAlignment = Alignment.Center) {
