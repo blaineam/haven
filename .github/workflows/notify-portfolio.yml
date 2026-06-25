@@ -19,10 +19,21 @@ on:
 jobs:
   dispatch:
     runs-on: ubuntu-latest
+    # Map the (optional) PAT to a job env var so we can gate on its presence — `secrets` isn't
+    # usable directly in an `if:` but `env` is.
+    env:
+      GH_TOKEN: ${{ secrets.PORTFOLIO_DISPATCH_TOKEN }}
     steps:
+      # No PAT configured → skip cleanly (green) rather than failing the run. Add a fine-grained PAT
+      # (Contents: read-write on blaineam/blaineam.github.io, or a classic PAT with public_repo) as the
+      # PORTFOLIO_DISPATCH_TOKEN secret to enable the live mirror; the portfolio's daily cron covers it
+      # in the meantime.
+      - name: Skip — no PORTFOLIO_DISPATCH_TOKEN configured
+        if: env.GH_TOKEN == ''
+        run: echo "::notice::PORTFOLIO_DISPATCH_TOKEN not set — skipping portfolio mirror dispatch (the daily cron still mirrors docs)."
+
       - name: Trigger mirror-app-docs in portfolio
-        env:
-          GH_TOKEN: ${{ secrets.PORTFOLIO_DISPATCH_TOKEN }}
+        if: env.GH_TOKEN != ''
         run: |
           gh api -X POST \
             /repos/blaineam/blaineam.github.io/dispatches \
