@@ -60,6 +60,12 @@ pub enum EventKind {
     /// client treats it as sensitive — so one member with SCA protects members on platforms with
     /// no equivalent. `target` is the media content-ref (content-addressed → identical everywhere).
     SensitiveFlag { target: String },
+    /// A poll: a question + options, optionally auto-closing at `close_at_ms` (0 = never). Results
+    /// lock at close — votes timestamped at/after `close_at_ms` are ignored by the reducer.
+    Poll { question: String, options: Vec<String>, close_at_ms: u64 },
+    /// A vote for one option of a poll. `target` = the poll event id; `option` = the option index.
+    /// Latest vote per author wins (you can change your vote until the poll closes).
+    Vote { target: String, option: u32 },
 }
 
 /// A signed, addressable social action.
@@ -289,6 +295,25 @@ pub struct ReactionGroup {
     pub authors: Vec<String>,
 }
 
+/// One option of a poll with its current tally + the authors who voted for it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeedPollOption {
+    pub text: String,
+    pub votes: u32,
+    pub authors: Vec<String>,
+}
+
+/// A poll resolved on a feed item: options + tallies + close state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FeedPoll {
+    pub question: String,
+    pub options: Vec<FeedPollOption>,
+    pub total_votes: u32,
+    /// Epoch millis the poll auto-closes (0 = never). Once closed, results are locked.
+    pub close_at_ms: u64,
+    pub closed: bool,
+}
+
 /// A comment on a feed item.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FeedComment {
@@ -320,6 +345,8 @@ pub struct FeedItem {
     pub mute_video: bool,
     pub comments: Vec<FeedComment>,
     pub reactions: Vec<ReactionGroup>,
+    /// Present when this item is a poll. Tallies lock once `closed`.
+    pub poll: Option<FeedPoll>,
 }
 
 /// Reduce a set of decrypted events into a timeline. Newest posts first; comments
@@ -361,6 +388,7 @@ pub fn build_feed(
                         mute_video: *mute_video,
                         comments: Vec::new(),
                         reactions: Vec::new(),
+                        poll: None,
                     },
                 );
             }
@@ -384,6 +412,38 @@ pub fn build_feed(
                         mute_video: false,
                         comments: Vec::new(),
                         reactions: Vec::new(),
+                        poll: None,
+                    },
+                );
+            }
+            // A poll renders like a post (its question is the body) but carries tallies.
+            EventKind::Poll { question, options, close_at_ms } => {
+                if is_expired(e.created_at, None, viewer_retention_secs, now_ms) {
+                    continue;
+                }
+                order.push(e.id.clone());
+                items.insert(
+                    e.id.clone(),
+                    FeedItem {
+                        id: e.id.clone(),
+                        author: e.author.clone(),
+                        created_at: e.created_at,
+                        body: question.clone(),
+                        media: Vec::new(),
+                        music: None,
+                        edited: false,
+                        unsent: false,
+                        story: false,
+                        mute_video: false,
+                        comments: Vec::new(),
+                        reactions: Vec::new(),
+                        poll: Some(FeedPoll {
+                            question: question.clone(),
+                            options: options.iter().map(|t| FeedPollOption { text: t.clone(), votes: 0, authors: Vec::new() }).collect(),
+                            total_votes: 0,
+                            close_at_ms: *close_at_ms,
+                            closed: *close_at_ms != 0 && now_ms >= *close_at_ms,
+                        }),
                     },
                 );
             }
@@ -444,6 +504,31 @@ pub fn build_feed(
                 }
             }
             _ => {}
+        }
+    }
+
+    // Tally poll votes: the latest vote per author wins (you can change your vote), and votes
+    // timestamped at/after a poll's close are ignored — so the results lock at the close time.
+    let mut poll_votes: BTreeMap<String, BTreeMap<String, u32>> = BTreeMap::new();
+    for e in &events {
+        if let EventKind::Vote { target, option } = &e.kind {
+            if let Some(p) = items.get(target).and_then(|it| it.poll.as_ref()) {
+                let locked = p.close_at_ms != 0 && e.created_at >= p.close_at_ms;
+                if !locked && (*option as usize) < p.options.len() {
+                    poll_votes.entry(target.clone()).or_default().insert(e.author.clone(), *option);
+                }
+            }
+        }
+    }
+    for (poll_id, votes) in poll_votes {
+        if let Some(p) = items.get_mut(&poll_id).and_then(|it| it.poll.as_mut()) {
+            for (author, option) in votes {
+                if let Some(opt) = p.options.get_mut(option as usize) {
+                    opt.votes += 1;
+                    opt.authors.push(author);
+                }
+            }
+            p.total_votes = p.options.iter().map(|o| o.votes).sum();
         }
     }
 
@@ -550,4 +635,45 @@ fn is_expired(
 
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod poll_tests {
+    use super::*;
+
+    fn ev(author: u8, t: u64, kind: EventKind) -> Event {
+        Event::new(&[author; 32], t, kind)
+    }
+
+    #[test]
+    fn poll_tallies_latest_vote_per_author_and_locks_at_close() {
+        let poll = ev(1, 100, EventKind::Poll {
+            question: "Pizza tonight?".into(),
+            options: vec!["Yes".into(), "No".into()],
+            close_at_ms: 1000,
+        });
+        let pid = poll.id.clone();
+        let events = vec![
+            poll.clone(),
+            ev(2, 200, EventKind::Vote { target: pid.clone(), option: 0 }), // B → Yes
+            ev(3, 300, EventKind::Vote { target: pid.clone(), option: 1 }), // C → No
+            ev(2, 400, EventKind::Vote { target: pid.clone(), option: 1 }), // B changes → No (latest wins)
+            ev(4, 1500, EventKind::Vote { target: pid.clone(), option: 0 }), // D votes AFTER close → ignored
+        ];
+
+        // Before close: only B(No) + C(No) count; B's earlier Yes is superseded, D's late vote ignored.
+        let p = build_feed(events.clone(), 500, None)
+            .into_iter().find(|i| i.id == pid).unwrap().poll.unwrap();
+        assert_eq!(p.options[0].votes, 0, "Yes: B moved away, D is post-close");
+        assert_eq!(p.options[1].votes, 2, "No: B + C");
+        assert_eq!(p.total_votes, 2);
+        assert!(!p.closed);
+
+        // After close: results are locked; the post-close vote is still ignored.
+        let p2 = build_feed(events, 2000, None)
+            .into_iter().find(|i| i.id == pid).unwrap().poll.unwrap();
+        assert!(p2.closed);
+        assert_eq!(p2.options[0].votes, 0);
+        assert_eq!(p2.options[1].votes, 2);
+    }
 }

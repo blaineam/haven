@@ -15,7 +15,7 @@ use p2pcore::crypto::{decapsulate, encapsulate_to, open, seal, Encapsulation};
 use p2pcore::identity::{Identity, HavenId};
 use p2pcore::link::HavenLink;
 use p2pcore::social::{
-    build_feed, open_bytes, open_event, seal_bytes, seal_event, Event, EventKind, Group,
+    build_feed, open_bytes, open_event, seal_bytes, seal_event, Event, EventKind, FeedPoll, Group,
     SealedEnvelope, TrackRef,
 };
 
@@ -478,6 +478,7 @@ impl SocialDemo {
                         authors: r.authors,
                     })
                     .collect(),
+                poll: it.poll.map(|p| poll_ffi(&p, &me)),
             })
             .collect()
     }
@@ -575,6 +576,46 @@ pub struct FeedItemFfi {
     pub mute_video: bool,
     pub comments: Vec<FeedCommentFfi>,
     pub reactions: Vec<ReactionFfi>,
+    /// Present when this item is a poll.
+    pub poll: Option<PollFfi>,
+}
+
+/// One poll option with its tally for the UI.
+#[derive(uniffi::Record)]
+pub struct PollOptionFfi {
+    pub text: String,
+    pub votes: u32,
+}
+
+/// A poll on a feed item for the UI.
+#[derive(uniffi::Record)]
+pub struct PollFfi {
+    pub question: String,
+    pub options: Vec<PollOptionFfi>,
+    pub total_votes: u32,
+    /// Epoch millis the poll closes (0 = never). After close, results are locked.
+    pub close_at_ms: u64,
+    pub closed: bool,
+    /// The option index the viewer voted for, if any.
+    pub my_vote: Option<u32>,
+}
+
+/// Map a reduced poll to the UI record, resolving the viewer's own vote from the option authors.
+fn poll_ffi(p: &FeedPoll, me_hex: &str) -> PollFfi {
+    let mut my_vote = None;
+    for (i, o) in p.options.iter().enumerate() {
+        if o.authors.iter().any(|a| a == me_hex) {
+            my_vote = Some(i as u32);
+        }
+    }
+    PollFfi {
+        question: p.question.clone(),
+        options: p.options.iter().map(|o| PollOptionFfi { text: o.text.clone(), votes: o.votes }).collect(),
+        total_votes: p.total_votes,
+        close_at_ms: p.close_at_ms,
+        closed: p.closed,
+        my_vote,
+    }
 }
 
 fn short(node_hex: &str) -> String {
@@ -691,6 +732,7 @@ fn map_feed(events: Vec<Event>, me: &str, now_ms: u64, viewer_retention_secs: Op
                     authors: r.authors,
                 })
                 .collect(),
+            poll: it.poll.map(|p| poll_ffi(&p, me)),
         })
         .collect()
 }
@@ -719,8 +761,9 @@ fn event_target(kind: &EventKind) -> Option<&str> {
         | EventKind::Unreact { target, .. }
         | EventKind::Edit { target, .. }
         | EventKind::Unsend { target }
-        | EventKind::SensitiveFlag { target } => Some(target.as_str()),
-        EventKind::Post { .. } | EventKind::Message { .. } => None,
+        | EventKind::SensitiveFlag { target }
+        | EventKind::Vote { target, .. } => Some(target.as_str()),
+        EventKind::Post { .. } | EventKind::Message { .. } | EventKind::Poll { .. } => None,
     }
 }
 
@@ -1043,6 +1086,14 @@ impl HavenSocial {
     }
     pub fn unreact(&self, circle_id: String, target: String, emoji: String, created_at: u64) -> Result<Vec<u8>, HavenError> {
         self.author(&circle_id, created_at, EventKind::Unreact { target, emoji })
+    }
+    /// Create a poll: a question + options, optionally auto-closing at `close_at_ms` (0 = never).
+    pub fn create_poll(&self, circle_id: String, question: String, options: Vec<String>, close_at_ms: u64, created_at: u64) -> Result<Vec<u8>, HavenError> {
+        self.author(&circle_id, created_at, EventKind::Poll { question, options, close_at_ms })
+    }
+    /// Vote for option `option` of poll `target` (changeable until it closes; latest wins).
+    pub fn vote(&self, circle_id: String, target: String, option: u32, created_at: u64) -> Result<Vec<u8>, HavenError> {
+        self.author(&circle_id, created_at, EventKind::Vote { target, option })
     }
     /// Flag a media content-ref as sensitive for the whole circle (e.g. on-device SCA flagged it).
     /// Returns the sealed envelope to broadcast; once any member flags a ref, every client blurs it.
