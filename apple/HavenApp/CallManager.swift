@@ -1331,6 +1331,27 @@ struct CallOverlay: View {
                     .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
             }
         }
+        // When the other caller is speaking, glow a full-screen border that hugs the device's
+        // rounded corners (no badge/tile border in 1:1 — this is the only speaking indicator).
+        .overlay {
+            let speaking = call.activeSpeaker == hex
+            RoundedRectangle(cornerRadius: deviceCornerRadius, style: .continuous)
+                .strokeBorder(HavenTheme.pink, lineWidth: speaking ? 5 : 0)
+                .shadow(color: speaking ? HavenTheme.pink.opacity(0.85) : .clear, radius: 10)
+                .opacity(speaking ? 1 : 0)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
+        }
+        .animation(.easeInOut(duration: 0.2), value: call.activeSpeaker)
+    }
+
+    /// Best-effort rounded-display-corner radius for the full-screen speaking border. Reads the
+    /// screen's actual corner radius when available, falling back to a modern-iPhone value.
+    private var deviceCornerRadius: CGFloat {
+        #if os(iOS)
+        if let r = UIScreen.main.value(forKey: "_displayCornerRadius") as? CGFloat, r > 0 { return r }
+        #endif
+        return 52
     }
 
     @ViewBuilder private func tile(_ hex: String) -> some View {
@@ -1482,37 +1503,6 @@ struct CallOverlay: View {
     private func callButton(_ symbol: String, on: Bool) -> some View {
         Image(systemName: symbol).font(.title3).foregroundStyle(.white).frame(width: 52, height: 52)
             .background(Color.white.opacity(on ? 0.3 : 0.16), in: Circle())
-    }
-}
-
-/// Slim "return to call" bar docked above the tab bar while a call is minimized — out of the way of
-/// the app's own top nav/menus, tappable to reopen the full call screen. Renders nothing otherwise.
-struct CallReturnBar: View {
-    @ObservedObject private var call = CallManager.shared
-    var body: some View {
-        if (call.inCall || call.connecting) && call.minimized {
-            HStack(spacing: 10) {
-                Image(systemName: call.videoOn ? "video.fill" : "phone.fill")
-                    .font(.subheadline).foregroundStyle(.white)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(call.peerName.isEmpty ? "On call" : call.peerName)
-                        .font(.subheadline.weight(.semibold)).foregroundStyle(.white).lineLimit(1)
-                    Text(call.connecting ? "Calling…" : "Tap to return")
-                        .font(.caption2).foregroundStyle(.white.opacity(0.85))
-                }
-                Spacer(minLength: 8)
-                Button { CallManager.shared.endCall() } label: {
-                    Image(systemName: "phone.down.fill").font(.subheadline).foregroundStyle(.white)
-                        .frame(width: 32, height: 32).background(Color.red, in: Circle())
-                }
-            }
-            .padding(.horizontal, 16).padding(.vertical, 8)
-            .frame(maxWidth: .infinity)
-            .background(HavenTheme.brand.opacity(0.97))
-            .contentShape(Rectangle())
-            .onTapGesture { CallManager.shared.minimized = false }   // tap to reopen the call
-            .transition(.move(edge: .bottom).combined(with: .opacity))
-        }
     }
 }
 

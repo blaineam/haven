@@ -16,7 +16,7 @@ struct OGHarness: View {
                     .padding(8)
                     .background(HavenTheme.brand, in: RoundedRectangle(cornerRadius: 18))
                 Text("wemiller.com").font(.caption2).foregroundStyle(.white.opacity(0.6))
-                Spacer()
+                    .padding(.bottom, 60)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.trailing, 12)

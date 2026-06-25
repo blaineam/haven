@@ -198,6 +198,7 @@ struct RootView: View {
     #if os(iOS)
     @ObservedObject private var shareRouter = ShareRouter.shared   // share-sheet hand-off (iOS only)
     #endif
+    @ObservedObject private var call = CallManager.shared          // drives the minimized "Call" tab
 
     @State private var tab = ProcessInfo.processInfo.environment["HAVEN_TAB"] ?? "circle"
     @State private var showConnect = false
@@ -291,9 +292,21 @@ struct RootView: View {
             )
             .tag("you")
             .tabItem { Label("You", systemImage: "person.crop.circle.fill") }
+            // While a call is minimized, a green "Call" tab appears on the right — tap it to reopen
+            // the call screen. (Selecting it just restores the call and bounces back to the prior tab.)
+            if call.minimized && (call.inCall || call.connecting) {
+                Color.clear
+                    .tag("call")
+                    .tabItem { Label("Call", systemImage: "phone.fill") }
+            }
         }
         .tint(HavenTheme.pink)
-        .onChange(of: tab) { _, t in
+        .onChange(of: tab) { old, t in
+            if t == "call" {
+                CallManager.shared.minimized = false   // reopen the full call screen…
+                tab = old                               // …and don't actually leave the current tab
+                return
+            }
             if t == "circle" {
                 feedStore.markCircleSeen()
                 AudioCoordinator.shared.ensureMusicPlaying()    // back on the feed → resume the centered post's song
@@ -301,12 +314,6 @@ struct RootView: View {
                 AudioCoordinator.shared.pauseForBackground()    // left the feed → silence post music + video
             }
             if t == "messages" { feedStore.markMessagesSeen() }
-        }
-        // Minimized call → a slim return bar sits just above the tab bar (out of the way of menus).
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            CallReturnBar()
-                .animation(HavenTheme.smooth, value: CallManager.shared.minimized)
-                .animation(HavenTheme.smooth, value: CallManager.shared.inCall)
         }
         .overlay {
             CallOverlay()

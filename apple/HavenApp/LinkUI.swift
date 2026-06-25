@@ -203,83 +203,90 @@ struct InAppBrowserView: View {
 
 // MARK: - Rich link preview (Open Graph) card
 
-/// A tappable Open Graph preview for a URL, rendered with the system's `LPLinkView` (which
-/// fetches title/icon/image on-device). Tapping opens it in the in-app browser.
+/// Fetches Open Graph metadata (title / poster image / host) for a URL on-device.
+@MainActor
+final class LinkMetaLoader: ObservableObject {
+    @Published var title = ""
+    @Published var host = ""
+    @Published var image: PlatformImage?
+    private var started = false
+
+    func load(_ url: URL) {
+        guard !started else { return }
+        started = true
+        host = url.host ?? ""
+        let provider = LPMetadataProvider()
+        provider.startFetchingMetadata(for: url) { [weak self] meta, _ in
+            guard let meta else { return }
+            let title = meta.title ?? ""
+            let host = meta.url?.host ?? meta.originalURL?.host ?? ""
+            let imageProvider = meta.imageProvider
+            if let imageProvider, imageProvider.canLoadObject(ofClass: PlatformImage.self) {
+                imageProvider.loadObject(ofClass: PlatformImage.self) { obj, _ in
+                    Task { @MainActor in
+                        self?.title = title
+                        if !host.isEmpty { self?.host = host }
+                        self?.image = obj as? PlatformImage
+                    }
+                }
+            } else {
+                Task { @MainActor in
+                    self?.title = title
+                    if !host.isEmpty { self?.host = host }
+                }
+            }
+        }
+    }
+}
+
+/// A tappable Open Graph preview for a URL. Renders the fetched poster image at its NATURAL aspect
+/// ratio above the title + host in a custom card (the system `LPLinkView` cropped the image to a
+/// thin band and overflowed the bubble). Tapping opens it in the in-app browser.
 struct LinkPreviewCard: View {
     let url: URL
+    @StateObject private var meta = LinkMetaLoader()
 
     var body: some View {
         Button { LinkPresenter.shared.open(url.absoluteString) } label: {
-            LinkPreviewRepresentable(url: url)
-                .frame(maxWidth: .infinity)
-                .clipShape(RoundedRectangle(cornerRadius: 12))   // never bleed past the bubble edge
+            VStack(alignment: .leading, spacing: 0) {
+                if let img = meta.image {
+                    Image(platformImage: img)
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)   // keep the poster's real proportions
+                        .frame(maxWidth: .infinity)
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(displayTitle)
+                        .font(.subheadline.weight(.semibold)).foregroundStyle(.primary)
+                        .lineLimit(2).multilineTextAlignment(.leading)
+                    if !meta.host.isEmpty {
+                        Text(meta.host).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+                .padding(.horizontal, 12).padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .background(cardSurface)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
         }
         .buttonStyle(.plain)
+        .onAppear { meta.load(url) }
+    }
+
+    private var displayTitle: String {
+        if !meta.title.isEmpty { return meta.title }
+        if !meta.host.isEmpty { return meta.host }
+        return url.absoluteString
+    }
+
+    private var cardSurface: Color {
+        #if os(macOS)
+        Color(nsColor: .controlBackgroundColor)
+        #else
+        Color(.secondarySystemBackground)
+        #endif
     }
 }
-
-#if !os(macOS)
-private struct LinkPreviewRepresentable: UIViewRepresentable {
-    let url: URL
-
-    func makeUIView(context: Context) -> LPLinkView {
-        let view = LPLinkView(url: url)
-        // LPLinkView reports a large intrinsic width and otherwise ignores the SwiftUI frame, so it
-        // bled past the bubble/screen edge. Let it yield horizontally to the proposed width.
-        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        view.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        // Show a fast placeholder, then fetch real Open Graph metadata on-device.
-        let provider = LPMetadataProvider()
-        provider.startFetchingMetadata(for: url) { metadata, _ in
-            guard let metadata else { return }
-            DispatchQueue.main.async {
-                view.metadata = metadata
-                view.invalidateIntrinsicContentSize()
-            }
-        }
-        return view
-    }
-    func updateUIView(_ view: LPLinkView, context: Context) {}
-
-    /// Constrain the card to the proposed width (the caller's `.frame(maxWidth:)`) and compute the
-    /// matching height — without this LPLinkView lays out at its full intrinsic width and overflows.
-    func sizeThatFits(_ proposal: ProposedViewSize, uiView: LPLinkView, context: Context) -> CGSize? {
-        let width = proposal.width ?? uiView.intrinsicContentSize.width
-        let fitted = uiView.systemLayoutSizeFitting(
-            CGSize(width: width, height: UIView.layoutFittingCompressedSize.height),
-            withHorizontalFittingPriority: .required, verticalFittingPriority: .fittingSizeLevel)
-        return CGSize(width: width, height: max(fitted.height, 1))
-    }
-}
-#else
-private struct LinkPreviewRepresentable: NSViewRepresentable {
-    let url: URL
-
-    func makeNSView(context: Context) -> LPLinkView {
-        let view = LPLinkView(url: url)
-        view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        view.setContentHuggingPriority(.defaultHigh, for: .horizontal)
-        // Show a fast placeholder, then fetch real Open Graph metadata on-device.
-        let provider = LPMetadataProvider()
-        provider.startFetchingMetadata(for: url) { metadata, _ in
-            guard let metadata else { return }
-            DispatchQueue.main.async {
-                view.metadata = metadata
-                view.invalidateIntrinsicContentSize()
-            }
-        }
-        return view
-    }
-    func updateNSView(_ view: LPLinkView, context: Context) {}
-
-    func sizeThatFits(_ proposal: ProposedViewSize, nsView: LPLinkView, context: Context) -> CGSize? {
-        let width = proposal.width ?? nsView.intrinsicContentSize.width
-        let fitted = nsView.fittingSize
-        let ratio = fitted.width > 0 ? fitted.height / fitted.width : 0.6
-        return CGSize(width: width, height: max(width * ratio, 1))
-    }
-}
-#endif
 
 /// Body text that makes any http(s) links tappable (opening the in-app browser) and renders a
 /// rich Open Graph preview card for the first link. Use anywhere a post/comment body is shown.
