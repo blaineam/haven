@@ -24,6 +24,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Videocam
@@ -135,6 +136,7 @@ fun DmThread(circleId: String, partner: Contact, onBack: () -> Unit) {
     var pendingMusic by remember { mutableStateOf<uniffi.haven_ffi.TrackRefFfi?>(null) }
     var showMusicDialog by remember { mutableStateOf(false) }
     var showVoice by remember { mutableStateOf(false) }
+    var secretMode by remember { mutableStateOf(false) }
     val version by HavenNet.feedVersion
     val msgs = remember(version, circleId) { HavenNet.messages(circleId) }
     val picker = androidx.activity.compose.rememberLauncherForActivityResult(
@@ -208,6 +210,11 @@ fun DmThread(circleId: String, partner: Contact, onBack: () -> Unit) {
                     contentAlignment = Alignment.Center) {
                     Icon(Icons.Filled.Mic, "Voice message", tint = HavenTheme.pink)
                 }
+                Box(Modifier.size(40.dp).clip(CircleShape).clickable { secretMode = !secretMode },
+                    contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.Lock, "Secret message",
+                        tint = if (secretMode) HavenTheme.pink else Color.White.copy(alpha = 0.5f))
+                }
                 OutlinedTextField(
                     value = draft, onValueChange = { draft = it },
                     placeholder = { Text("Message…") },
@@ -220,8 +227,10 @@ fun DmThread(circleId: String, partner: Contact, onBack: () -> Unit) {
                 Box(
                     Modifier.size(48.dp).clip(CircleShape).background(HavenTheme.brandHorizontal)
                         .clickable(enabled = canSend) {
-                            HavenNet.sendDm(circleId, draft.trim(), listOfNotNull(pendingPhoto), pendingMusic)
-                            draft = ""; pendingPhoto = null; pendingMusic = null
+                            val body = if (secretMode && draft.isNotBlank())
+                                com.blaineam.haven.core.SecretMessages.encode(draft.trim()) else draft.trim()
+                            HavenNet.sendDm(circleId, body, listOfNotNull(pendingPhoto), pendingMusic)
+                            draft = ""; pendingPhoto = null; pendingMusic = null; secretMode = false
                         },
                     contentAlignment = Alignment.Center,
                 ) { Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = Color.White) }
@@ -260,7 +269,10 @@ private fun Bubble(m: uniffi.haven_ffi.FeedItemFfi, circleId: String) {
                 }
                 if (text.isNotBlank() || m.music != null) Spacer(Modifier.size(6.dp))
             }
-            if (text.isNotBlank()) LinkedText(text, color = Color.White, fontSize = 15.sp)
+            if (text.isNotBlank()) {
+                if (com.blaineam.haven.core.SecretMessages.isSecret(text)) SecretBubble(text)
+                else LinkedText(text, color = Color.White, fontSize = 15.sp)
+            }
             // A shared song renders as the same chip as in the feed.
             m.music?.let { mus ->
                 if (text.isNotBlank()) Spacer(Modifier.size(6.dp))
