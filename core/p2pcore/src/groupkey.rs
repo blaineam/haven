@@ -1,0 +1,278 @@
+//! Epoch group keys: access revocation + bounded forward secrecy, post-quantum-preserving.
+//!
+//! See `docs/GROUP-KEYING.md` for the design and why this is used instead of classical MLS
+//! (which would drop Haven's hybrid PQ property and assumes ordered handshake delivery that the
+//! offline-first gossip model can't guarantee).
+//!
+//! ## Model
+//! A circle has a sequence of **epochs**, each with a random 32-byte `epoch_key`. The epoch key is
+//! distributed to the member set via a signed [`KeyCommit`] — the *only* remaining per-recipient
+//! hybrid-KEM wrap (once per epoch, not per event). Events are then sealed with a per-event key
+//! **derived** from the current epoch key (HKDF), so they are true group encryption (O(1) size) and
+//! a member removed in a later epoch — who never receives that epoch's key — cannot decrypt them.
+//!
+//! This increment is **additive and unwired**: it adds the primitives + tests; the engine still uses
+//! the legacy per-recipient path until the integration increment (see the rollout in the design doc).
+
+use hkdf::Hkdf;
+use rand::rngs::OsRng;
+use rand::RngCore;
+use serde::{Deserialize, Serialize};
+use sha2::Sha256;
+
+use crate::crypto::{open, seal};
+use crate::identity::{HavenId, Identity};
+use crate::social::{self, Event, Group, SealedEnvelope};
+use crate::{CoreError, Result};
+
+/// A fresh random 32-byte epoch key. Held only in memory / the encrypted state blob; deleted once
+/// older than the circle's retention window (bounded forward secrecy).
+pub fn new_epoch_key() -> [u8; 32] {
+    let mut k = [0u8; 32];
+    OsRng.fill_bytes(&mut k);
+    k
+}
+
+/// The payload a KeyCommit carries (sealed to the member set via the hybrid KEM).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct KeyCommitPayload {
+    circle_id: String,
+    epoch: u64,
+    epoch_key: [u8; 32],
+}
+
+/// A KeyCommit opened by a recipient: the circle's epoch key for a given epoch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenedKeyCommit {
+    pub circle_id: String,
+    pub epoch: u64,
+    pub epoch_key: [u8; 32],
+}
+
+/// Seal a circle's `epoch_key` to exactly `members` (the *new* member set after an add/remove). A
+/// removed node is simply absent from `members`, so it never receives this — that is what makes
+/// revocation cryptographic rather than advisory. Reuses the hybrid-KEM `seal_bytes` (PQ-preserving),
+/// signed by the committer.
+pub fn seal_key_commit(
+    committer: &Identity,
+    members: &[HavenId],
+    circle_id: &str,
+    epoch: u64,
+    epoch_key: &[u8; 32],
+) -> Result<SealedEnvelope> {
+    let payload = KeyCommitPayload { circle_id: circle_id.to_string(), epoch, epoch_key: *epoch_key };
+    let bytes = serde_json::to_vec(&payload).map_err(|_| CoreError::Encoding("keycommit encode"))?;
+    let group = Group::new(circle_id, members.to_vec());
+    social::seal_bytes(committer, &group, &bytes)
+}
+
+/// Open a KeyCommit addressed to me, verifying the committer's hybrid signature.
+pub fn open_key_commit(
+    me: &Identity,
+    committer_pub: &HavenId,
+    env: &SealedEnvelope,
+) -> Result<OpenedKeyCommit> {
+    let bytes = social::open_bytes(me, committer_pub, env)?;
+    let payload: KeyCommitPayload =
+        serde_json::from_slice(&bytes).map_err(|_| CoreError::Encoding("keycommit decode"))?;
+    Ok(OpenedKeyCommit { circle_id: payload.circle_id, epoch: payload.epoch, epoch_key: payload.epoch_key })
+}
+
+/// Derive a per-event AEAD key from the epoch key + a per-event random salt, bound to the circle and
+/// epoch. The epoch key is never used directly as an AES key — only as HKDF keying material — so a
+/// single epoch key safely seals an unbounded number of events.
+fn derive_event_key(epoch_key: &[u8; 32], salt: &[u8], circle_id: &str, epoch: u64) -> [u8; 32] {
+    let hk = Hkdf::<Sha256>::new(Some(salt), epoch_key);
+    let mut info = Vec::with_capacity(18 + circle_id.len() + 8);
+    info.extend_from_slice(b"haven-event-key-v1");
+    info.extend_from_slice(circle_id.as_bytes());
+    info.extend_from_slice(&epoch.to_le_bytes());
+    let mut okm = [0u8; 32];
+    hk.expand(&info, &mut okm).expect("32 is a valid HKDF length");
+    okm
+}
+
+/// An event sealed under a circle epoch key. No per-recipient wrapping — any holder of the epoch key
+/// opens it; a member excluded from that epoch cannot. Opaque to relays.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct EpochEnvelope {
+    pub circle_id: String,
+    pub epoch: u64,
+    salt: Vec<u8>, // 16 random bytes; diversifies the per-event key (carried in the clear, not secret)
+    sender: Vec<u8>,
+    ciphertext: Vec<u8>,
+    signature: Vec<u8>, // hybrid signature over the transcript
+}
+
+impl EpochEnvelope {
+    pub fn sender_hex(&self) -> String {
+        hex(&self.sender)
+    }
+    pub fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).expect("epoch envelope serializes")
+    }
+    pub fn from_bytes(b: &[u8]) -> Result<Self> {
+        serde_json::from_slice(b).map_err(|_| CoreError::Encoding("malformed epoch envelope"))
+    }
+    /// Transcript the signature covers: binds circle + epoch + salt + sender + ciphertext.
+    fn transcript(&self) -> [u8; 32] {
+        let mut h = blake3::Hasher::new();
+        h.update(b"haven-epoch-envelope-v1");
+        h.update(self.circle_id.as_bytes());
+        h.update(&self.epoch.to_le_bytes());
+        h.update(&self.salt);
+        h.update(&self.sender);
+        h.update(&self.ciphertext);
+        *h.finalize().as_bytes()
+    }
+}
+
+/// Seal an event under the current circle epoch key. Sender side.
+pub fn seal_event_in_epoch(
+    sender: &Identity,
+    circle_id: &str,
+    epoch: u64,
+    epoch_key: &[u8; 32],
+    event: &Event,
+) -> Result<EpochEnvelope> {
+    let plaintext = serde_json::to_vec(event).map_err(|_| CoreError::Encoding("event encode"))?;
+    let mut salt = [0u8; 16];
+    OsRng.fill_bytes(&mut salt);
+    let event_key = derive_event_key(epoch_key, &salt, circle_id, epoch);
+    let ciphertext = seal(&event_key, &plaintext);
+
+    let mut env = EpochEnvelope {
+        circle_id: circle_id.to_string(),
+        epoch,
+        salt: salt.to_vec(),
+        sender: sender.public().node_id_bytes().to_vec(),
+        ciphertext,
+        signature: Vec::new(),
+    };
+    env.signature = sender.sign(&env.transcript());
+    Ok(env)
+}
+
+/// Open an epoch-sealed event, verifying the sender's hybrid signature and the author/sender bind.
+/// Recipient side. Fails if `epoch_key` is the wrong epoch (e.g. you were removed before it).
+pub fn open_event_in_epoch(
+    sender_pub: &HavenId,
+    epoch_key: &[u8; 32],
+    env: &EpochEnvelope,
+) -> Result<Event> {
+    sender_pub.verify(&env.transcript(), &env.signature)?;
+    let event_key = derive_event_key(epoch_key, &env.salt, &env.circle_id, env.epoch);
+    let plaintext = open(&event_key, &env.ciphertext)?;
+    let event: Event =
+        serde_json::from_slice(&plaintext).map_err(|_| CoreError::Encoding("event decode"))?;
+    if event.author != hex(&env.sender) {
+        return Err(CoreError::Crypto("author/sender mismatch"));
+    }
+    Ok(event)
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::social::EventKind;
+
+    fn member(n: u8) -> Identity {
+        Identity::from_seed(&[n; 32])
+    }
+    fn post(author: &Identity, t: u64, body: &str) -> Event {
+        Event::new(
+            &author.public().node_id_bytes(),
+            t,
+            EventKind::Message { body: body.into() },
+        )
+    }
+
+    #[test]
+    fn members_open_epoch_events_nonmembers_cannot() {
+        let alice = member(1);
+        let bob = member(2);
+        let key = new_epoch_key();
+        let ev = post(&alice, 100, "hello circle");
+        let env = seal_event_in_epoch(&alice, "c1", 0, &key, &ev).unwrap();
+
+        // Bob holds the epoch key → opens it and authenticates Alice.
+        assert_eq!(open_event_in_epoch(&alice.public(), &key, &env).unwrap(), ev);
+
+        // A different epoch key (what a removed member would be stuck on) cannot open it.
+        let wrong = new_epoch_key();
+        assert!(open_event_in_epoch(&alice.public(), &wrong, &env).is_err());
+        let _ = bob;
+    }
+
+    #[test]
+    fn key_commit_revokes_removed_member() {
+        let alice = member(1); // committer
+        let bob = member(2);
+        let carol = member(3); // will be removed
+
+        // Epoch 0: everyone (Alice, Bob, Carol).
+        let e0 = new_epoch_key();
+        let commit0 = seal_key_commit(
+            &alice,
+            &[alice.public(), bob.public(), carol.public()],
+            "c1",
+            0,
+            &e0,
+        )
+        .unwrap();
+        // Carol can open epoch 0.
+        assert_eq!(open_key_commit(&carol, &alice.public(), &commit0).unwrap().epoch_key, e0);
+
+        // Membership change → epoch 1 sealed to ONLY Alice + Bob (Carol removed).
+        let e1 = new_epoch_key();
+        let commit1 =
+            seal_key_commit(&alice, &[alice.public(), bob.public()], "c1", 1, &e1).unwrap();
+
+        // Bob (still a member) gets epoch 1.
+        assert_eq!(open_key_commit(&bob, &alice.public(), &commit1).unwrap().epoch_key, e1);
+        // Carol is NOT a recipient → cannot open the epoch-1 commit at all.
+        assert!(open_key_commit(&carol, &alice.public(), &commit1).is_err());
+
+        // A post in epoch 1 is therefore unreadable by Carol (she never learns e1), but readable by Bob.
+        let ev = post(&alice, 200, "after carol left");
+        let env = seal_event_in_epoch(&alice, "c1", 1, &e1, &ev).unwrap();
+        assert_eq!(open_event_in_epoch(&alice.public(), &e1, &env).unwrap(), ev);
+        // Carol only has e0 → derives the wrong key → open fails. Revocation is cryptographic.
+        assert!(open_event_in_epoch(&alice.public(), &e0, &env).is_err());
+    }
+
+    #[test]
+    fn tamper_and_forgery_are_rejected() {
+        let alice = member(1);
+        let mallory = member(9);
+        let key = new_epoch_key();
+        let ev = post(&alice, 100, "authentic");
+        let mut env = seal_event_in_epoch(&alice, "c1", 0, &key, &ev).unwrap();
+
+        // Flip a ciphertext byte → AEAD/signature rejects.
+        env.ciphertext[0] ^= 0xff;
+        assert!(open_event_in_epoch(&alice.public(), &key, &env).is_err());
+
+        // Verifying with the wrong sender key fails (Mallory didn't sign it).
+        let ev2 = post(&alice, 101, "again");
+        let env2 = seal_event_in_epoch(&alice, "c1", 0, &key, &ev2).unwrap();
+        assert!(open_event_in_epoch(&mallory.public(), &key, &env2).is_err());
+    }
+
+    #[test]
+    fn epoch_envelope_round_trips_through_bytes() {
+        let alice = member(1);
+        let key = new_epoch_key();
+        let ev = post(&alice, 100, "serialize me");
+        let env = seal_event_in_epoch(&alice, "circle-xyz", 7, &key, &ev).unwrap();
+        let bytes = env.to_bytes();
+        let back = EpochEnvelope::from_bytes(&bytes).unwrap();
+        assert_eq!(back.epoch, 7);
+        assert_eq!(back.circle_id, "circle-xyz");
+        assert_eq!(open_event_in_epoch(&alice.public(), &key, &back).unwrap(), ev);
+    }
+}

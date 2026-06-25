@@ -23,6 +23,7 @@
 
 pub mod crypto;
 pub mod device;
+pub mod groupkey;
 pub mod identity;
 pub mod link;
 pub mod selfsync;
