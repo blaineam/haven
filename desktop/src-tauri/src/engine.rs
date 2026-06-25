@@ -293,6 +293,9 @@ impl Engine {
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(15)).await;
                 me.poll_mailbox().await;
+                // Persistently retry any media an interrupted nearby/iroh transfer left incomplete —
+                // relay first, then peers — every tick until nothing is missing (parity with iOS/Android).
+                me.request_missing_media();
                 me.fire_due_scheduled();
                 me.mesh_sync().await;
                 me.poll_self_sync().await;
@@ -683,6 +686,46 @@ impl Engine {
         self.persist();
         if hello_back {
             self.send_hello(circle_id, id_hex);
+            // I'm the accepter sharing history → make sure the relay holds it ASAP so the new member
+            // can pull it from the relay if the direct back-fill doesn't reach them.
+            let me = self.clone();
+            let cid = circle_id.to_string();
+            tauri::async_runtime::spawn(async move { me.backfill_history_to_relay(&cid).await; });
+        }
+    }
+
+    /// Ensure the relay holds this circle's FULL history (every event + every media blob I hold, not
+    /// just my own) ASAP, so a newly-added member who can't receive it directly can pull it from the
+    /// relay — no fragmented posts. Parity with iOS/Android. No-op without a mailbox.
+    async fn backfill_history_to_relay(self: &Arc<Self>, circle_id: &str) {
+        let has_relay = !self.relays_for(circle_id).is_empty();
+        let has_s3 = self.prefs.lock().unwrap().s3.is_some();
+        if !has_relay && !has_s3 {
+            return;
+        }
+        for env in self.social.sync_envelopes(circle_id.to_string()) {
+            self.upload_event(circle_id, &env).await;
+        }
+        let feed = self.social.feed(circle_id.to_string(), now_ms(), None);
+        let mut refs: Vec<String> = vec![];
+        for item in feed {
+            for r in item.media {
+                if !refs.contains(&r) {
+                    refs.push(r);
+                }
+            }
+            for cm in item.comments {
+                for r in cm.media {
+                    if !refs.contains(&r) {
+                        refs.push(r);
+                    }
+                }
+            }
+        }
+        for r in refs {
+            if self.media.has(&r) {
+                self.upload_media(circle_id, &r).await;
+            }
         }
     }
 
@@ -1253,9 +1296,10 @@ impl Engine {
                     me.emit_changed();
                     return;
                 }
-                if !me.dyn_state.lock().unwrap().requested_refs.insert(reference.clone()) {
-                    return;
-                }
+                // Relay couldn't serve it → re-request from peers. Retried each sweep (not once per
+                // session) so an interrupted peer transfer with no relay still completes; chunk
+                // re-sends just fill the gaps.
+                me.dyn_state.lock().unwrap().requested_refs.insert(reference.clone());
                 let mut payload = my_hex.into_bytes();
                 payload.extend_from_slice(reference.as_bytes());
                 let ids: Vec<String> = me.prefs.lock().unwrap().contacts.iter().map(|c| c.id_hex.clone()).collect();
