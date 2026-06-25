@@ -181,10 +181,11 @@ final class WebRTCCall: NSObject {
         guard videoTrack == nil else { videoTrack?.isEnabled = true; startCapture(); return }
         let source = WebRTCCall.factory.videoSource()
         let track = WebRTCCall.factory.videoTrack(with: source, trackId: "video0")
-        #if targetEnvironment(macCatalyst)
+        #if targetEnvironment(macCatalyst) || os(macOS)
         // The Mac webcam's frames come in rotated 90° clockwise (no device-orientation cue), so
-        // both the local preview and the peer see it sideways. Rotate every frame 90° CCW here,
-        // at the source, so it's upright everywhere.
+        // both the local preview and the peer see it sideways. This is a property of
+        // RTCCameraVideoCapturer + the Mac camera, so it applies to the NATIVE macOS build too, not
+        // just Catalyst. Rotate every frame 90° CCW here, at the source, so it's upright everywhere.
         let proxy = RotatingVideoProxy(source: source)
         captureProxy = proxy
         let cap = RTCCameraVideoCapturer(delegate: proxy)
