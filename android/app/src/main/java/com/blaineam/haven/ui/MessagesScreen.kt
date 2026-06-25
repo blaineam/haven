@@ -24,6 +24,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.Icon
@@ -133,6 +134,7 @@ fun DmThread(circleId: String, partner: Contact, onBack: () -> Unit) {
     var pendingPhoto by remember { mutableStateOf<String?>(null) }
     var pendingMusic by remember { mutableStateOf<uniffi.haven_ffi.TrackRefFfi?>(null) }
     var showMusicDialog by remember { mutableStateOf(false) }
+    var showVoice by remember { mutableStateOf(false) }
     val version by HavenNet.feedVersion
     val msgs = remember(version, circleId) { HavenNet.messages(circleId) }
     val picker = androidx.activity.compose.rememberLauncherForActivityResult(
@@ -202,6 +204,10 @@ fun DmThread(circleId: String, partner: Contact, onBack: () -> Unit) {
                     contentAlignment = Alignment.Center) {
                     Icon(Icons.Filled.MusicNote, "Add a song", tint = HavenTheme.pink)
                 }
+                Box(Modifier.size(40.dp).clip(CircleShape).clickable { showVoice = true },
+                    contentAlignment = Alignment.Center) {
+                    Icon(Icons.Filled.Mic, "Voice message", tint = HavenTheme.pink)
+                }
                 OutlinedTextField(
                     value = draft, onValueChange = { draft = it },
                     placeholder = { Text("Message…") },
@@ -224,6 +230,11 @@ fun DmThread(circleId: String, partner: Contact, onBack: () -> Unit) {
         if (showMusicDialog) {
             MusicSearchSheet(onPick = { pendingMusic = it; showMusicDialog = false }, onDismiss = { showMusicDialog = false })
         }
+        if (showVoice) {
+            VoiceRecorderDialog(circleId,
+                onDone = { ref -> HavenNet.sendDm(circleId, "", listOf(ref)); showVoice = false },
+                onDismiss = { showVoice = false })
+        }
     }
 }
 
@@ -241,9 +252,12 @@ private fun Bubble(m: uniffi.haven_ffi.FeedItemFfi, circleId: String) {
                 .padding(horizontal = 14.dp, vertical = 10.dp),
         ) {
             m.media.forEach { ref ->
-                if (com.blaineam.haven.core.LocalMedia.isVideo(ref))
-                    VideoTile(circleId, ref, Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)))
-                else MediaImage(circleId, ref, Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)))
+                when {
+                    com.blaineam.haven.core.LocalMedia.isAudio(ref) -> AudioPlayerPill(circleId, ref)
+                    com.blaineam.haven.core.LocalMedia.isVideo(ref) ->
+                        VideoTile(circleId, ref, Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)))
+                    else -> MediaImage(circleId, ref, Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)))
+                }
                 if (text.isNotBlank() || m.music != null) Spacer(Modifier.size(6.dp))
             }
             if (text.isNotBlank()) LinkedText(text, color = Color.White, fontSize = 15.sp)

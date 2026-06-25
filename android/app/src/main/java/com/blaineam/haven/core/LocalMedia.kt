@@ -36,6 +36,22 @@ object LocalMedia {
         return if (isVideo) "vid_$hash" else "img_$hash"
     }
 
+    /** Store a recorded voice message; returns an `aud_` ref (sealed at rest like other media). */
+    fun storeAudio(circleId: String, bytes: ByteArray): String {
+        val hash = sha256Hex(bytes)
+        val toWrite = runCatching { HavenNet.engine.sealCircleMedia(circleId, bytes) }.getOrNull() ?: bytes
+        runCatching { File(dir, hash).writeBytes(toWrite) }
+        return "aud_$hash"
+    }
+
+    /** Decrypt an audio ref to a cache file MediaPlayer can read; null if missing. */
+    fun audioFile(circleId: String, ref: String): File? {
+        val bytes = load(circleId, ref) ?: return null
+        val out = File(dir.parentFile, "aud_${bareId(ref)}.m4a")
+        if (!out.exists()) runCatching { out.writeBytes(bytes) }
+        return if (out.exists()) out else null
+    }
+
     fun isVideo(ref: String): Boolean = ref.startsWith("vid_") || ref.startsWith("v:")
     fun isAudio(ref: String): Boolean = ref.startsWith("aud_")
     // Strip the kind prefix (ours or iOS's) to the on-disk storage key. Legacy v:/i: kept for
