@@ -58,10 +58,17 @@ public struct WatchMessage: Codable, Identifiable, Hashable {
     public var timestamp: UInt64
     public var hasMedia: Bool
     public var reactions: String   // compact summary, e.g. "❤️2 👍1"
+    /// A small JPEG thumbnail of the post's first photo (or a video's poster frame), generated
+    /// phone-side and downscaled so it's cheap over the WCSession link. nil = no renderable media.
+    public var thumbnail: Data?
+    /// The thumbnail is a video poster (show a play badge) rather than a still photo.
+    public var isVideo: Bool
 
-    public init(id: String, author: String, isMe: Bool, body: String, timestamp: UInt64, hasMedia: Bool, reactions: String) {
+    public init(id: String, author: String, isMe: Bool, body: String, timestamp: UInt64,
+                hasMedia: Bool, reactions: String, thumbnail: Data? = nil, isVideo: Bool = false) {
         self.id = id; self.author = author; self.isMe = isMe; self.body = body
         self.timestamp = timestamp; self.hasMedia = hasMedia; self.reactions = reactions
+        self.thumbnail = thumbnail; self.isVideo = isVideo
     }
 }
 

@@ -76,16 +76,36 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
         let isDM = threadId.hasPrefix("dm:")
         let title = isDM ? store.dmPartnerName(threadId)
                          : (store.circles.first { $0.id == threadId }?.name ?? "Circle")
-        let messages = store.messages(in: threadId).suffix(40).map { item in
-            WatchMessage(id: item.id,
-                         author: item.isMe ? "You" : item.authorShort,
-                         isMe: item.isMe,
-                         body: item.unsent ? "Message unsent" : item.body,
-                         timestamp: item.createdAt,
-                         hasMedia: !item.media.isEmpty,
-                         reactions: reactionSummary(item.reactions))
+        let items = Array(store.messages(in: threadId).suffix(40))
+        // Thumbnail only the most recent media-bearing messages so the WCSession payload stays small.
+        let thumbIds = Set(items.filter { !$0.media.isEmpty }.suffix(12).map { $0.id })
+        let messages = items.map { item -> WatchMessage in
+            let (thumb, isVideo) = thumbIds.contains(item.id) ? watchThumbnail(item.media) : (nil, false)
+            return WatchMessage(id: item.id,
+                                author: item.isMe ? "You" : item.authorShort,
+                                isMe: item.isMe,
+                                body: item.unsent ? "Message unsent" : item.body,
+                                timestamp: item.createdAt,
+                                hasMedia: !item.media.isEmpty,
+                                reactions: reactionSummary(item.reactions),
+                                thumbnail: thumb,
+                                isVideo: isVideo)
         }
-        return WatchThreadDetail(threadId: threadId, title: title, isDM: isDM, messages: Array(messages))
+        return WatchThreadDetail(threadId: threadId, title: title, isDM: isDM, messages: messages)
+    }
+
+    /// A tiny JPEG thumbnail (+ isVideo flag) of a post's first renderable media, for the Watch — so
+    /// posts show the actual photo instead of a generic "Attachment" row. Kept small (≤120px, low
+    /// quality ≈ a few KB) to stay well under the WCSession message cap.
+    @MainActor private static func watchThumbnail(_ refs: [String]) -> (Data?, Bool) {
+        for ref in refs {
+            guard let item = MediaStore.shared.item(ref), let img = item.image else { continue }
+            let small = MediaStore.downscale(img, maxDimension: 120)
+            if let data = small.jpegData(compressionQuality: 0.5) {
+                return (data, item.kind == .video)
+            }
+        }
+        return (nil, false)
     }
 
     private static func preview(_ item: FeedItemFfi?) -> String {

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit   // UIImage (available on watchOS) — render real post thumbnails
 
 // MARK: - Conversations list
 
@@ -124,21 +125,52 @@ struct WatchThreadView: View {
 private struct WatchMessageRow: View {
     let message: WatchMessage
 
+    private var bubbleColor: Color {
+        message.isMe ? Color.pink.opacity(0.32) : Color.white.opacity(0.12)
+    }
+    private var hasBubbleContent: Bool {
+        !message.body.isEmpty || message.thumbnail != nil || message.hasMedia
+    }
+
     var body: some View {
-        VStack(alignment: message.isMe ? .trailing : .leading, spacing: 2) {
+        VStack(alignment: message.isMe ? .trailing : .leading, spacing: 3) {
             if !message.isMe {
                 Text(message.author)
                     .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.pink.opacity(0.9))
             }
-            HStack(spacing: 4) {
-                if message.hasMedia { Image(systemName: "paperclip").font(.caption2) }
-                Text(message.body.isEmpty && message.hasMedia ? "Attachment" : message.body)
-                    .font(.body)
+            if hasBubbleContent {
+                VStack(alignment: .leading, spacing: 5) {
+                    // Render the ACTUAL media (post photo / video poster), not a generic attachment row.
+                    if let data = message.thumbnail, let ui = UIImage(data: data) {
+                        ZStack {
+                            Image(uiImage: ui)
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 100)
+                                .clipShape(RoundedRectangle(cornerRadius: 9))
+                            if message.isVideo {
+                                Image(systemName: "play.circle.fill")
+                                    .font(.title2)
+                                    .foregroundStyle(.white)
+                                    .shadow(radius: 3)
+                            }
+                        }
+                    } else if message.hasMedia {
+                        // Bytes still syncing on the phone — a quiet placeholder, not a scary "Attachment".
+                        Label(message.isVideo ? "Video" : "Photo", systemImage: message.isVideo ? "video.fill" : "photo.fill")
+                            .font(.caption2).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, minHeight: 40)
+                            .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 9))
+                    }
+                    if !message.body.isEmpty {
+                        Text(message.body).font(.body)
+                    }
+                }
+                .padding(.horizontal, 8).padding(.vertical, 6)
+                .background(bubbleColor, in: RoundedRectangle(cornerRadius: 12))
             }
-            .padding(.horizontal, 8).padding(.vertical, 5)
-            .background(message.isMe ? Color.pink.opacity(0.35) : Color.gray.opacity(0.25),
-                        in: RoundedRectangle(cornerRadius: 10))
             HStack(spacing: 4) {
                 if !message.reactions.isEmpty {
                     Text(message.reactions).font(.caption2)
@@ -149,6 +181,7 @@ private struct WatchMessageRow: View {
         }
         .frame(maxWidth: .infinity, alignment: message.isMe ? .trailing : .leading)
         .listRowInsets(EdgeInsets(top: 2, leading: 4, bottom: 2, trailing: 4))
+        .listRowBackground(Color.clear)   // remove the system row fill → no "double background" behind bubbles
     }
 }
 
