@@ -58,6 +58,8 @@ final class CallManager: NSObject, ObservableObject {
     /// The roster of OTHER participants (hex order), drives the grid tiles.
     @Published private(set) var participants: [String] = []
     @Published private(set) var localVideoTrack: RTCVideoTrack?
+    /// Whether the local camera is the front one — the self-preview mirrors only then (rear never).
+    @Published private(set) var frontCamera = true
     /// The hex of the participant currently speaking, `""` for me (the local mic), or nil if nobody.
     /// Drives the glowing highlight on the active speaker's grid tile / local PiP.
     @Published private(set) var activeSpeaker: String?
@@ -226,7 +228,8 @@ final class CallManager: NSObject, ObservableObject {
         }
         sessionId = "legacy:\(from)"
         roster = [from, myHex]
-        peerName = name; isCaller = false; active = true
+        // Show the CALLER's name, not the name they sent (which is *our* name for a DM call).
+        peerName = displayName(for: from); isCaller = false; active = true
         refreshParticipants()
         reportIncoming(name: name)
     }
@@ -260,7 +263,10 @@ final class CallManager: NSObject, ObservableObject {
             return
         }
         sessionId = sid2; roster = members
-        peerName = gname2.isEmpty ? "Group call" : gname2
+        // A 1:1 call's "group name" is really the callee's own name (what the caller called us), so
+        // displaying it verbatim made both ends show the same person. Resolve the caller's name from
+        // their hex instead; only true group calls use the shared group name.
+        peerName = members.count <= 2 ? displayName(for: from) : (gname2.isEmpty ? "Group call" : gname2)
         isCaller = false; active = true
         refreshParticipants()
         reportIncoming(name: peerName)
@@ -691,6 +697,7 @@ final class CallManager: NSObject, ObservableObject {
                     guard let self else { return }
                     for conn in self.peers.values { conn.call.startVideo() }
                     self.localVideoTrack = self.peers.values.first?.call.localVideoTrack
+                    self.frontCamera = self.peers.values.first?.call.usingFrontCamera ?? true
                     self.videoOn = true
                     self.renegotiateAll()
                 }
@@ -708,7 +715,11 @@ final class CallManager: NSObject, ObservableObject {
         for conn in peers.values { conn.call.makeOffer() }
     }
 
-    func flipCamera() { if videoOn { for conn in peers.values { conn.call.flipCamera() } } }
+    func flipCamera() {
+        guard videoOn else { return }
+        for conn in peers.values { conn.call.flipCamera() }
+        frontCamera = peers.values.first?.call.usingFrontCamera ?? frontCamera
+    }
 
     // MARK: - Device selection (Mac / desktop menus)
 
@@ -724,6 +735,7 @@ final class CallManager: NSObject, ObservableObject {
     func selectCamera(_ deviceUniqueID: String) {
         guard videoOn else { return }
         for conn in peers.values { conn.call.selectCamera(deviceUniqueID) }
+        frontCamera = peers.values.first?.call.usingFrontCamera ?? frontCamera
     }
 
     // MARK: - Screen sharing (a SECOND video track, coexists with the camera)
@@ -1131,6 +1143,9 @@ struct CallOverlay: View {
                     HStack {
                         Spacer()
                         RTCVideoView(track: call.localVideoTrack)
+                            // Mirror the self-preview for the front camera only (feels like a mirror);
+                            // the rear camera and the frames we SEND stay un-mirrored.
+                            .scaleEffect(x: call.frontCamera ? -1 : 1, y: 1)
                             .frame(width: 96, height: 128).clipShape(RoundedRectangle(cornerRadius: 12))
                             .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.white.opacity(0.6)))
                             .overlay(activeSpeakerBorder(cornerRadius: 12, active: call.activeSpeaker == ""))
@@ -1200,18 +1215,24 @@ struct CallOverlay: View {
     /// for a single row. One peer fills the screen.
     private var grid: some View {
         GeometryReader { geo in
+            // Inset tiles inside the safe area (+ a corner margin) so their rounded corners, name
+            // badges and active-speaker borders never bleed into the device's rounded screen corners.
+            let safe = geo.safeAreaInsets
+            let margin: CGFloat = 12
+            let w = max(geo.size.width - safe.leading - safe.trailing - margin * 2, 80)
+            let h = max(geo.size.height - safe.top - safe.bottom, 80)
             let tiles = call.participants
             let count = max(tiles.count, 1)
-            let aspect = Double(geo.size.width / max(geo.size.height, 1))
+            let aspect = Double(w / max(h, 1))
             // Closest-to-square column count for this area, but never narrower than ~150pt/tile —
             // on a phone that caps it at ~2 columns so each feed stays usefully wide.
             let byShape = max(1, Int((Double(count) * aspect).squareRoot().rounded(.up)))
-            let byWidth = max(1, Int(geo.size.width / 150))
+            let byWidth = max(1, Int(w / 150))
             let cols = max(1, min(count, byShape, byWidth))
             let rows = Int(ceil(Double(count) / Double(cols)))
             let spacing: CGFloat = 6
-            let tileW = (geo.size.width - CGFloat(cols - 1) * spacing) / CGFloat(cols)
-            let tileH = rows > 1 ? tileW : max(geo.size.height, 80)   // square when stacked, fill when single row
+            let tileW = (w - CGFloat(cols - 1) * spacing) / CGFloat(cols)
+            let tileH = rows > 1 ? tileW : h   // square when stacked, fill when single row
             let columns = Array(repeating: GridItem(.flexible(), spacing: spacing), count: cols)
             ScrollView {
                 LazyVGrid(columns: columns, spacing: spacing) {
@@ -1221,6 +1242,9 @@ struct CallOverlay: View {
                 }
             }
             .scrollDisabled(rows <= 1)
+            .frame(width: w, height: h)
+            .padding(.top, safe.top).padding(.bottom, safe.bottom)
+            .padding(.leading, safe.leading + margin).padding(.trailing, safe.trailing + margin)
         }
         .ignoresSafeArea()
     }
@@ -1266,7 +1290,7 @@ struct CallOverlay: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 20) {
+        HStack(spacing: 14) {
             Button { CallManager.shared.toggleMute() } label: {
                 callButton(call.muted ? "mic.slash.fill" : "mic.fill", on: call.muted)
             }
@@ -1291,11 +1315,12 @@ struct CallOverlay: View {
             }
             #endif
             Button { CallManager.shared.endCall() } label: {
-                Image(systemName: "phone.down.fill").font(.title)
-                    .foregroundStyle(.white).frame(width: 70, height: 70)
+                Image(systemName: "phone.down.fill").font(.title2)
+                    .foregroundStyle(.white).frame(width: 58, height: 58)
                     .background(Color.red, in: Circle())
             }
         }
+        .padding(.horizontal, 12)
     }
 
     #if targetEnvironment(macCatalyst)
@@ -1361,21 +1386,21 @@ struct CallOverlay: View {
             if call.screenShareOn {
                 // While sharing, the button stops the broadcast + our listener.
                 Button { CallManager.shared.stopScreenShare() } label: {
-                    Color.clear.frame(width: 64, height: 64)
+                    Color.clear.frame(width: 52, height: 52)
                 }
             } else {
                 // Not sharing: surface the system broadcast picker. Starting it begins our listener.
                 BroadcastPickerButton {
                     CallManager.shared.startScreenShareListening()
                 }
-                .frame(width: 64, height: 64)
+                .frame(width: 52, height: 52)
             }
         }
         #endif
     }
 
     private func callButton(_ symbol: String, on: Bool) -> some View {
-        Image(systemName: symbol).font(.title2).foregroundStyle(.white).frame(width: 64, height: 64)
+        Image(systemName: symbol).font(.title3).foregroundStyle(.white).frame(width: 52, height: 52)
             .background(Color.white.opacity(on ? 0.3 : 0.16), in: Circle())
     }
 }

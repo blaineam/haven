@@ -176,7 +176,9 @@ final class WebRTCCall: NSObject {
     // MARK: Video (toggled mid-call)
 
     func startVideo() {
-        guard videoTrack == nil else { videoTrack?.isEnabled = true; return }
+        // Re-enabling after a stop: the track still exists but stopVideo() tore down the capture
+        // session, so just flipping isEnabled gives a live track with no frames. Restart capture.
+        guard videoTrack == nil else { videoTrack?.isEnabled = true; startCapture(); return }
         let source = WebRTCCall.factory.videoSource()
         let track = WebRTCCall.factory.videoTrack(with: source, trackId: "video0")
         #if targetEnvironment(macCatalyst)
@@ -268,6 +270,10 @@ final class WebRTCCall: NSObject {
 
     /// The local camera track, for a self-preview view.
     var localVideoTrack: RTCVideoTrack? { videoTrack }
+
+    /// True while capturing from the front camera — the self-preview should mirror, the sent frames
+    /// (and the rear camera, always) should not.
+    var usingFrontCamera: Bool { cameraPosition == .front }
 
     private func startCapture() {
         let devices = RTCCameraVideoCapturer.captureDevices()
