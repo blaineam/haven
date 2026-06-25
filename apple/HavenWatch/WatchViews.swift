@@ -90,25 +90,36 @@ struct WatchThreadView: View {
     }
 
     var body: some View {
-        List {
-            if messages.isEmpty {
-                Text(client.loadingThread ? "Loading…" : "No messages yet.")
-                    .font(.footnote).foregroundStyle(.secondary)
-                    .listRowBackground(Color.clear)
+        ScrollViewReader { proxy in
+            List {
+                if messages.isEmpty {
+                    Text(client.loadingThread ? "Loading…" : "No messages yet.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                        .listRowBackground(Color.clear)
+                }
+                ForEach(messages) { msg in
+                    WatchMessageRow(message: msg)
+                        .id(msg.id)
+                        .onTapGesture { reactingTo = msg }
+                }
+                Button { showReply = true } label: {
+                    Label("Reply", systemImage: "arrowshape.turn.up.left.fill")
+                }
+                .buttonStyle(WatchBrandButton())
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 6, leading: 4, bottom: 4, trailing: 4))
+                .id("reply")
             }
-            ForEach(messages) { msg in
-                WatchMessageRow(message: msg)
-                    .onTapGesture { reactingTo = msg }
+            .scrollContentBackground(.hidden)
+            .background(WatchBackground())
+            // Open at the latest message (like the phone), so you see what's new — not the top.
+            .onChange(of: messages.count) { _, _ in
+                if let last = messages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
             }
-            Button { showReply = true } label: {
-                Label("Reply", systemImage: "arrowshape.turn.up.left.fill")
+            .onAppear {
+                if let last = messages.last { proxy.scrollTo(last.id, anchor: .bottom) }
             }
-            .buttonStyle(WatchBrandButton())
-            .listRowBackground(Color.clear)
-            .listRowInsets(EdgeInsets(top: 6, leading: 4, bottom: 4, trailing: 4))
         }
-        .scrollContentBackground(.hidden)
-        .background(WatchBackground())
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { client.openThread(threadId) }

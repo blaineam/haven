@@ -1,6 +1,7 @@
 import Foundation
 import WatchConnectivity
 import UserNotifications
+import SwiftUI   // ImageRenderer for synthetic demo thumbnails
 
 /// Watch-side WCSession client. The phone holds the iroh node + identity; this just asks the
 /// phone for recent threads, displays them, and sends quick replies / reactions back. All
@@ -41,10 +42,23 @@ final class WatchConnectivityClient: NSObject, ObservableObject {
             WatchMessage(id: "m1", author: "Ari", isMe: false, body: "Heading over now", timestamp: now - 240_000, hasMedia: false, reactions: "👍1"),
             WatchMessage(id: "m2", author: "You", isMe: true, body: "Cool, door's open", timestamp: now - 180_000, hasMedia: false, reactions: ""),
             WatchMessage(id: "m3", author: "Ari", isMe: false, body: "On my way 🚲", timestamp: now - 90_000, hasMedia: false, reactions: "❤️2"),
+            WatchMessage(id: "m4", author: "Ari", isMe: false, body: "Made it to the top!", timestamp: now - 60_000, hasMedia: true,
+                         reactions: "🔥3", thumbnail: Self.demoThumb(), isVideo: false),
         ])
         reachable = true
         lastSyncedAt = now
         return true
+    }
+
+    /// A small synthetic gradient JPEG standing in for a real post photo in the demo harness
+    /// (ImageRenderer is the watchOS-available way to rasterize a view; UIGraphicsImageRenderer isn't).
+    @MainActor private static func demoThumb() -> Data? {
+        let view = LinearGradient(colors: [WTheme.pink, WTheme.violet],
+                                  startPoint: .topLeading, endPoint: .bottomTrailing)
+            .frame(width: 120, height: 100)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 2
+        return renderer.uiImage?.jpegData(compressionQuality: 0.6)
     }
 
     // MARK: - Requests to the phone
