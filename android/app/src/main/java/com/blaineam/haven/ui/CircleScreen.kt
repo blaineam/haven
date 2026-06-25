@@ -178,23 +178,23 @@ fun CircleScreen(onAddFriend: () -> Unit) {
             if (!locked) {
             // Staged photo preview.
             pendingPhoto?.let { ref ->
-                Box(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+                // Compact thumbnail (like iOS) rather than a giant full-width preview.
+                Box(Modifier.padding(start = 16.dp, bottom = 6.dp)) {
                     if (LocalMedia.isVideo(ref)) {
-                        Box(Modifier.fillMaxWidth().height(160.dp)
-                            .clip(RoundedCornerShape(14.dp)).background(HavenTheme.card),
+                        Box(Modifier.size(64.dp)
+                            .clip(RoundedCornerShape(12.dp)).background(HavenTheme.card),
                             contentAlignment = Alignment.Center) {
-                            Icon(Icons.Filled.Videocam, "Video attached", tint = Color.White, modifier = Modifier.size(40.dp))
+                            Icon(Icons.Filled.Videocam, "Video attached", tint = Color.White, modifier = Modifier.size(26.dp))
                         }
                     } else {
                         MediaImage(active, ref,
-                            Modifier.fillMaxWidth().height(160.dp)
-                                .clip(RoundedCornerShape(14.dp)),
+                            Modifier.size(64.dp).clip(RoundedCornerShape(12.dp)),
                             contentScale = ContentScale.Crop)
                     }
-                    Text("✕", color = Color.White, fontSize = 18.sp,
-                        modifier = Modifier.align(Alignment.TopEnd).padding(8.dp).clip(CircleShape)
+                    Text("✕", color = Color.White, fontSize = 13.sp,
+                        modifier = Modifier.align(Alignment.TopEnd).padding(3.dp).clip(CircleShape)
                             .background(Color.Black.copy(alpha = 0.6f)).clickable { pendingPhoto = null }
-                            .padding(horizontal = 8.dp, vertical = 2.dp))
+                            .padding(horizontal = 6.dp, vertical = 1.dp))
                 }
             }
             // Staged music chip.

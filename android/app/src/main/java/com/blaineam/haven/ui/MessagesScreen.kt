@@ -116,10 +116,7 @@ private fun ThreadList(onOpen: (Contact) -> Unit) {
                                 .clickable { onOpen(c) }.havenCard().padding(14.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Box(Modifier.size(40.dp).clip(CircleShape).background(HavenTheme.brand),
-                                contentAlignment = Alignment.Center) {
-                                Text(c.name.take(1).uppercase(), color = Color.White, fontWeight = FontWeight.Bold)
-                            }
+                            HavenAvatar(idOrShort = c.idHex, name = c.name, size = 40.dp)
                             Spacer(Modifier.size(12.dp))
                             Text(c.name, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium)
                         }
@@ -166,6 +163,8 @@ fun DmThread(circleId: String, partner: Contact, onBack: () -> Unit) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.White)
                 }
                 Spacer(Modifier.size(4.dp))
+                HavenAvatar(idOrShort = partner.idHex, name = partner.name, size = 32.dp)
+                Spacer(Modifier.size(8.dp))
                 Text(partner.name, color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.SemiBold)
                 androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
                 val startCall = rememberCallStarter()
