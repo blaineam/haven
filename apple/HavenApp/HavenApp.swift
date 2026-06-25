@@ -195,7 +195,9 @@ struct RootView: View {
     @ObservedObject private var connections = ConnectionsStore.shared
     @ObservedObject private var linkPresenter = LinkPresenter.shared
     @ObservedObject private var deepLinks = DeepLinkRouter.shared
-    @ObservedObject private var shareRouter = ShareRouter.shared
+    #if os(iOS)
+    @ObservedObject private var shareRouter = ShareRouter.shared   // share-sheet hand-off (iOS only)
+    #endif
 
     @State private var tab = ProcessInfo.processInfo.environment["HAVEN_TAB"] ?? "circle"
     @State private var showConnect = false
@@ -233,11 +235,13 @@ struct RootView: View {
         }
         .animation(.easeInOut(duration: 0.18), value: shouldPrivacyBlur)
         .onOpenURL { url in
+            #if os(iOS)
             // The Share Extension handed off items via the App Group inbox — import + route them.
             if url.scheme == "haven", url.host == "share" {
                 Task { await ShareRouter.shared.ingest() }
                 return
             }
+            #endif
             // Profile/post deep links (haven://u/… , haven://p/…) route in-app.
             if DeepLinkRouter.shared.handle(url, tab: &tab) { return }
             // Otherwise it's an invite link — "<id>.<verify>" in the URL fragment
@@ -314,13 +318,17 @@ struct RootView: View {
             ConnectView(account: accountStore.account, contacts: contacts, incomingLink: invite.link)
         }
         // Share-sheet hand-off: pick DM / post / story for items shared from another app.
+        #if os(iOS)
         .sheet(isPresented: $shareRouter.present) { ShareRouteView() }
+        #endif
         .onChange(of: scenePhase) { _, phase in
             // If we booted before the keychain was readable, swap the real identity back in
             // once we're active + unlocked (never silently keeps a throwaway identity).
             if phase == .active {
                 accountStore.reloadIfTemporary()
+                #if os(iOS)
                 Task { await ShareRouter.shared.ingest() }   // foreground fallback if open-URL didn't fire
+                #endif
             }
         }
         .onAppear {
