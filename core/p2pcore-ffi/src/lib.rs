@@ -19,8 +19,8 @@ use p2pcore::social::{
     SealedEnvelope, TrackRef,
 };
 use p2pcore::groupkey::{
-    new_epoch_key, open_event_in_epoch, open_key_commit, seal_event_in_epoch, seal_key_commit,
-    EpochEnvelope,
+    mailbox_prefix, new_circle_secret, new_epoch_key, open_event_in_epoch, open_key_commit,
+    seal_event_in_epoch, seal_key_commit, EpochEnvelope,
 };
 
 /// Wire tags prefixed to an envelope so `receive` can route it. Legacy (untagged) envelopes are raw
@@ -824,6 +824,10 @@ struct Circle {
     my_epoch_keys: HashMap<u64, [u8; 32]>,
     peer_epoch_keys: HashMap<(String, u64), [u8; 32]>,
     pending_epoch: Vec<Vec<u8>>,
+    /// My STABLE circle secret (zeros = not yet generated) — derives opaque storage-key prefixes for
+    /// my blobs; distributed in my key commits. Peers' secrets are stored so I can find their blobs.
+    my_circle_secret: [u8; 32],
+    peer_circle_secrets: HashMap<String, [u8; 32]>,
 }
 
 impl Circle {
@@ -838,13 +842,27 @@ impl Circle {
             my_epoch_keys: HashMap::new(),
             peer_epoch_keys: HashMap::new(),
             pending_epoch: vec![],
+            my_circle_secret: [0u8; 32],
+            peer_circle_secrets: HashMap::new(),
         }
     }
-    /// Ensure I have a current epoch key for my own posts (bootstrap epoch 0 the first time).
+    /// Ensure I have a current epoch key for my own posts AND a stable circle secret (bootstrap on
+    /// first use).
     fn ensure_epoch(&mut self) {
         if self.my_epoch_keys.is_empty() {
             self.my_epoch = 0;
             self.my_epoch_keys.insert(0, new_epoch_key());
+        }
+        if self.my_circle_secret == [0u8; 32] {
+            self.my_circle_secret = new_circle_secret();
+        }
+    }
+    /// The circle secret to derive `member_hex`'s opaque storage prefix — mine or a stored peer's.
+    fn circle_secret_for(&self, me_hex: &str, member_hex: &str) -> Option<[u8; 32]> {
+        if member_hex == me_hex {
+            (self.my_circle_secret != [0u8; 32]).then_some(self.my_circle_secret)
+        } else {
+            self.peer_circle_secrets.get(member_hex).copied()
         }
     }
     /// Advance MY epoch on a membership change — my next key commit seals only to the remaining
@@ -991,6 +1009,10 @@ fn receive_key_commit(st: &mut NetState, idx: usize, body: &[u8]) -> Result<bool
             let key = (sender_hex.clone(), opened.epoch);
             is_new = !c.peer_epoch_keys.contains_key(&key);
             c.peer_epoch_keys.entry(key).or_insert(opened.epoch_key);
+            // Store the committer's stable circle secret so I can derive their opaque storage prefix.
+            if opened.circle_secret != [0u8; 32] {
+                c.peer_circle_secrets.insert(sender_hex.clone(), opened.circle_secret);
+            }
         }
         c.prune_epoch_keys(); // bounded forward secrecy: drop stale keys
     }
@@ -1100,6 +1122,10 @@ struct PersistCircle {
     my_epoch_keys: Vec<(u64, [u8; 32])>,
     #[serde(default)]
     peer_epoch_keys: Vec<(String, u64, [u8; 32])>,
+    #[serde(default)]
+    my_circle_secret: [u8; 32],
+    #[serde(default)]
+    peer_circle_secrets: Vec<(String, [u8; 32])>,
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PersistState {
@@ -1197,6 +1223,22 @@ impl HavenSocial {
 
     pub fn my_node_hex(&self) -> String {
         hex(&self.state.lock().unwrap().me.public().node_id_bytes())
+    }
+
+    /// The OPAQUE storage-key prefix for `member_hex`'s blobs of `kind` ("mailbox"/"media"/"presign")
+    /// in a circle (audit transport-F4). The platform storage layer uses this instead of the cleartext
+    /// circle id, so a blind relay can't tell circles apart and a non-member — lacking the member's
+    /// circle secret — can't name/list/fetch the blobs. Returns nil if I don't hold that member's
+    /// circle secret yet (a peer's arrives in their key commit; mine is generated on demand).
+    pub fn storage_prefix(&self, circle_id: String, member_hex: String, kind: String) -> Option<String> {
+        let mut st = self.state.lock().unwrap();
+        let me_hex = hex(&st.me.public().node_id_bytes());
+        let idx = st.circles.iter().position(|c| c.id == circle_id)?;
+        if member_hex == me_hex {
+            st.circles[idx].ensure_epoch(); // make sure my own circle secret exists
+        }
+        let secret = st.circles[idx].circle_secret_for(&me_hex, &member_hex)?;
+        Some(mailbox_prefix(&secret, &circle_id, &kind))
     }
 
     /// Our public bundle to send in the handshake (Hello). Contains the keys a contact
@@ -1416,10 +1458,11 @@ impl HavenSocial {
         st.circles[idx].ensure_epoch();
         let epoch = st.circles[idx].my_epoch;
         let Some(key) = st.circles[idx].current_key() else { return vec![] };
+        let secret = st.circles[idx].my_circle_secret;
         let mut members = vec![st.me.public()];
         members.extend(st.circles[idx].members.iter().cloned());
         let mut out: Vec<Vec<u8>> = Vec::new();
-        if let Ok(commit) = seal_key_commit(&st.me, &members, circle_id, epoch, &key) {
+        if let Ok(commit) = seal_key_commit(&st.me, &members, circle_id, epoch, &key, &secret) {
             out.push(tagged(TAG_KEY_COMMIT, &commit.to_bytes()));
         }
         let my_events: Vec<Event> =
@@ -1568,6 +1611,8 @@ impl HavenSocial {
                 my_epoch: c.my_epoch,
                 my_epoch_keys: c.my_epoch_keys.iter().map(|(e, k)| (*e, *k)).collect(),
                 peer_epoch_keys: c.peer_epoch_keys.iter().map(|((a, e), k)| (a.clone(), *e, *k)).collect(),
+                my_circle_secret: c.my_circle_secret,
+                peer_circle_secrets: c.peer_circle_secrets.iter().map(|(a, s)| (a.clone(), *s)).collect(),
             }).collect(),
         };
         serde_json::to_vec(&ps).unwrap_or_default()
@@ -1591,6 +1636,8 @@ impl HavenSocial {
                 my_epoch: 0,
                 my_epoch_keys: vec![],
                 peer_epoch_keys: vec![],
+                my_circle_secret: [0u8; 32],
+                peer_circle_secrets: vec![],
             });
         }
     }
@@ -1628,6 +1675,12 @@ impl HavenSocial {
         }
         for (a, e, k) in pc.peer_epoch_keys {
             st.circles[idx].peer_epoch_keys.entry((a, e)).or_insert(k);
+        }
+        if pc.my_circle_secret != [0u8; 32] && st.circles[idx].my_circle_secret == [0u8; 32] {
+            st.circles[idx].my_circle_secret = pc.my_circle_secret;
+        }
+        for (a, s) in pc.peer_circle_secrets {
+            st.circles[idx].peer_circle_secrets.entry(a).or_insert(s);
         }
     }
 

@@ -39,28 +39,46 @@ struct KeyCommitPayload {
     circle_id: String,
     epoch: u64,
     epoch_key: [u8; 32],
+    /// The committer's STABLE circle secret (doesn't rotate) — used to derive opaque storage-key
+    /// prefixes so a blind relay can't tell circles apart (audit transport-F4). Defaulted for
+    /// back-compat with pre-secret commits.
+    #[serde(default)]
+    circle_secret: [u8; 32],
 }
 
-/// A KeyCommit opened by a recipient: the circle's epoch key for a given epoch.
+/// A KeyCommit opened by a recipient: the circle's epoch key + the committer's stable circle secret.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenedKeyCommit {
     pub circle_id: String,
     pub epoch: u64,
     pub epoch_key: [u8; 32],
+    pub circle_secret: [u8; 32],
 }
 
-/// Seal a circle's `epoch_key` to exactly `members` (the *new* member set after an add/remove). A
-/// removed node is simply absent from `members`, so it never receives this — that is what makes
-/// revocation cryptographic rather than advisory. Reuses the hybrid-KEM `seal_bytes` (PQ-preserving),
-/// signed by the committer.
+/// A fresh stable per-member circle secret (used only to derive opaque storage-key prefixes, never
+/// for content). Generated once per circle and distributed in the member's key commits.
+pub fn new_circle_secret() -> [u8; 32] {
+    new_epoch_key()
+}
+
+/// Seal a circle's `epoch_key` (+ the committer's stable `circle_secret`) to exactly `members` (the
+/// *new* member set after an add/remove). A removed node is simply absent from `members`, so it never
+/// receives this — cryptographic revocation, and it never learns the secret to find the circle's
+/// blobs. Reuses the hybrid-KEM `seal_bytes` (PQ-preserving), signed by the committer.
 pub fn seal_key_commit(
     committer: &Identity,
     members: &[HavenId],
     circle_id: &str,
     epoch: u64,
     epoch_key: &[u8; 32],
+    circle_secret: &[u8; 32],
 ) -> Result<SealedEnvelope> {
-    let payload = KeyCommitPayload { circle_id: circle_id.to_string(), epoch, epoch_key: *epoch_key };
+    let payload = KeyCommitPayload {
+        circle_id: circle_id.to_string(),
+        epoch,
+        epoch_key: *epoch_key,
+        circle_secret: *circle_secret,
+    };
     let bytes = serde_json::to_vec(&payload).map_err(|_| CoreError::Encoding("keycommit encode"))?;
     let group = Group::new(circle_id, members.to_vec());
     social::seal_bytes(committer, &group, &bytes)
@@ -75,7 +93,25 @@ pub fn open_key_commit(
     let bytes = social::open_bytes(me, committer_pub, env)?;
     let payload: KeyCommitPayload =
         serde_json::from_slice(&bytes).map_err(|_| CoreError::Encoding("keycommit decode"))?;
-    Ok(OpenedKeyCommit { circle_id: payload.circle_id, epoch: payload.epoch, epoch_key: payload.epoch_key })
+    Ok(OpenedKeyCommit {
+        circle_id: payload.circle_id,
+        epoch: payload.epoch,
+        epoch_key: payload.epoch_key,
+        circle_secret: payload.circle_secret,
+    })
+}
+
+/// Derive the OPAQUE storage-key prefix for a member's blobs of a given `kind` ("mailbox" / "media" /
+/// "presign") in a circle (audit transport-F4). A blind relay sees only this keyed-MAC output, never
+/// the circle id; a non-member — lacking the member's circle secret — can't derive it, so they can
+/// neither name, list, nor fetch the circle's blobs. 128-bit prefix (collision-safe, compact).
+pub fn mailbox_prefix(circle_secret: &[u8; 32], circle_id: &str, kind: &str) -> String {
+    let mut msg = Vec::with_capacity(kind.len() + 1 + circle_id.len());
+    msg.extend_from_slice(kind.as_bytes());
+    msg.push(b':');
+    msg.extend_from_slice(circle_id.as_bytes());
+    let mac = blake3::keyed_hash(circle_secret, &msg);
+    hex(&mac.as_bytes()[..16])
 }
 
 /// Derive a per-event AEAD key from the epoch key + a per-event random salt, bound to the circle and
@@ -216,12 +252,14 @@ mod tests {
 
         // Epoch 0: everyone (Alice, Bob, Carol).
         let e0 = new_epoch_key();
+        let secret = new_circle_secret();
         let commit0 = seal_key_commit(
             &alice,
             &[alice.public(), bob.public(), carol.public()],
             "c1",
             0,
             &e0,
+            &secret,
         )
         .unwrap();
         // Carol can open epoch 0.
@@ -230,7 +268,7 @@ mod tests {
         // Membership change → epoch 1 sealed to ONLY Alice + Bob (Carol removed).
         let e1 = new_epoch_key();
         let commit1 =
-            seal_key_commit(&alice, &[alice.public(), bob.public()], "c1", 1, &e1).unwrap();
+            seal_key_commit(&alice, &[alice.public(), bob.public()], "c1", 1, &e1, &secret).unwrap();
 
         // Bob (still a member) gets epoch 1.
         assert_eq!(open_key_commit(&bob, &alice.public(), &commit1).unwrap().epoch_key, e1);
@@ -261,6 +299,18 @@ mod tests {
         let ev2 = post(&alice, 101, "again");
         let env2 = seal_event_in_epoch(&alice, "c1", 0, &key, &ev2).unwrap();
         assert!(open_event_in_epoch(&mallory.public(), &key, &env2).is_err());
+    }
+
+    #[test]
+    fn storage_prefix_is_opaque_and_member_derivable() {
+        let secret = new_circle_secret();
+        let p1 = mailbox_prefix(&secret, "default", "mailbox");
+        assert_eq!(p1, mailbox_prefix(&secret, "default", "mailbox"), "deterministic");
+        assert!(!p1.contains("default"), "opaque: the circle id is not in the prefix");
+        // A different member's secret → a different prefix (sender-keys storage).
+        assert_ne!(p1, mailbox_prefix(&new_circle_secret(), "default", "mailbox"));
+        // A different kind → a different prefix (mailbox vs media vs presign don't collide).
+        assert_ne!(p1, mailbox_prefix(&secret, "default", "media"));
     }
 
     #[test]
