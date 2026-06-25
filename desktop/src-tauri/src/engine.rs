@@ -1462,9 +1462,20 @@ impl Engine {
             _ => None,
         };
         if let Some(ev) = ev {
-            // Resolve a friendly name for the caller for the ringing UI.
+            // Only a known contact's call frames reach the UI — a stranger can't ring, inject, or
+            // negotiate a call (audit F3, iOS/Android parity). These frames are unsealed, so the
+            // self-asserted `from` is gated against the contact list here.
+            let from = ev.get("from").and_then(|v| v.as_str()).unwrap_or("");
+            if !self.is_contact(from) {
+                return;
+            }
             let _ = app.emit("haven:call", ev);
         }
+    }
+
+    /// Whether `hex` is a known contact — gates unsealed call control frames.
+    fn is_contact(&self, hex: &str) -> bool {
+        self.prefs.lock().unwrap().contacts.iter().any(|c| c.id_hex == hex)
     }
 
     pub fn call_group_invite(self: &Arc<Self>, session_id: String, group_name: String, roster: Vec<String>, to: Vec<String>) {

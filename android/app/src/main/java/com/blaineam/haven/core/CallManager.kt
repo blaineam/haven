@@ -127,7 +127,7 @@ object CallManager {
     private fun handle(type: Int, body: ByteArray) {
         when (type) {
             CallWire.GROUP_INVITE -> handleGroupInvite(body)
-            CallWire.INVITE -> CallWire.parseInviteName(body)?.let { (from, name) -> incoming(from, name, "legacy:$from", setOf(from, myHex)) }
+            CallWire.INVITE -> CallWire.parseInviteName(body)?.let { (from, name) -> if (knownContact(from)) incoming(from, name, "legacy:$from", setOf(from, myHex)) }
             CallWire.ACCEPT -> handleAccept(body)
             CallWire.HANGUP -> handleHangup(body)
             CallWire.OFFER -> handleOffer(body)
@@ -138,6 +138,7 @@ object CallManager {
 
     private fun handleGroupInvite(body: ByteArray) {
         val g = CallWire.parseGroupInvite(body) ?: return
+        if (!knownContact(g.from)) return   // only contacts can invite you (F3)
         val members = (g.roster + g.from + myHex).toSet()
         if (inCall.value || ringing.value || connecting.value) {
             if (sessionId == g.sessionId) {
@@ -161,7 +162,7 @@ object CallManager {
 
     private fun handleAccept(body: ByteArray) {
         val a = CallWire.parseAccept(body) ?: return
-        if (!validSession(a.sessionId)) return
+        if (!validSession(a.sessionId) || !knownContact(a.from)) return   // only a contact accepts (F3)
         connecting.value = false; inCall.value = true
         if (roster.add(a.from)) refreshParticipants()
         startMesh()
@@ -176,7 +177,7 @@ object CallManager {
 
     private fun handleOffer(body: ByteArray) {
         val s = CallWire.parseSignal(body, sessionId) ?: return
-        if (!validSession(s.sessionId)) return
+        if (!validSession(s.sessionId) || s.from !in roster) return   // only a participant negotiates (F3)
         if (!mediaStarted) startMesh()
         val sdp = CallSignal.decodeSdp(s.json) ?: return
         peerFor(s.from).onRemoteOffer(sdp.sdp)
@@ -184,19 +185,23 @@ object CallManager {
 
     private fun handleAnswer(body: ByteArray) {
         val s = CallWire.parseSignal(body, sessionId) ?: return
-        if (!validSession(s.sessionId)) return
+        if (!validSession(s.sessionId) || s.from !in roster) return
         val sdp = CallSignal.decodeSdp(s.json) ?: return
         peers[s.from]?.onRemoteAnswer(sdp.sdp)
     }
 
     private fun handleIce(body: ByteArray) {
         val s = CallWire.parseSignal(body, sessionId) ?: return
-        if (!validSession(s.sessionId)) return
+        if (!validSession(s.sessionId) || s.from !in roster) return
         val c = CallSignal.decodeCandidate(s.json) ?: return
         peerFor(s.from).addRemoteCandidate(c.candidate, c.mLineIndex, c.mid)
     }
 
     private fun validSession(sid: String) = sid == sessionId || sessionId.isEmpty()
+
+    /// An unsealed call control frame's self-asserted sender must be a known contact — a stranger
+    /// can't ring you, inject participants, or negotiate a call (audit F3, iOS parity).
+    private fun knownContact(hex: String): Boolean = HavenNet.contacts.any { it.idHex == hex }
 
     // ---- Media + mesh ----
 
