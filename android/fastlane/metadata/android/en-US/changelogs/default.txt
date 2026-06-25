@@ -1,0 +1,6 @@
+• Private, end-to-end encrypted circles for family and close friends
+• Posts, photos, videos, and 24-hour stories with a modern camera
+• Direct messages and peer-to-peer voice & video calls — no call server
+• Nearby sharing that works with no internet, phone to phone
+• Bring your own storage, or use a relay you run — no recurring cost
+• No account, phone number, or email — your identity stays on your device

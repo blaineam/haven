@@ -1,0 +1,15 @@
+Haven is a private social network for the people who actually matter. No ads. No tracking. No algorithm deciding what you see. No company server holding your memories.
+
+Everything you share is end-to-end encrypted with hybrid post-quantum cryptography and travels directly between your devices — over the internet, or over Bluetooth and Wi-Fi when you're together offline. Even we can't read it.
+
+• Private circles — share with family and close friends in separate, invite-only circles
+• Posts, photos, videos & stories — with a modern camera, easy captions, and a song
+• Direct messages & voice calls — 1:1, peer-to-peer, with no call server in the middle
+• Disappearing posts — you decide how long things stick around
+• Nearby sharing — works with no internet at all, phone to phone
+• Bring your own storage — keep memories alive on your own S3 bucket or a relay you run
+• No account, no phone number, no email — your identity lives only on your device
+
+Haven is a stronghold for the people you love. It's built so that no one — not advertisers, not data brokers, not even the people who made it — can get between you and your circle.
+
+Why there's no content moderation: your posts are end-to-end encrypted between the members of your own private circles. We run no server that can see them and we log nothing, so there is nothing for us to scan, sell, or hand over. You stay in control — you approve everyone who joins, and you can remove or block anyone at any time.
