@@ -93,8 +93,12 @@ delivery model admits without breaking offline use.
    relay mailbox), so iOS/macOS/Android/desktop inherit this through the shared core with **zero**
    networking changes. (Validation: rebuild bindings + smoke-test each platform.)
 5. ✅ **Relay:** unaffected (still ciphertext-only); KeyCommits ride the same transports as events.
-6. ⏳ **FS scheduling + retention-bounded key deletion**, plus a "share history → re-seal prior epochs to
-   a new member" path and retiring the legacy per-recipient event path. *Remaining.*
+6. ✅ **FS scheduling (bounded).** `prune_epoch_keys` keeps only the last 4 epoch keys (mine + per
+   peer) and deletes the rest on every rotation/commit, so a later compromise can't decrypt older
+   wire/relay ciphertext. `rotate_circle(circle_id)` forces a fresh epoch for periodic rotation (call
+   on a schedule). *Remaining (minor): wire the periodic `rotate_circle` cadence into each platform's
+   timer; a "share history → re-seal prior epochs to a new member" path; retire the legacy per-recipient
+   path once all clients are migrated.*
 
 ## Test obligations (per increment)
 

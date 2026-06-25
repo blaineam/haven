@@ -841,6 +841,34 @@ impl Circle {
         self.ensure_epoch();
         self.my_epoch += 1;
         self.my_epoch_keys.insert(self.my_epoch, new_epoch_key());
+        self.prune_epoch_keys();
+    }
+
+    /// Bounded forward secrecy (audit C2): keep only the most recent epoch keys (mine + each peer's)
+    /// and DELETE the rest. A later seed/device compromise then can't decrypt OLD ciphertext captured
+    /// from the wire/relay under a now-deleted key. My own posts always re-seal under the current
+    /// epoch on sync, so dropping old keys never blocks re-delivery.
+    fn prune_epoch_keys(&mut self) {
+        const KEEP_EPOCHS: usize = 4;
+        if self.my_epoch_keys.len() > KEEP_EPOCHS {
+            let mut epochs: Vec<u64> = self.my_epoch_keys.keys().copied().collect();
+            epochs.sort_unstable();
+            for e in &epochs[..epochs.len() - KEEP_EPOCHS] {
+                self.my_epoch_keys.remove(e);
+            }
+        }
+        let mut by_peer: HashMap<String, Vec<u64>> = HashMap::new();
+        for (peer, epoch) in self.peer_epoch_keys.keys() {
+            by_peer.entry(peer.clone()).or_default().push(*epoch);
+        }
+        for (peer, mut epochs) in by_peer {
+            if epochs.len() > KEEP_EPOCHS {
+                epochs.sort_unstable();
+                for e in &epochs[..epochs.len() - KEEP_EPOCHS] {
+                    self.peer_epoch_keys.remove(&(peer.clone(), *e));
+                }
+            }
+        }
     }
     fn current_key(&self) -> Option<[u8; 32]> {
         self.my_epoch_keys.get(&self.my_epoch).copied()
@@ -952,6 +980,7 @@ fn receive_key_commit(st: &mut NetState, idx: usize, body: &[u8]) -> Result<bool
             is_new = !c.peer_epoch_keys.contains_key(&key);
             c.peer_epoch_keys.entry(key).or_insert(opened.epoch_key);
         }
+        c.prune_epoch_keys(); // bounded forward secrecy: drop stale keys
     }
     if is_new {
         drain_pending(st, idx); // a newly-learned key may unlock events that arrived early
@@ -1140,6 +1169,17 @@ impl HavenSocial {
         let mut st = self.state.lock().unwrap();
         for c in st.circles.iter_mut() {
             purge_member_from_circle(c, &node_hex);
+        }
+    }
+
+    /// Force a fresh epoch for a circle — periodic forward-secrecy rotation (audit C2). My next key
+    /// commit seals a new key to the current members; the previous key ages out of the retained
+    /// window, so wire/relay ciphertext sealed under it can't be decrypted by a future compromise.
+    /// Safe to call on a schedule (e.g. daily).
+    pub fn rotate_circle(&self, circle_id: String) {
+        let mut st = self.state.lock().unwrap();
+        if let Some(c) = st.circles.iter_mut().find(|c| c.id == circle_id) {
+            c.rotate_epoch();
         }
     }
 
@@ -1812,5 +1852,25 @@ mod net_tests {
         // A plain (unsigned) seal_media blob — the old spoofable form — can't pass as signed.
         let plain = alice.seal_media(bob.my_node_hex(), b"spoof".to_vec()).unwrap();
         assert!(open_signed_notification_with_seed([31u8; 32].to_vec(), plain).is_none());
+    }
+
+    #[test]
+    fn old_epoch_keys_are_pruned_for_forward_secrecy() {
+        let alice = HavenSocial::new([40u8; 32].to_vec()).unwrap();
+        let cid = DEFAULT_CIRCLE.to_string();
+        alice.post(cid.clone(), "bootstrap".into(), vec![], None, None, false, false, 1).unwrap();
+        for _ in 0..10 {
+            alice.rotate_circle(cid.clone());
+        }
+        let ps: PersistState = serde_json::from_slice(&alice.export_state()).unwrap();
+        let circle = ps.circles.iter().find(|c| c.id == cid).unwrap();
+        assert!(circle.my_epoch >= 10, "epoch advanced through the rotations");
+        assert!(
+            circle.my_epoch_keys.len() <= 4,
+            "old epoch keys are pruned (bounded FS); retained {}",
+            circle.my_epoch_keys.len()
+        );
+        // Posting still works after pruning (current epoch key is always retained).
+        assert!(!alice.post(cid, "after rotations".into(), vec![], None, None, false, false, 2).unwrap().is_empty());
     }
 }
