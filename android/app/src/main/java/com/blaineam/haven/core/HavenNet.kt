@@ -97,7 +97,10 @@ object HavenNet : InboundListener {
     // node ids we initiated a connect to (scanned their QR) → expected verify hash.
     private val initiated = HashMap<String, String>()
 
-    private val stateFile: File get() = File(appContext.filesDir, "haven_social_state.bin")
+    // Keyed by node id so a NEW identity never inherits a previous identity's events (the social
+    // store isn't tied to the seed otherwise — that let an old friendship's posts leak in).
+    private val stateFile: File get() = File(appContext.filesDir, "haven_social_state_${core.nodeIdHex}.bin")
+    private val legacyStateFile: File get() = File(appContext.filesDir, "haven_social_state.bin")
     private val prefs get() = appContext.getSharedPreferences("haven.contacts", Context.MODE_PRIVATE)
 
     @Volatile private var ready = false
@@ -970,6 +973,14 @@ object HavenNet : InboundListener {
     }
 
     private fun restoreState() {
+        // Migrate the old shared (un-keyed) state into THIS identity's keyed file once, then delete
+        // the shared file so no future identity can pick it up.
+        if (!stateFile.exists() && legacyStateFile.exists()) {
+            runCatching { social.importState(legacyStateFile.readBytes()) }
+            runCatching { stateFile.writeBytes(social.exportState()) }
+            runCatching { legacyStateFile.delete() }
+            return
+        }
         if (stateFile.exists()) {
             runCatching { social.importState(stateFile.readBytes()) }
                 .onFailure { Log.e(TAG, "restore failed", it) }
@@ -1067,6 +1078,7 @@ object HavenNet : InboundListener {
         activeCircle.value = DEFAULT_CIRCLE
         prefs.edit().clear().apply()
         runCatching { stateFile.delete() }
+        runCatching { legacyStateFile.delete() }
         feedVersion.value++
     }
 
