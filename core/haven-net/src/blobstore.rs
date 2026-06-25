@@ -108,6 +108,10 @@ fn keys_to_pull(root: &Path, peer_keys: &[String]) -> Vec<String> {
     out
 }
 
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
 fn safe_path(root: &Path, key: &str) -> Result<PathBuf> {
     if key.is_empty() || key.len() > MAX_KEY {
         bail!("bad key length");
@@ -230,14 +234,18 @@ impl BlobServer {
             tokio::spawn(async move {
                 let Ok(connecting) = incoming.accept() else { return };
                 let Ok(conn) = connecting.await else { return };
+                // The verified iroh node id of the peer — used to enforce per-account self-sync slot
+                // ownership (audit F3). Equals the peer's Haven node hex (same key).
+                let peer = hex(conn.remote_id().as_bytes());
                 loop {
                     match conn.accept_bi().await {
                         Ok((send, recv)) => {
                             let root = root.clone();
+                            let peer = peer.clone();
                             tokio::spawn(async move {
                                 // A handler error must never poison the connection; just
                                 // drop the stream. Nothing is logged (no-log posture).
-                                let _ = handle_request(root, send, recv).await;
+                                let _ = handle_request(root, peer, send, recv).await;
                             });
                         }
                         Err(_) => break,
@@ -252,6 +260,7 @@ impl BlobServer {
 /// stored and returned verbatim, never inspected.
 async fn handle_request(
     root: PathBuf,
+    peer: String,
     mut send: iroh::endpoint::SendStream,
     mut recv: iroh::endpoint::RecvStream,
 ) -> Result<()> {
@@ -272,6 +281,18 @@ async fn handle_request(
             return Ok(());
         }
     };
+
+    // Self-sync slots (`self/<accountHex>/state/<device>`) are private to their owning account — only
+    // the account owner (the verified connecting peer) may read/write/list them (audit F3). Without
+    // this, any node that learns the relay id could enumerate + fetch another account's device slots.
+    if let Some(rest) = key.strip_prefix("self/") {
+        let account = rest.split('/').next().unwrap_or("");
+        if account != peer {
+            let _ = send.write_all(b"ERR forbidden").await;
+            let _ = send.finish();
+            return Ok(());
+        }
+    }
 
     match verb {
         VERB_PUT => {
