@@ -27,8 +27,22 @@
 
 use std::collections::BTreeMap;
 
+use hkdf::Hkdf;
+use rand::rngs::OsRng;
+use rand::RngCore;
+use sha2::Sha256;
+
 use crate::crypto;
 use crate::{CoreError, Result};
+
+/// Derive a fresh per-blob key from the long-lived self-sync key + a random salt, so the static key
+/// is never used directly as an AES-GCM key (avoids random-nonce reuse across many seals — audit M1).
+fn selfsync_subkey(self_key: &[u8; 32], salt: &[u8]) -> [u8; 32] {
+    let hk = Hkdf::<Sha256>::new(Some(salt), self_key);
+    let mut okm = [0u8; 32];
+    hk.expand(b"haven-selfsync-msg-v1", &mut okm).expect("32 is a valid HKDF length");
+    okm
+}
 
 /// A last-write-wins timestamp: the writing device's wall-clock (ms) with the device's 32-byte
 /// id as a deterministic tiebreak when two writes claim the same instant. Ordering is
@@ -199,14 +213,25 @@ impl AccountState {
         Ok(Self { records, cursors })
     }
 
-    /// Self-encrypt for the mailbox. `self_key` is [`Identity::self_sync_key`].
+    /// Self-encrypt for the mailbox. `self_key` is [`Identity::self_sync_key`]. Layout: salt(16) ‖
+    /// AES-GCM(subkey). A fresh subkey per blob means the long-lived key is never reused directly.
     pub fn seal(&self, self_key: &[u8; 32]) -> Vec<u8> {
-        crypto::seal(self_key, &self.to_bytes())
+        let mut salt = [0u8; 16];
+        OsRng.fill_bytes(&mut salt);
+        let key = selfsync_subkey(self_key, &salt);
+        let mut out = salt.to_vec();
+        out.extend_from_slice(&crypto::seal(&key, &self.to_bytes()));
+        out
     }
 
     /// Decrypt a blob produced by [`Self::seal`] (fails on a wrong key / tamper via the AEAD).
     pub fn open(self_key: &[u8; 32], sealed: &[u8]) -> Result<Self> {
-        Self::from_bytes(&crypto::open(self_key, sealed)?)
+        if sealed.len() < 16 {
+            return Err(CoreError::Crypto("self-sync blob too short"));
+        }
+        let (salt, ct) = sealed.split_at(16);
+        let key = selfsync_subkey(self_key, salt);
+        Self::from_bytes(&crypto::open(&key, ct)?)
     }
 }
 
