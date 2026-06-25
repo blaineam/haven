@@ -157,6 +157,10 @@ object HavenNet : InboundListener {
             while (true) {
                 delay(15_000)
                 runCatching { pollMailbox() }
+                // Persistently retry any media an interrupted nearby/iroh transfer left incomplete —
+                // pull from the circle relay AND re-request from peers every tick until nothing is
+                // missing, so posts never stay fragmented (parity with iOS).
+                runCatching { requestMissingMedia() }
             }
         }
     }
@@ -414,7 +418,12 @@ object HavenNet : InboundListener {
             saveContacts()
         }
         persist()
-        if (helloBack) sendHello(circleId, idHex)
+        if (helloBack) {
+            sendHello(circleId, idHex)
+            // I'm the accepter sharing history → make sure the relay holds it ASAP so the new member
+            // can pull from the relay if the direct back-fill doesn't reach them.
+            scope.launch { backfillHistoryToRelay(circleId) }
+        }
     }
 
     /** Send our Hello + (optionally) back-fill this circle's events to one node. */
@@ -774,6 +783,23 @@ object HavenNet : InboundListener {
         for (item in feed) if (item.isMe) item.media.forEach { if (LocalMedia.has(it)) uploadMedia(circleId, it) }
     }
 
+    /** Ensure the relay holds this circle's FULL history (every event + every media blob I hold,
+     *  not just my own) ASAP, so a newly-added member who can't receive it directly can pull it from
+     *  the relay — no fragmented posts. Parity with iOS backfillMailboxMedia. No-op without a mailbox. */
+    private suspend fun backfillHistoryToRelay(circleId: String) {
+        if (relaysFor(circleId).isEmpty() && !Presign.hasBootstrap(circleId)) return
+        for (env in runCatching { social.syncEnvelopes(circleId) }.getOrDefault(emptyList())) {
+            uploadEvent(circleId, env)
+        }
+        val refs = LinkedHashSet<String>()
+        val feed = runCatching { social.feed(circleId, nowMs(), null) }.getOrDefault(emptyList())
+        for (item in feed) {
+            refs.addAll(item.media)
+            item.comments.forEach { refs.addAll(it.media) }
+        }
+        for (ref in refs) if (LocalMedia.has(ref)) uploadMedia(circleId, ref)
+    }
+
     /** Poll every circle's mailbox; ingest envelopes we haven't seen. */
     suspend fun pollMailbox() {
         if (!ready) return
@@ -852,7 +878,10 @@ object HavenNet : InboundListener {
                     withContext(Dispatchers.Main) { feedVersion.value++ }
                     return@launch
                 }
-                if (!requestedRefs.add(ref)) return@launch   // ask peers once per session per ref
+                // Relay couldn't serve it (none configured, or it doesn't hold it yet) → re-request
+                // from peers. Retried on each sweep, not once per session, so an interrupted peer
+                // transfer with no relay still completes (chunk re-sends fill the gaps).
+                requestedRefs.add(ref)
                 val payload = myHex.toByteArray(Charsets.UTF_8) + ref.toByteArray(Charsets.UTF_8)
                 for (idHex in contacts.map { it.idHex }) sendFrame(Wire.MEDIA_REQ, payload, idHex)
             }
