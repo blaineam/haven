@@ -32,8 +32,10 @@ final class NotificationService: UNNotificationServiceExtension {
         guard let e = request.content.userInfo["e"] as? String,
               let sealed = Data(base64Encoded: e),
               let seed = SharedSeed.read(),
-              let plain = openSealedWithSeed(seed: seed, sealed: sealed),
-              let (title, body) = Self.decode(plain) else {
+              // Authenticated open: rejects an alert that isn't validly SIGNED by its sender (audit
+              // H2) — a forger who only knows our public key can no longer spoof a banner.
+              let opened = openSignedNotificationWithSeed(seed: seed, blob: sealed),
+              let (title, body) = Self.decode(opened.data) else {
             // Couldn't decrypt — keep the relay's generic banner (don't leak/guess content).
             if best.body.isEmpty { best.body = "New activity" }
             contentHandler(best)

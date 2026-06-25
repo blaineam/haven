@@ -145,8 +145,9 @@ extension PushManager: PKPushRegistryDelegate {
             var name = "Someone", peerHex = ""
             if let e = payload.dictionaryPayload["e"] as? String, e != "_",
                let sealed = Data(base64Encoded: e), let seed = SharedSeed.read(),
-               let plain = openSealedWithSeed(seed: seed, sealed: sealed),
-               let obj = try? JSONSerialization.jsonObject(with: plain) as? [String: String] {
+               // Authenticated open: only a validly-signed caller payload rings the phone (audit H2).
+               let opened = openSignedNotificationWithSeed(seed: seed, blob: sealed),
+               let obj = try? JSONSerialization.jsonObject(with: opened.data) as? [String: String] {
                 name = obj["t"] ?? name
                 peerHex = obj["h"] ?? ""
             }

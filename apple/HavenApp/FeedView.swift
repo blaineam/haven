@@ -704,8 +704,9 @@ final class FeedStore: ObservableObject {
         PushManager.shared.syncSelf(event: eventB64)   // multi-device: deliver to my own other devices
         for nodeHex in members {
             sendIroh(1, payload, to: nodeHex)
-            // Seal the banner to this recipient; the relay forwards it blind, their NSE decrypts.
-            let sealed = notifJSON.isEmpty ? nil : try? social?.sealMedia(recipientNodeHex: nodeHex, data: notifJSON)
+            // Seal + SIGN the banner to this recipient; the relay forwards it blind, their NSE
+            // decrypts AND verifies it really came from us (audit H2).
+            let sealed = notifJSON.isEmpty ? nil : try? social?.sealSignedNotification(recipientNodeHex: nodeHex, data: notifJSON)
             PushManager.shared.wake(nodeHex, ciphertext: sealed?.base64EncodedString(), event: eventB64)
         }
         if !circleId.hasPrefix("dm:") { nearbyBroadcast(1, payload) }   // never broadcast DMs to nearby
@@ -994,7 +995,7 @@ final class FeedStore: ObservableObject {
         // Seal {caller name, caller node id} to the callee. Their PushKit handler decrypts it and
         // shows the system incoming-call screen via CallKit (ring-from-killed). Worker stays blind.
         let json = (try? JSONSerialization.data(withJSONObject: ["t": callerName, "h": myNodeHex])) ?? Data()
-        let sealed = try? social.sealMedia(recipientNodeHex: nodeHex, data: json)
+        let sealed = try? social.sealSignedNotification(recipientNodeHex: nodeHex, data: json)
         PushManager.shared.callPush(to: nodeHex, ciphertext: sealed?.base64EncodedString())
     }
 

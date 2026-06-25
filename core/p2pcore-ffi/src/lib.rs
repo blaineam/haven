@@ -240,6 +240,55 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// An opened, sender-authenticated push notification (audit H2).
+#[derive(uniffi::Record)]
+pub struct SignedNotification {
+    /// The verified author's node id (hex). The receiver should still confirm it's a known contact
+    /// before trusting the display name — the signature proves authenticity, not authorization.
+    pub sender_hex: String,
+    pub data: Vec<u8>,
+}
+
+/// The bytes a notification signature covers: a domain tag ‖ the recipient node id ‖ the plaintext.
+/// Binding the recipient stops a captured notification being replayed at a different user.
+fn notif_signing_bytes(recipient_hex: &str, plaintext: &[u8]) -> Vec<u8> {
+    let mut v = Vec::with_capacity(14 + recipient_hex.len() + plaintext.len());
+    v.extend_from_slice(b"haven-notif-v1");
+    v.extend_from_slice(recipient_hex.as_bytes());
+    v.extend_from_slice(plaintext);
+    v
+}
+
+/// NSE/recipient side: open a SIGNED push notification with the seed alone, verifying the carried
+/// sender bundle actually authored it. Defeats the spoof where anyone holding the recipient's public
+/// key seals an arbitrary "Alice|…" alert — a forger can only sign as *themselves*, never as a
+/// contact, and the bound recipient prevents replay. Layout:
+/// [u32 bundle_len][bundle][u32 sig_len][sig][seal_media output].
+#[uniffi::export]
+pub fn open_signed_notification_with_seed(seed: Vec<u8>, blob: Vec<u8>) -> Option<SignedNotification> {
+    let seed_arr: [u8; 32] = seed.clone().try_into().ok()?;
+    let me = Identity::from_seed(&seed_arr);
+    let recipient_hex = hex(&me.public().node_id_bytes());
+    if blob.len() < 4 {
+        return None;
+    }
+    let blen = u32::from_le_bytes(blob[0..4].try_into().ok()?) as usize;
+    if blob.len() < 8 + blen {
+        return None;
+    }
+    let bundle = &blob[4..4 + blen];
+    let slen = u32::from_le_bytes(blob[4 + blen..8 + blen].try_into().ok()?) as usize;
+    if blob.len() < 8 + blen + slen {
+        return None;
+    }
+    let sig = &blob[8 + blen..8 + blen + slen];
+    let sealed = blob[8 + blen + slen..].to_vec();
+    let plaintext = open_sealed_with_seed(seed, sealed)?;
+    let sender = HavenId::from_bytes(bundle).ok()?;
+    sender.verify(&notif_signing_bytes(&recipient_hex, &plaintext), sig).ok()?;
+    Some(SignedNotification { sender_hex: hex(&sender.node_id_bytes()), data: plaintext })
+}
+
 // ===== Circle relay / mailbox (haven-relay blob store over Haven Net) =====
 
 /// A parsed relay link: which circle, and the member node ids the relay serves.
@@ -1387,6 +1436,24 @@ impl HavenSocial {
         Ok(out)
     }
 
+    /// Seal a push notification payload to a recipient AND sign it, so the recipient's NSE can prove
+    /// who sent it (audit H2 — defeats the "anyone with my public key forges an alert" spoof). Used
+    /// only for the small notification payload, NOT for media chunks (which would balloon with a
+    /// per-chunk signature). Layout: [u32 bundle_len][sender bundle][u32 sig_len][sig][seal_media].
+    pub fn seal_signed_notification(&self, recipient_node_hex: String, data: Vec<u8>) -> Result<Vec<u8>, HavenError> {
+        let sealed = self.seal_media(recipient_node_hex.clone(), data.clone())?;
+        let st = self.state.lock().unwrap();
+        let bundle = st.me.public().to_bytes();
+        let sig = st.me.sign(&notif_signing_bytes(&recipient_node_hex, &data));
+        let mut out = Vec::with_capacity(8 + bundle.len() + sig.len() + sealed.len());
+        out.extend_from_slice(&(bundle.len() as u32).to_le_bytes());
+        out.extend_from_slice(&bundle);
+        out.extend_from_slice(&(sig.len() as u32).to_le_bytes());
+        out.extend_from_slice(&sig);
+        out.extend_from_slice(&sealed);
+        Ok(out)
+    }
+
     /// Open a media blob sealed to us by a contact. Returns the plaintext bytes.
     pub fn open_media(&self, sealed: Vec<u8>) -> Option<Vec<u8>> {
         if sealed.len() < 36 {
@@ -1720,5 +1787,30 @@ mod net_tests {
             0,
             "removed bob cannot read content posted after his removal (cryptographic revocation)"
         );
+    }
+
+    #[test]
+    fn signed_notification_authenticates_the_sender() {
+        let alice = HavenSocial::new([30u8; 32].to_vec()).unwrap();
+        let bob = HavenSocial::new([31u8; 32].to_vec()).unwrap();
+        let cid = DEFAULT_CIRCLE.to_string();
+        let bob_hex = alice.add_contact_bundle(cid.clone(), bob.my_bundle()).unwrap();
+        bob.add_contact_bundle(cid.clone(), alice.my_bundle()).unwrap();
+
+        // Alice → signed notification to Bob; Bob's seed alone opens it AND proves it was really Alice.
+        let blob = alice.seal_signed_notification(bob_hex, b"Alice|hey".to_vec()).unwrap();
+        let opened = open_signed_notification_with_seed([31u8; 32].to_vec(), blob.clone()).unwrap();
+        assert_eq!(opened.data, b"Alice|hey");
+        assert_eq!(opened.sender_hex, alice.my_node_hex());
+
+        // Tampering anywhere → rejected.
+        let mut bad = blob.clone();
+        let n = bad.len() - 1;
+        bad[n] ^= 0xff;
+        assert!(open_signed_notification_with_seed([31u8; 32].to_vec(), bad).is_none());
+
+        // A plain (unsigned) seal_media blob — the old spoofable form — can't pass as signed.
+        let plain = alice.seal_media(bob.my_node_hex(), b"spoof".to_vec()).unwrap();
+        assert!(open_signed_notification_with_seed([31u8; 32].to_vec(), plain).is_none());
     }
 }
