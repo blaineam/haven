@@ -60,8 +60,11 @@ export default {
         // media is P2P DTLS-SRTP. This is a one-shot doorbell.
         const { nodeId, ciphertext } = await request.json();
         if (!nodeId) return json({ error: "nodeId required" }, 400);
+        if (await rateLimited(env, request, "call")) return json({ ok: true }, 200);
         const rec = await env.TOKENS.get(`voip:${nodeId}`, "json");
-        if (!rec || !rec.token) return json({ error: "no voip token" }, 404);
+        // Uniform response whether or not the node is registered (audit F6): a distinguishable 404
+        // would let anyone enumerate which node-ids are real, call-capable Haven users.
+        if (!rec || !rec.token) return json({ ok: true }, 200);
         const jwt = await providerToken(env);
         const host = rec.sandbox ? "api.sandbox.push.apple.com" : (env.APNS_HOST || "api.push.apple.com");
         const res = await fetch(`https://${host}/3/device/${rec.token}`, {
@@ -86,9 +89,11 @@ export default {
         // The relay reads neither `e` nor `ev` (both ciphertext).
         const { nodeId, ciphertext, event, silent } = await request.json();
         if (!nodeId || (!silent && !ciphertext)) return json({ error: "nodeId required" }, 400);
+        if (await rateLimited(env, request, "notify")) return json({ ok: true }, 200);
         const rec = await env.TOKENS.get(nodeId, "json");
         const tokens = rec ? (rec.tokens || (rec.token ? [{ token: rec.token, sandbox: rec.sandbox }] : [])) : [];
-        if (!tokens.length) return json({ error: "unknown node" }, 404);
+        // Uniform response for an unknown node (audit F6) — no existence oracle.
+        if (!tokens.length) return json({ ok: true }, 200);
 
         const jwt = await providerToken(env);
         // Payload is per-token: macOS has no Notification Service Extension, so instead of an
@@ -178,6 +183,17 @@ export default {
 
 function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), { status, headers: { "content-type": "application/json" } });
+}
+
+/// Soft per-source-IP rate limit (audit F6) so the blind doorbell can't be used to push-spam, ring,
+/// or battery-drain a victim. KV is eventually consistent, so this is a best-effort cap, not a hard
+/// gate; combine with Cloudflare's own rate-limiting rules for stricter control. ~60 requests/min/IP.
+async function rateLimited(env, request, bucket, limit = 60) {
+  const ip = request.headers.get("cf-connecting-ip") || "unknown";
+  const key = `rl:${bucket}:${ip}`;
+  const n = parseInt((await env.TOKENS.get(key)) || "0", 10) + 1;
+  await env.TOKENS.put(key, String(n), { expirationTtl: 60 });
+  return n > limit;
 }
 
 // ---- APNs provider JWT (ES256), cached ~50 min ----
