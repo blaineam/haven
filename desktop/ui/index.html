@@ -10,6 +10,13 @@
     <script src="app.js" type="module" defer></script>
   </head>
   <body>
+    <div class="titlebar" data-tauri-drag-region>
+      <div class="traffic">
+        <button class="tl close" id="win-close" aria-label="Close window"></button>
+        <button class="tl min" id="win-min" aria-label="Minimize window"></button>
+        <button class="tl max" id="win-max" aria-label="Zoom window"></button>
+      </div>
+    </div>
     <div id="app">
       <aside class="nav">
         <div class="brand">

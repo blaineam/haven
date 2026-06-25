@@ -349,3 +349,29 @@ html { -webkit-text-size-adjust: 100%; }
 /* macOS-style inset on text controls + a calmer focus ring than the browser default. */
 input, textarea, select { box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.06); }
 :focus-visible { outline: none; }
+
+/* ---- macOS-style custom title bar ----
+   Native Win32/GTK frames are the single most "not a Mac" element, so we hide the OS decorations
+   (tauri.conf decorations:false) and draw a slim draggable bar with left-aligned traffic lights.
+   The bar spans the full width and is the window drag handle; the dots float over the frosted
+   sidebar at the left. nav/view get top padding so their content clears it. */
+.titlebar {
+  position: fixed; top: 0; left: 0; right: 0; height: 30px; z-index: 100;
+  display: flex; align-items: center; padding: 0 13px; user-select: none;
+}
+.titlebar .traffic { display: flex; gap: 8px; align-items: center; }
+.tl {
+  width: 12px; height: 12px; border-radius: 50%; border: 0; padding: 0; cursor: default;
+  box-shadow: inset 0 0 0 0.5px rgba(0, 0, 0, 0.20); transition: filter .15s var(--spring);
+  display: flex; align-items: center; justify-content: center;
+}
+.tl.close { background: #ff5f57; } .tl.min { background: #febc2e; } .tl.max { background: #28c840; }
+.titlebar:not(:hover) .tl { filter: saturate(0.78) brightness(0.96); }   /* dim until hovered, like macOS */
+.tl:active { filter: brightness(0.82); }
+/* Glyphs reveal on hover (close ×, minimize –, zoom +), matching macOS. */
+.tl::before { content: ""; font-size: 10px; line-height: 1; font-weight: 700; color: rgba(0,0,0,0.55); opacity: 0; transition: opacity .12s; }
+.titlebar:hover .tl.close::before { content: "\00d7"; opacity: 1; }
+.titlebar:hover .tl.min::before { content: "\2013"; opacity: 1; }
+.titlebar:hover .tl.max::before { content: "\002b"; opacity: 1; }
+.nav { padding-top: 40px; }     /* clear the traffic lights */
+.view { padding-top: 42px; }    /* clear the drag strip so headers/buttons stay clickable */

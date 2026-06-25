@@ -1248,3 +1248,13 @@ async function boot() {
 }
 
 window.addEventListener("DOMContentLoaded", boot);
+
+// macOS-style titlebar window controls (traffic lights). `withGlobalTauri` exposes the window API.
+(() => {
+  const w = window.__TAURI__?.window?.getCurrentWindow?.();
+  if (!w) return; // not running under Tauri (e.g. the browser style gallery) — buttons are inert
+  const on = (id, fn) => document.getElementById(id)?.addEventListener("click", fn);
+  on("win-close", () => w.close());
+  on("win-min", () => w.minimize());
+  on("win-max", () => w.toggleMaximize());
+})();
