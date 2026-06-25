@@ -260,7 +260,7 @@ struct AdvancedView: View {
             Toggle(isOn: $iCloudSync) {
                 VStack(alignment: .leading, spacing: 2) {
                     Label("Sync across my Apple devices", systemImage: "icloud.fill").font(.subheadline.weight(.medium))
-                    Text("Use the same identity on your iPhone, iPad, and Mac via iCloud Keychain (end-to-end encrypted by Apple).")
+                    Text("Use the same identity on your iPhone, iPad, and Mac via iCloud Keychain (end-to-end encrypted by Apple). Identities you've rolled stay recoverable in iCloud too — turn this off to keep them on this device only.")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             }
