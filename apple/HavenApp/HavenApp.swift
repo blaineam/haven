@@ -302,6 +302,12 @@ struct RootView: View {
             }
             if t == "messages" { feedStore.markMessagesSeen() }
         }
+        // Minimized call → a slim return bar sits just above the tab bar (out of the way of menus).
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            CallReturnBar()
+                .animation(HavenTheme.smooth, value: CallManager.shared.minimized)
+                .animation(HavenTheme.smooth, value: CallManager.shared.inCall)
+        }
         .overlay {
             CallOverlay()
                 .animation(HavenTheme.smooth, value: CallManager.shared.connecting)

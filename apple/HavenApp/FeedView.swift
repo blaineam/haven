@@ -809,6 +809,7 @@ final class FeedStore: ObservableObject {
         case 19: handleRelayNode(payload)                   // circle relay/mailbox node id
         case 20: handlePresignBootstrap(payload)            // pre-signed S3 pool bootstrap url
         case 21: CallManager.shared.handleGroupInvite(payload)  // WebRTC mesh group-call invite
+        case 22: CallManager.shared.handleCameraState(payload)  // peer toggled their camera on/off
         default: break
         }
     }

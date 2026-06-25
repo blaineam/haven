@@ -52,6 +52,9 @@ final class CallManager: NSObject, ObservableObject {
     @Published var minimized = false
     /// Per-peer remote video tracks for the grid (nil tile = audio-only / no camera).
     @Published private(set) var remoteVideoTracks: [String: RTCVideoTrack] = [:]
+    /// Peers who signalled their camera is OFF. We show their avatar instead of the last (now frozen)
+    /// video frame — a paused camera otherwise leaves a stale still on the other side.
+    @Published private(set) var remoteCameraOff: Set<String> = []
     /// Per-peer remote SCREEN-share tracks (a peer's second video track, `screen0`). When non-empty
     /// the grid promotes that peer's screen to the dominant tile.
     @Published private(set) var remoteScreenTracks: [String: RTCVideoTrack] = [:]
@@ -644,6 +647,7 @@ final class CallManager: NSObject, ObservableObject {
         peers[peer] = nil
         remoteVideoTracks[peer] = nil
         remoteScreenTracks[peer] = nil
+        remoteCameraOff.remove(peer)
         roster.remove(peer)
         refreshParticipants()
     }
@@ -711,6 +715,7 @@ final class CallManager: NSObject, ObservableObject {
         if videoOn {
             videoOn = false; localVideoTrack = nil
             for conn in peers.values { conn.call.stopVideo() }
+            broadcastCameraState(false)   // tell peers to drop my (now frozen) frame → show my avatar
             renegotiateAll()
         } else {
             AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
@@ -721,10 +726,29 @@ final class CallManager: NSObject, ObservableObject {
                     self.localVideoTrack = self.peers.values.first?.call.localVideoTrack
                     self.frontCamera = self.peers.values.first?.call.usingFrontCamera ?? true
                     self.videoOn = true
+                    self.broadcastCameraState(true)
                     self.renegotiateAll()
                 }
             }
         }
+    }
+
+    /// Frame 22: tell every peer whether my camera is on, so they show live video vs. my avatar
+    /// immediately (instead of a frozen last frame) when I pause the camera.
+    private func broadcastCameraState(_ on: Bool) {
+        var f = Data(myHex.utf8)
+        CallManager.lpAppend(&f, Data(sessionId.utf8))
+        f.append(on ? 1 : 0)
+        for p in invitees() { FeedStore.shared.sendCallFrame(22, f, to: p) }
+    }
+
+    /// A peer signalled their camera on/off (frame 22).
+    func handleCameraState(_ payload: Data) {
+        guard payload.count > 64 else { return }
+        let from = String(data: payload.prefix(64), encoding: .utf8) ?? ""
+        guard from.count == 64 else { return }
+        let on = payload.last == 1   // trailing flag byte
+        if on { remoteCameraOff.remove(from) } else { remoteCameraOff.insert(from) }
     }
 
     /// Adding/removing a track mid-call needs a fresh offer from the side that changed — a track I
@@ -921,7 +945,7 @@ final class CallManager: NSObject, ObservableObject {
         audio.lockForConfiguration(); try? audio.setActive(false); audio.unlockForConfiguration()
         #endif
         #endif
-        remoteVideoTracks.removeAll(); remoteScreenTracks.removeAll(); participants = []
+        remoteVideoTracks.removeAll(); remoteScreenTracks.removeAll(); remoteCameraOff.removeAll(); participants = []
         localVideoTrack = nil; videoOn = false; screenShareOn = false
         ringing = false; speakerOn = false; muted = false; minimized = false
         isCaller = false; mediaStarted = false
@@ -1122,40 +1146,9 @@ struct CallOverlay: View {
     @ObservedObject private var call = CallManager.shared
     var body: some View {
         if call.ringing { incoming }
-        else if call.inCall || call.connecting {
-            if call.minimized { minimizedPill } else { active }
-        }
-    }
-
-    /// Collapsed call: a floating pill at the top. The rest of the overlay is empty so touches pass
-    /// straight through to the app — the user can browse the feed, open a DM, etc., mid-call.
-    private var minimizedPill: some View {
-        VStack {
-            HStack(spacing: 10) {
-                Image(systemName: call.videoOn ? "video.fill" : "phone.fill")
-                    .font(.subheadline).foregroundStyle(.white)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(call.peerName.isEmpty ? "On call" : call.peerName)
-                        .font(.subheadline.weight(.semibold)).foregroundStyle(.white).lineLimit(1)
-                    Text(statusText).font(.caption2).foregroundStyle(.white.opacity(0.85))
-                }
-                Spacer(minLength: 8)
-                Button { CallManager.shared.endCall() } label: {
-                    Image(systemName: "phone.down.fill").font(.subheadline).foregroundStyle(.white)
-                        .frame(width: 34, height: 34).background(Color.red, in: Circle())
-                }
-            }
-            .padding(.horizontal, 14).padding(.vertical, 10)
-            .background(HavenTheme.brand.opacity(0.96), in: Capsule())
-            .overlay(Capsule().strokeBorder(.white.opacity(0.18)))
-            .shadow(color: .black.opacity(0.3), radius: 10, y: 4)
-            .padding(.horizontal, 12).padding(.top, 8)
-            .contentShape(Capsule())
-            .onTapGesture { call.minimized = false }   // tap the pill to return to the call
-            Spacer()
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-        .transition(.move(edge: .top).combined(with: .opacity))
+        // Minimized → render nothing here; the return-to-call bar lives above the tab bar
+        // (CallReturnBar) so it's out of the way of the app's own nav/menus.
+        else if (call.inCall || call.connecting) && !call.minimized { active }
     }
 
     private var incoming: some View {
@@ -1194,6 +1187,11 @@ struct CallOverlay: View {
             if let shareHex = call.remoteScreenTracks.keys.sorted().first,
                let screen = call.remoteScreenTracks[shareHex] {
                 screenStage(shareHex, track: screen)
+            } else if call.participants.count == 1, let hex = call.participants.first {
+                // 1:1 — the other person fills the screen edge-to-edge (no tile margin, badge, or
+                // active-speaker border); their name is already in the top bar. Group calls (2+) use
+                // the bordered, badged grid instead.
+                soloTile(hex)
             } else {
                 grid
             }
@@ -1216,26 +1214,28 @@ struct CallOverlay: View {
                 }
             }
             VStack(spacing: 16) {
-                VStack(spacing: 2) {
-                    Text(call.peerName.isEmpty ? "Call" : call.peerName).font(.headline).foregroundStyle(.white)
-                    Text(statusText).font(.caption).foregroundStyle(.white.opacity(0.85))
+                ZStack {
+                    VStack(spacing: 2) {
+                        Text(call.peerName.isEmpty ? "Call" : call.peerName).font(.headline).foregroundStyle(.white)
+                        Text(statusText).font(.caption).foregroundStyle(.white.opacity(0.85))
+                    }
+                    .shadow(color: .black.opacity(0.4), radius: 4)
+                    // Minimize sits at the top-leading, level with the name (was floating mid-screen).
+                    HStack {
+                        Button { call.minimized = true } label: {
+                            Image(systemName: "chevron.down")
+                                .font(.headline.weight(.semibold)).foregroundStyle(.white)
+                                .frame(width: 40, height: 40).background(.black.opacity(0.3), in: Circle())
+                        }
+                        Spacer()
+                    }
                 }
                 .padding(.top, 54)
-                .shadow(color: .black.opacity(0.4), radius: 4)
                 Spacer()
                 controls.padding(.bottom, 50)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity).ignoresSafeArea()
-        .overlay(alignment: .topLeading) {
-            // Minimize to the floating pill so the rest of Haven is usable mid-call.
-            Button { call.minimized = true } label: {
-                Image(systemName: "chevron.down")
-                    .font(.title3.weight(.semibold)).foregroundStyle(.white)
-                    .frame(width: 44, height: 44).background(.black.opacity(0.3), in: Circle())
-            }
-            .padding(.top, 50).padding(.leading, 14)
-        }
         .transition(.move(edge: .bottom))
         #if targetEnvironment(macCatalyst) || os(macOS)
         .sheet(isPresented: Binding(get: { call.showScreenPicker },
@@ -1318,9 +1318,24 @@ struct CallOverlay: View {
         .ignoresSafeArea()
     }
 
+    /// Full-bleed 1:1 view: the peer's camera aspect-fills the screen — no tile margin, name badge or
+    /// active-speaker border. Their avatar shows if the camera is off.
+    @ViewBuilder private func soloTile(_ hex: String) -> some View {
+        ZStack {
+            if let track = call.remoteVideoTracks[hex], !call.remoteCameraOff.contains(hex) {
+                RTCVideoView(track: track).ignoresSafeArea()
+            } else {
+                HavenTheme.brand.opacity(0.9).ignoresSafeArea()
+                PeerAvatar(nodeHex: hex, name: call.displayName(for: hex), size: 110)
+                    .overlay(Circle().strokeBorder(.white.opacity(0.25), lineWidth: 2))
+                    .shadow(color: .black.opacity(0.25), radius: 10, y: 3)
+            }
+        }
+    }
+
     @ViewBuilder private func tile(_ hex: String) -> some View {
         ZStack {
-            if let track = call.remoteVideoTracks[hex] {
+            if let track = call.remoteVideoTracks[hex], !call.remoteCameraOff.contains(hex) {
                 RTCVideoView(track: track)
                 LinearGradient(colors: [.black.opacity(0.45), .clear, .black.opacity(0.35)],
                                startPoint: .top, endPoint: .bottom)
@@ -1467,6 +1482,37 @@ struct CallOverlay: View {
     private func callButton(_ symbol: String, on: Bool) -> some View {
         Image(systemName: symbol).font(.title3).foregroundStyle(.white).frame(width: 52, height: 52)
             .background(Color.white.opacity(on ? 0.3 : 0.16), in: Circle())
+    }
+}
+
+/// Slim "return to call" bar docked above the tab bar while a call is minimized — out of the way of
+/// the app's own top nav/menus, tappable to reopen the full call screen. Renders nothing otherwise.
+struct CallReturnBar: View {
+    @ObservedObject private var call = CallManager.shared
+    var body: some View {
+        if (call.inCall || call.connecting) && call.minimized {
+            HStack(spacing: 10) {
+                Image(systemName: call.videoOn ? "video.fill" : "phone.fill")
+                    .font(.subheadline).foregroundStyle(.white)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(call.peerName.isEmpty ? "On call" : call.peerName)
+                        .font(.subheadline.weight(.semibold)).foregroundStyle(.white).lineLimit(1)
+                    Text(call.connecting ? "Calling…" : "Tap to return")
+                        .font(.caption2).foregroundStyle(.white.opacity(0.85))
+                }
+                Spacer(minLength: 8)
+                Button { CallManager.shared.endCall() } label: {
+                    Image(systemName: "phone.down.fill").font(.subheadline).foregroundStyle(.white)
+                        .frame(width: 32, height: 32).background(Color.red, in: Circle())
+                }
+            }
+            .padding(.horizontal, 16).padding(.vertical, 8)
+            .frame(maxWidth: .infinity)
+            .background(HavenTheme.brand.opacity(0.97))
+            .contentShape(Rectangle())
+            .onTapGesture { CallManager.shared.minimized = false }   // tap to reopen the call
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
     }
 }
 
