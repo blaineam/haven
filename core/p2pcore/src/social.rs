@@ -360,6 +360,14 @@ pub fn build_feed(
     events.sort_by(|a, b| a.created_at.cmp(&b.created_at).then(a.id.cmp(&b.id)));
     events.dedup_by(|a, b| a.id == b.id);
 
+    // Freshness clamp (audit M2): `created_at` is author-supplied, so a malicious member could
+    // far-future-date an event to pin it to the top of the feed forever or dodge a poll-close /
+    // retention. Ignore anything dated more than a day ahead of the viewer's clock (generous enough
+    // to absorb honest device skew); it simply surfaces once that time legitimately arrives.
+    const FUTURE_TOLERANCE_MS: u64 = 24 * 60 * 60 * 1000;
+    let horizon = now_ms.saturating_add(FUTURE_TOLERANCE_MS);
+    events.retain(|e| e.created_at <= horizon);
+
     let mut items: BTreeMap<String, FeedItem> = BTreeMap::new();
     let mut order: Vec<String> = Vec::new();
     let mut comments: BTreeMap<String, FeedComment> = BTreeMap::new();
