@@ -129,6 +129,17 @@ async function refreshStatus() {
 }
 
 // ---- Feed ------------------------------------------------------------------------------
+// Posts the user hid from their own feed — local + per-device, never touches the circle/relay.
+const Hidden = {
+  ids: new Set(JSON.parse(localStorage.getItem("haven-hidden") || "[]")),
+  showHidden: false,
+  has(id) { return this.ids.has(id); },
+  hide(id) { this.ids.add(id); this._save(); },
+  unhide(id) { this.ids.delete(id); this._save(); },
+  toggle() { this.showHidden = !this.showHidden; },
+  _save() { localStorage.setItem("haven-hidden", JSON.stringify([...this.ids])); },
+};
+
 async function renderFeed() {
   const root = $("#view-feed");
   const circles = await invoke("circles");
@@ -144,6 +155,8 @@ async function renderFeed() {
     })(),
     el("button", { class: "btn small", onclick: newCircleDialog }, "+ Circle"),
     el("button", { class: "btn small ghost", title: "Manage circle", onclick: () => manageCircleDialog(circles.find((c) => c.id === state.activeCircle)) }, "⚙︎"),
+    Hidden.ids.size ? el("button", { class: "btn small ghost", title: "Show/hide hidden posts", onclick: () => { Hidden.toggle(); renderFeed(); } },
+      Hidden.showHidden ? "🙈 Hide hidden" : `👁 Show hidden (${Hidden.ids.size})`) : null,
   );
 
   const composer = buildComposer(
@@ -155,7 +168,9 @@ async function renderFeed() {
     },
   );
 
-  const items = (await invoke("feed", { circleId: state.activeCircle })).filter((i) => !i.story);
+  const items = (await invoke("feed", { circleId: state.activeCircle }))
+    .filter((i) => !i.story)
+    .filter((i) => Hidden.showHidden || !Hidden.has(i.id));   // personal per-post hide (reversible)
   const list = el("div", {});
   if (!items.length) list.append(el("div", { class: "empty" }, "No posts yet. Say hello to your circle, or connect a friend."));
   for (const it of items) list.append(postCard(it, state.activeCircle));
@@ -450,7 +465,7 @@ function postCard(it, circleId) {
       el("div", { class: "name" }, it.author_name),
       el("div", { class: "muted small" }, relTime(it.created_at) + (it.edited ? " · edited" : "")),
     ),
-    it.is_me ? el("button", { class: "kebab menu-btn", onclick: (e) => postMenu(e, it, circleId) }, "⋯") : null,
+    el("button", { class: "kebab menu-btn", onclick: (e) => postMenu(e, it, circleId) }, "⋯"),
   );
 
   const body = it.unsent
@@ -524,10 +539,14 @@ function emojiPicker(e, circleId, target) {
 }
 
 function postMenu(e, it, circleId) {
+  const isHidden = Hidden.has(it.id);
   const m = el("div", {}, el("h2", {}, "Post"),
     el("div", { class: "col" },
-      el("button", { class: "btn", onclick: () => { $("#modal-root").replaceChildren(); editPostDialog(it, circleId); } }, "✏️ Edit"),
-      el("button", { class: "btn danger", onclick: async () => { await invoke("unsend_post", { circleId, target: it.id }); $("#modal-root").replaceChildren(); toast("Unsent"); } }, "🚫 Unsend"),
+      it.is_me ? el("button", { class: "btn", onclick: () => { $("#modal-root").replaceChildren(); editPostDialog(it, circleId); } }, "✏️ Edit") : null,
+      it.is_me ? el("button", { class: "btn danger", onclick: async () => { await invoke("unsend_post", { circleId, target: it.id }); $("#modal-root").replaceChildren(); toast("Unsent"); } }, "🚫 Unsend") : null,
+      // Hide any post from my own feed (reversible via "Show hidden").
+      el("button", { class: "btn", onclick: () => { isHidden ? Hidden.unhide(it.id) : Hidden.hide(it.id); $("#modal-root").replaceChildren(); renderFeed(); } },
+        isHidden ? "👁 Unhide" : "🙈 Hide post"),
     ));
   modal(m);
 }
