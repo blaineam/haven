@@ -96,6 +96,13 @@ fun CircleScreen(onAddFriend: () -> Unit) {
             com.blaineam.haven.core.ShareInbox.take()
         }
     }
+    // Photos/videos shared in from another app attach to the next post.
+    val sharedMedia = com.blaineam.haven.core.ShareInbox.pendingMedia
+    LaunchedEffect(sharedMedia) {
+        if (sharedMedia.isNotEmpty()) {
+            pendingMedia.addAll(com.blaineam.haven.core.ShareInbox.takeMedia())
+        }
+    }
     val profile = remember { com.blaineam.haven.core.ProfileStore.get(context) }
     val version by HavenNet.feedVersion          // recompose when the feed changes
     val circlesVersion by HavenNet.circlesVersion
