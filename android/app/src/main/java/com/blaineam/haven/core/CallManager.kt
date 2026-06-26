@@ -48,6 +48,8 @@ object CallManager {
     val remoteVideo: SnapshotStateMap<String, VideoTrack?> = mutableStateMapOf()
     /** A peer's incoming SCREEN-share track (its second `screen0` video track), rendered aspect-fit. */
     val remoteScreen: SnapshotStateMap<String, VideoTrack?> = mutableStateMapOf()
+    /** Peers whose camera is currently OFF — show their avatar, not a frozen last frame. */
+    val remoteCameraOff: SnapshotStateList<String> = mutableStateListOf()
     var localVideo: VideoTrack? = null; private set
 
     lateinit var eglBase: EglBase; private set
@@ -147,6 +149,7 @@ object CallManager {
             CallWire.INVITE -> CallWire.parseInviteName(body)?.let { (from, name) -> if (knownContact(from)) incoming(from, name, "legacy:$from", setOf(from, myHex)) }
             CallWire.ACCEPT -> handleAccept(body)
             CallWire.HANGUP -> handleHangup(body)
+            CallWire.CAMERA -> handleCameraState(body)
             CallWire.OFFER -> handleOffer(body)
             CallWire.ANSWER -> handleAnswer(body)
             CallWire.ICE -> handleIce(body)
@@ -184,6 +187,12 @@ object CallManager {
         if (roster.add(a.from)) refreshParticipants()
         startMesh()
         connectPeerIfNeeded(a.from)
+    }
+
+    private fun handleCameraState(body: ByteArray) {
+        val (from, on) = CallWire.parseCameraState(body) ?: return
+        if (!roster.contains(from)) return   // only a participant
+        if (on) remoteCameraOff.remove(from) else if (!remoteCameraOff.contains(from)) remoteCameraOff.add(from)
     }
 
     private fun handleHangup(body: ByteArray) {
@@ -281,6 +290,7 @@ object CallManager {
         peers.remove(peer)?.close()
         roster.remove(peer)
         remoteVideo.remove(peer)
+        remoteScreen.remove(peer); remoteCameraOff.remove(peer)
         refreshParticipants()
     }
 
@@ -292,7 +302,13 @@ object CallManager {
     // ---- Controls ----
 
     fun toggleMic() { micOn.value = !micOn.value; audioTrack?.setEnabled(micOn.value) }
-    fun toggleCamera() { cameraOn.value = !cameraOn.value; localVideo?.setEnabled(cameraOn.value) }
+    fun toggleCamera() {
+        cameraOn.value = !cameraOn.value
+        localVideo?.setEnabled(cameraOn.value)
+        // Tell every peer so they swap to my avatar instead of freezing on my last camera frame.
+        val on = cameraOn.value
+        invitees().forEach { HavenNet.sendCallFrame(CallWire.CAMERA, CallWire.cameraState(myHex, sessionId, on), it) }
+    }
     fun switchCamera() { if (!screenShare.value) capturer?.switchCamera(null) }
 
     /**
@@ -356,7 +372,7 @@ object CallManager {
         runCatching { capturer?.dispose() }; capturer = null
         runCatching { surfaceHelper?.dispose() }; surfaceHelper = null
         localVideo = null
-        remoteVideo.clear(); remoteScreen.clear(); participants.clear(); roster.clear()
+        remoteVideo.clear(); remoteScreen.clear(); remoteCameraOff.clear(); participants.clear(); roster.clear()
         sessionId = ""; mediaStarted = false; isCaller = false
         ringing.value = false; connecting.value = false; inCall.value = false; minimized.value = false
         peerName.value = ""

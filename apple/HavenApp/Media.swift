@@ -285,7 +285,12 @@ final class MediaStore: ObservableObject {
         try? FileManager.default.removeItem(at: dst)
         var ok = false
         if CircleSettingsStore.shared.autoOptimize(FeedStore.shared.activeCircleId) {
-            ok = await Self.optimizeVideo(src, to: dst)   // re-encode also drops metadata
+            ok = await Self.optimizeVideo(src, to: dst)   // re-encode (H.264) also drops metadata
+        } else if await Self.isHEVC(src) {
+            // Even "pristine" sharing must be cross-platform playable: iPhones record HEVC (H.265),
+            // which many Androids can't decode. Re-encode HEVC sources to H.264 (1080p) so the video
+            // plays everywhere; H.264 sources skip this and pass through untouched below.
+            ok = await Self.optimizeVideo(src, to: dst)
         }
         // Strip metadata (GPS/location, creation device, etc.) before it ever leaves the device —
         // a fast pass-through remux, no re-encode. Falls back to a raw copy only if that fails.
@@ -483,6 +488,15 @@ final class MediaStore: ObservableObject {
 
     /// Transcode a video to a network-friendly 1080p H.264 MP4 (full HD, just
     /// re-encoded smaller than the camera original).
+    /// True if the source video is HEVC/H.265 (which many non-Apple players can't decode).
+    static func isHEVC(_ url: URL) async -> Bool {
+        let asset = AVURLAsset(url: url)
+        guard let track = try? await asset.loadTracks(withMediaType: .video).first,
+              let descs = try? await track.load(.formatDescriptions), let desc = descs.first else { return false }
+        let codec = CMFormatDescriptionGetMediaSubType(desc)
+        return codec == kCMVideoCodecType_HEVC || codec == kCMVideoCodecType_HEVCWithAlpha
+    }
+
     static func optimizeVideo(_ src: URL, to dst: URL) async -> Bool {
         let asset = AVURLAsset(url: src)
         guard let export = AVAssetExportSession(asset: asset, presetName: AVAssetExportPreset1920x1080) else {

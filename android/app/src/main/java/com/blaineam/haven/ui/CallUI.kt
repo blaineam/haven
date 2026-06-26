@@ -192,7 +192,14 @@ private fun InCall() {
                 ) {
                     items(participants, key = { it }) { hex ->
                         Box(Modifier.padding(2.dp).aspectRatio(0.75f).background(HavenTheme.card)) {
-                            CallVideoTile(remote[hex], Modifier.fillMaxSize())
+                            if (CallManager.remoteCameraOff.contains(hex)) {
+                                // Camera off → show the avatar, not a frozen last frame.
+                                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                                    HavenAvatar(hex.take(8), com.blaineam.haven.core.HavenNet.displayName(hex.take(8)), size = 72.dp)
+                                }
+                            } else {
+                                CallVideoTile(remote[hex], Modifier.fillMaxSize())
+                            }
                             Text(hex.take(6), color = Color.White, fontSize = 11.sp,
                                 modifier = Modifier.align(Alignment.BottomStart).padding(6.dp))
                         }

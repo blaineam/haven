@@ -21,6 +21,7 @@ object CallWire {
     const val ANSWER = 17
     const val ICE = 18
     const val GROUP_INVITE = 21
+    const val CAMERA = 22   // [hex64][lp sessionId][on byte] — peer camera on/off (avoid frozen frame)
 
     private fun hexHead(payload: ByteArray): String? {
         if (payload.size < 64) return null
@@ -47,6 +48,22 @@ object CallWire {
     }
 
     fun hangup(myHex: String): ByteArray = myHex.toByteArray(Charsets.UTF_8)
+
+    /** Frame 22: tell peers my camera is on/off so they show my avatar instead of a frozen last frame. */
+    fun cameraState(myHex: String, sessionId: String, on: Boolean): ByteArray {
+        val out = ArrayList<Byte>()
+        myHex.toByteArray(Charsets.UTF_8).forEach { out.add(it) }
+        Wire.lpAppend(out, sessionId.toByteArray(Charsets.UTF_8))
+        out.add(if (on) 1 else 0)
+        return out.toByteArray()
+    }
+
+    /** (from, cameraOn). iOS reads only the leading hex + trailing flag byte, so we match that. */
+    fun parseCameraState(payload: ByteArray): Pair<String, Boolean>? {
+        val from = hexHead(payload) ?: return null
+        val on = payload.isNotEmpty() && payload.last() == 1.toByte()
+        return from to on
+    }
 
     /** offer/answer/ice body: [hex64][lp sessionId][json]. */
     fun signal(myHex: String, sessionId: String, json: ByteArray): ByteArray {
