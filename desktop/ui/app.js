@@ -203,6 +203,9 @@ function buildComposer(onPost, placeholder = "Share something with your circleâ€
     state.attachments.push({ ref, url, isVideo, isAudio });
     drawPreviews();
   };
+  // Expose the active composer's attach fn so dropped files (handled globally) land here.
+  state.composerAdd = addAttachment;
+  state.composerCircle = circleId;
   const drawMusic = () => {
     musicRow.replaceChildren(music
       ? el("div", { class: "song-chip", style: "margin-top:0" },
@@ -1258,6 +1261,23 @@ async function boot() {
   listen("haven:changed", async () => { await refreshStatus(); await refreshBadges(); try { state.contacts = await invoke("contacts"); } catch (_) {} await render(); });
   listen("haven:notify", (e) => { const p = e.payload || {}; toast(`${p.title}: ${p.body}`); });
   listen("haven:call", (e) => onCallEvent(e.payload));
+  // Drag photos/videos from the file manager onto the window â†’ attach to the active composer.
+  const MEDIA_RE = { img: /\.(jpe?g|png|gif|heic|heif|webp|bmp|tiff?)$/i, vid: /\.(mp4|mov|m4v|webm|avi|mkv|3gp)$/i };
+  listen("tauri://drag-enter", () => document.body.classList.add("drop-target"));
+  listen("tauri://drag-leave", () => document.body.classList.remove("drop-target"));
+  listen("tauri://drag-drop", async (e) => {
+    document.body.classList.remove("drop-target");
+    const paths = e.payload?.paths || [];
+    if (!paths.length || typeof state.composerAdd !== "function") return;
+    for (const p of paths) {
+      const isVideo = MEDIA_RE.vid.test(p);
+      if (!isVideo && !MEDIA_RE.img.test(p)) continue;   // skip non-media files
+      try {
+        const ref = await invoke("add_media_path", { circleId: state.composerCircle || state.activeCircle, path: p });
+        await state.composerAdd(ref, isVideo, false);
+      } catch (err) { console.error("drop ingest failed", p, err); toast("Couldn't attach that file"); }
+    }
+  });
   setInterval(refreshStatus, 5000);
 
   // Tell the backend whether the window is foregrounded (suppress notifications when it is).
