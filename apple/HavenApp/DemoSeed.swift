@@ -37,7 +37,16 @@ enum DemoScene: String {
 enum DemoEnv {
     private static var env: [String: String] { ProcessInfo.processInfo.environment }
     /// True when the PII-free demo dataset should be seeded + shown.
-    static var isDemo: Bool { env["HAVEN_DEMO"] == "1" }
+    static var isDemo: Bool {
+        // DEBUG-only. A release/TestFlight/App Store build can NEVER run the synthetic demo dataset,
+        // so it can't seed a demo identity/profile/contacts into the real store or iCloud Keychain —
+        // no matter what env it's launched with. (Screenshots are captured from a debug build.)
+        #if DEBUG
+        return env["HAVEN_DEMO"] == "1"
+        #else
+        return false
+        #endif
+    }
     /// The scene to auto-present, if any.
     static var scene: DemoScene? { env["HAVEN_SCENE"].flatMap(DemoScene.init) }
 }

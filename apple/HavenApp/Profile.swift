@@ -8,13 +8,15 @@ import PhotosUI
 final class ProfileStore: ObservableObject {
     static let shared = ProfileStore()
 
-    @Published var displayName: String { didSet { defaults.set(displayName, forKey: nameKey) } }
-    @Published var emoji: String { didSet { defaults.set(emoji, forKey: emojiKey); FeedStore.shared.rebroadcastProfile() } }
+    // Demo seeding overwrites these in memory (PII-free synthetic profile) but must NEVER persist —
+    // otherwise the demo "Riley Avery" profile lands in the real (shared-container) defaults.
+    @Published var displayName: String { didSet { if !DemoEnv.isDemo { defaults.set(displayName, forKey: nameKey) } } }
+    @Published var emoji: String { didSet { if !DemoEnv.isDemo { defaults.set(emoji, forKey: emojiKey) }; FeedStore.shared.rebroadcastProfile() } }
     @Published var onboarded: Bool { didSet { defaults.set(onboarded, forKey: doneKey) } }
     /// A short bio + a link the user chooses to show — a little "business card" shared,
     /// signed and end-to-end, with the people they connect to.
-    @Published var bio: String { didSet { defaults.set(bio, forKey: bioKey) } }
-    @Published var link: String { didSet { defaults.set(link, forKey: linkKey) } }
+    @Published var bio: String { didSet { if !DemoEnv.isDemo { defaults.set(bio, forKey: bioKey) } } }
+    @Published var link: String { didSet { if !DemoEnv.isDemo { defaults.set(link, forKey: linkKey) } } }
     @Published private(set) var avatar: PlatformImage?
 
     private let defaults = UserDefaults.standard
