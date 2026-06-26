@@ -150,7 +150,12 @@ fun StoryViewer(groups: List<StoryGroup>, startGroup: Int, onClose: () -> Unit) 
     ) {
         val mediaId = item.media.firstOrNull()
         if (mediaId != null) {
-            MediaImage(DEFAULT_CIRCLE, mediaId, Modifier.fillMaxSize())
+            // A video story must play in a video view, not the image decoder (was rendering nothing).
+            if (com.blaineam.haven.core.LocalMedia.isVideo(mediaId)) {
+                VideoTile(DEFAULT_CIRCLE, mediaId, Modifier.fillMaxSize())
+            } else {
+                MediaImage(DEFAULT_CIRCLE, mediaId, Modifier.fillMaxSize())
+            }
         }
         // Decode the iOS-authored caption (was shown raw → gibberish): position + colour it, with
         // a highlight pill if that's the style.
@@ -160,12 +165,22 @@ fun StoryViewer(groups: List<StoryGroup>, startGroup: Int, onClose: () -> Unit) 
             val isHl = spec.style == StoryCaptions.CapStyle.HIGHLIGHT
             val cfg = androidx.compose.ui.platform.LocalConfiguration.current
             val w = cfg.screenWidthDp.dp; val h = cfg.screenHeightDp.dp
+            val textColor = if (isHl) StoryCaptions.highlightTextColor(spec.colorIdx) else StoryCaptions.color(spec.colorIdx)
+            // Apply the chosen caption EFFECT (glow/shadow/neon) — was rendering plain on Android while
+            // the iOS receiver showed the effect.
+            val captionShadow = when (spec.style) {
+                StoryCaptions.CapStyle.GLOW -> androidx.compose.ui.graphics.Shadow(textColor.copy(alpha = 0.9f), androidx.compose.ui.geometry.Offset.Zero, 18f)
+                StoryCaptions.CapStyle.NEON -> androidx.compose.ui.graphics.Shadow(textColor, androidx.compose.ui.geometry.Offset.Zero, 32f)
+                StoryCaptions.CapStyle.SHADOW -> androidx.compose.ui.graphics.Shadow(Color.Black.copy(alpha = 0.85f), androidx.compose.ui.geometry.Offset(2f, 3f), 6f)
+                else -> null
+            }
             androidx.compose.material3.Text(
                 decoded.text,
-                color = if (isHl) StoryCaptions.highlightTextColor(spec.colorIdx) else StoryCaptions.color(spec.colorIdx),
+                color = textColor,
                 fontSize = (28 * spec.size).sp,
                 fontWeight = FontWeight.SemiBold,
                 textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                style = androidx.compose.ui.text.TextStyle(shadow = captionShadow),
                 modifier = Modifier.align(Alignment.Center)
                     .offset(x = w * (spec.x - 0.5f), y = h * (spec.y - 0.5f))
                     .then(if (isHl) Modifier.clip(RoundedCornerShape(8.dp)).background(StoryCaptions.color(spec.colorIdx)) else Modifier)
