@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -55,21 +56,39 @@ fun SettingsScreen(onBack: () -> Unit) {
     var showRestore by remember { mutableStateOf(false) }
     var report by remember { mutableStateOf<uniffi.haven_ffi.SelfTestReport?>(null) }
     val core = remember { com.blaineam.haven.core.HavenCore.get(context) }
+    // null = the top-level category list; otherwise the open sub-section (iOS-style nested settings).
+    var section by remember { mutableStateOf<String?>(null) }
+    val sectionTitle = when (section) {
+        "privacy" -> "Privacy & content"; "connection" -> "Connection & relay"
+        "blocked" -> "Blocked people"; "diagnostics" -> "Security & diagnostics"
+        "identity" -> "Identity & devices"; else -> "Settings"
+    }
 
     val options = listOf(0 to "Keep forever", 7 to "After 1 week", 30 to "After 1 month", 90 to "After 3 months", 365 to "After 1 year")
 
     HavenBackground {
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(40.dp).clip(CircleShape).clickable { onBack() },
+                Box(Modifier.size(40.dp).clip(CircleShape).clickable { if (section != null) section = null else onBack() },
                     contentAlignment = Alignment.Center) {
                     Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.White)
                 }
                 Spacer(Modifier.size(6.dp))
-                BrandText("Settings", fontSize = 24)
+                BrandText(sectionTitle, fontSize = 24)
             }
 
             Spacer(Modifier.height(20.dp))
+
+            // ── Top-level category list (iOS-style) ──
+            if (section == null) {
+                SettingsCategory("Privacy & content", "Auto-delete, save to Photos, optimize") { section = "privacy" }
+                SettingsCategory("Connection & relay", "Relay, background, nearby, storage") { section = "connection" }
+                SettingsCategory("Identity & devices", "Your id, move/restore your account, start over") { section = "identity" }
+                SettingsCategory("Security & diagnostics", "Safety words, privacy check, encryption") { section = "diagnostics" }
+                SettingsCategory("Blocked people", if (HavenNet.blocked.isEmpty()) "No one blocked" else "${HavenNet.blocked.size} blocked") { section = "blocked" }
+            }
+
+            if (section == "privacy") {
             Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
                 Text("Auto-delete posts", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                 Spacer(Modifier.height(4.dp))
@@ -104,8 +123,9 @@ fun SettingsScreen(onBack: () -> Unit) {
                 SettingSwitch("Save others' posts to Photos", profile.saveOthersPosts) { profile.saveOthersPosts = it }
                 SettingSwitch("Auto-optimize media (smaller, faster)", profile.autoOptimize) { profile.autoOptimize = it }
             }
+            }  // end Privacy
 
-            Spacer(Modifier.height(16.dp))
+            if (section == "connection") {
             Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
                 Text("Circle relay", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                 Spacer(Modifier.height(4.dp))
@@ -237,7 +257,9 @@ fun SettingsScreen(onBack: () -> Unit) {
                 }
             }
 
-            Spacer(Modifier.height(16.dp))
+            }  // end Connection
+
+            if (section == "blocked") {
             Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
                 Text("Blocked people", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                 Spacer(Modifier.height(6.dp))
@@ -256,8 +278,10 @@ fun SettingsScreen(onBack: () -> Unit) {
                 }
             }
 
-            // Under the hood (identity hex + safety words + crypto) — nested here, like iOS.
-            Spacer(Modifier.height(16.dp))
+            }  // end Blocked
+
+            if (section == "diagnostics") {
+            // Under the hood (identity hex + safety words + crypto).
             Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
                 Text("Under the hood", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                 Spacer(Modifier.height(8.dp))
@@ -292,8 +316,10 @@ fun SettingsScreen(onBack: () -> Unit) {
                 }
             }
 
-            // Identity — move to another device / restore here.
-            Spacer(Modifier.height(16.dp))
+            }  // end Diagnostics
+
+            if (section == "identity") {
+            // Move to another device / restore here.
             Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
                 Text("Your identity", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
                 Spacer(Modifier.height(4.dp))
@@ -310,6 +336,7 @@ fun SettingsScreen(onBack: () -> Unit) {
             Text("Start over (new identity)", color = Color(0xFFF87171), fontWeight = FontWeight.Medium,
                 fontSize = 15.sp, modifier = Modifier.clip(RoundedCornerShape(8.dp))
                     .clickable { confirmReset = true }.padding(8.dp))
+            }  // end Identity
         }
     }
 
@@ -364,6 +391,21 @@ fun SettingsScreen(onBack: () -> Unit) {
             dismissButton = { TextButton(onClick = { confirmReset = false }) { Text("Cancel", color = HavenTheme.pink) } },
         )
     }
+}
+
+/** A tappable top-level settings category row (iOS-style nested navigation). */
+@Composable
+private fun SettingsCategory(title: String, subtitle: String, onClick: () -> Unit) {
+    Row(Modifier.fillMaxWidth().havenCard().clickable { onClick() }.padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            Text(title, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+            Spacer(Modifier.height(2.dp))
+            Text(subtitle, color = HavenTheme.textSecondary, fontSize = 12.sp)
+        }
+        Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = HavenTheme.textSecondary)
+    }
+    Spacer(Modifier.height(12.dp))
 }
 
 private fun Modifier.androidxRing(on: Boolean): Modifier =
