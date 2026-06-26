@@ -505,6 +505,15 @@ final class MediaStore: ObservableObject {
         export.outputURL = dst
         export.outputFileType = .mp4
         export.shouldOptimizeForNetworkUse = true
+        // BAKE the camera rotation into the pixels: a passthrough CI composition renders each frame in
+        // its display orientation, so the output is upright with an identity transform. Otherwise the
+        // rotation rides as track metadata that Android ignores → portrait iPhone video shows sideways.
+        if let vTrack = try? await asset.loadTracks(withMediaType: .video).first,
+           let xf = try? await vTrack.load(.preferredTransform), !xf.isIdentity {
+            export.videoComposition = AVMutableVideoComposition(asset: asset) { request in
+                request.finish(with: request.sourceImage, context: nil)
+            }
+        }
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             export.exportAsynchronously { cont.resume() }
         }
