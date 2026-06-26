@@ -10,6 +10,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -123,6 +126,13 @@ fun StoryEditor(ref: String, isVideo: Boolean, initialFilter: Int = 0, onClose: 
     var boxSize by remember { mutableStateOf(IntSize.Zero) }
     var sharing by remember { mutableStateOf(false) }
     var shareLabel by remember { mutableStateOf("Share to story") }
+    // Pinch-zoom + drag to position the media within the story frame (baked into the share).
+    var mediaScale by remember { mutableStateOf(1f) }
+    var mediaOffset by remember { mutableStateOf(Offset.Zero) }
+    val mediaTransform = rememberTransformableState { zoom, pan, _ ->
+        mediaScale = (mediaScale * zoom).coerceIn(1f, 5f)
+        mediaOffset += pan
+    }
 
     val filter = HavenFilter.all[filterIdx]
     val style = CapStyle.entries[styleIdx % CapStyle.entries.size]
@@ -150,9 +160,16 @@ fun StoryEditor(ref: String, isVideo: Boolean, initialFilter: Int = 0, onClose: 
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black).onSizeChanged { boxSize = it }) {
-        // ── Media (photo + video both preview the live filter) ─────────────────────────────
-        if (isVideo) EditorVideo(ref, filter.spec, Modifier.fillMaxSize())
-        else previewBmp?.let { Image(it.asImageBitmap(), "Story", Modifier.fillMaxSize(), contentScale = ContentScale.Fit) }
+        // ── Media (photo + video both preview the live filter) — pinch to zoom, drag to position;
+        //    aspect-FILLS the frame (no squish/letterbox), and the transform is baked on share. ───
+        Box(Modifier.fillMaxSize().transformable(mediaTransform)) {
+            val mediaMod = Modifier.fillMaxSize().graphicsLayer(
+                scaleX = mediaScale, scaleY = mediaScale,
+                translationX = mediaOffset.x, translationY = mediaOffset.y,
+            )
+            if (isVideo) EditorVideo(ref, filter.spec, mediaMod)
+            else previewBmp?.let { Image(it.asImageBitmap(), "Story", mediaMod, contentScale = ContentScale.Crop) }
+        }
 
         // ── Caption (lifts above the keyboard via imePadding) ──────────────────────────────
         Box(Modifier.fillMaxSize().imePadding()) {
@@ -218,7 +235,7 @@ fun StoryEditor(ref: String, isVideo: Boolean, initialFilter: Int = 0, onClose: 
         }
 
         // ── Bottom control stack: filter strip ABOVE the action row (no overlap) ───────────
-        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(bottom = 12.dp)) {
+        Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().navigationBarsPadding().padding(bottom = 24.dp)) {
             LazyRow(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 items(HavenFilter.all.size, key = { HavenFilter.all[it].name }) { i ->
@@ -231,7 +248,7 @@ fun StoryEditor(ref: String, isVideo: Boolean, initialFilter: Int = 0, onClose: 
                 }
             }
             music?.let { m -> Box(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) { MusicChip(m) } }
-            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+            Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
                 Row(Modifier.clip(CircleShape).background(Color.White.copy(alpha = 0.18f)).clickable { pickSong = true }
                     .padding(horizontal = 16.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -262,7 +279,7 @@ fun StoryEditor(ref: String, isVideo: Boolean, initialFilter: Int = 0, onClose: 
                                         HavenNet.postStory(caption.trim(), newRef, music)
                                     } else {
                                         val baked = withContext(Dispatchers.IO) {
-                                            bakePhoto(srcBmp, filter.spec, caption.trim(), capColor, style, fontIdx, sizeSp, capOffset, boxSize)
+                                            bakePhoto(srcBmp, filter.spec, caption.trim(), capColor, style, fontIdx, sizeSp, capOffset, boxSize, mediaScale, mediaOffset)
                                         }
                                         HavenNet.postStory("", baked ?: ref, music)
                                     }
@@ -295,33 +312,50 @@ private fun CtlButton(onClick: () -> Unit, content: @Composable () -> Unit) {
         contentAlignment = Alignment.Center) { content() }
 }
 
-/** Bake the GL filter + styled caption into the photo; returns the stored ref (or null on failure). */
+/**
+ * Bake the GL filter, the user's media zoom/pan, and the styled caption into a story-frame-sized
+ * photo (matching the on-screen frame's aspect, ~1080 wide) so the recipient sees the exact composition.
+ * Returns the stored ref (or null on failure).
+ */
 private fun bakePhoto(
     srcBmp: Bitmap?, spec: FilterSpec, caption: String, capColor: Color, style: CapStyle,
     fontIdx: Int, sizeSp: Float, capOffset: Offset, boxSize: IntSize,
+    mediaScale: Float, mediaOffset: Offset,
 ): String? {
     val src = srcBmp ?: return null
+    if (boxSize.width <= 0 || boxSize.height <= 0) return null
     return runCatching {
         val filtered = GlPhotoFilter.apply(src, spec)
-        val out = filtered.copy(Bitmap.Config.ARGB_8888, true)
+        val outW = 1080
+        val outH = (outW.toFloat() * boxSize.height / boxSize.width).toInt().coerceAtLeast(1)
+        val s = outW.toFloat() / boxSize.width   // on-screen px → output px
+        val out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(out)
-        if (caption.isNotBlank() && boxSize.height > 0) {
-            val scale = minOf(boxSize.width.toFloat() / out.width, boxSize.height.toFloat() / out.height)
-            val px = if (scale > 0) 1f / scale else 1f
+        canvas.drawColor(android.graphics.Color.BLACK)
+        // Media: cover-fill the frame (matches ContentScale.Crop), then the user's pinch-zoom + pan.
+        val m = maxOf(outW.toFloat() / filtered.width, outH.toFloat() / filtered.height) * mediaScale
+        val drawW = filtered.width * m
+        val drawH = filtered.height * m
+        val left = outW / 2f - drawW / 2f + mediaOffset.x * s
+        val top = outH / 2f - drawH / 2f + mediaOffset.y * s
+        canvas.drawBitmap(filtered, null, android.graphics.RectF(left, top, left + drawW, top + drawH),
+            Paint(Paint.FILTER_BITMAP_FLAG))
+        // Caption (positions + size map from on-screen px via s).
+        if (caption.isNotBlank()) {
             val textColor = if (style == CapStyle.NEON) android.graphics.Color.WHITE
                 else if (style == CapStyle.HIGHLIGHT) contrastOn(capColor).toArgb() else capColor.toArgb()
             val tp = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = textColor; typeface = typefaceFor(fontIdx); textSize = sizeSp * 2.2f * px; textAlign = Paint.Align.CENTER
+                color = textColor; typeface = typefaceFor(fontIdx); textSize = sizeSp * 2.2f * s; textAlign = Paint.Align.CENTER
                 when (style) {
-                    CapStyle.PLAIN -> setShadowLayer(8f * px, 0f, 2f * px, android.graphics.Color.argb(140, 0, 0, 0))
-                    CapStyle.SHADOW -> setShadowLayer(3f * px, 4f * px, 4f * px, android.graphics.Color.argb(220, 0, 0, 0))
-                    CapStyle.GLOW -> setShadowLayer(22f * px, 0f, 0f, capColor.toArgb())
-                    CapStyle.NEON -> setShadowLayer(28f * px, 0f, 0f, capColor.toArgb())
+                    CapStyle.PLAIN -> setShadowLayer(8f * s, 0f, 2f * s, android.graphics.Color.argb(140, 0, 0, 0))
+                    CapStyle.SHADOW -> setShadowLayer(3f * s, 4f * s, 4f * s, android.graphics.Color.argb(220, 0, 0, 0))
+                    CapStyle.GLOW -> setShadowLayer(22f * s, 0f, 0f, capColor.toArgb())
+                    CapStyle.NEON -> setShadowLayer(28f * s, 0f, 0f, capColor.toArgb())
                     CapStyle.HIGHLIGHT -> {}
                 }
             }
-            val cx = out.width / 2f + capOffset.x * px
-            val cy = out.height / 2f + capOffset.y * px
+            val cx = outW / 2f + capOffset.x * s
+            val cy = outH / 2f + capOffset.y * s
             val lines = caption.split("\n")
             val lh = tp.fontMetrics.let { it.descent - it.ascent } * 1.15f
             var y = cy - (lines.size - 1) * lh / 2f
@@ -329,9 +363,9 @@ private fun bakePhoto(
                 if (style == CapStyle.HIGHLIGHT) {
                     val w = tp.measureText(line)
                     val hp = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = capColor.toArgb() }
-                    val pad = 18f * px
-                    canvas.drawRoundRect(cx - w / 2 - pad, y + tp.fontMetrics.ascent - 8f * px,
-                        cx + w / 2 + pad, y + tp.fontMetrics.descent + 8f * px, 16f * px, 16f * px, hp)
+                    val pad = 18f * s
+                    canvas.drawRoundRect(cx - w / 2 - pad, y + tp.fontMetrics.ascent - 8f * s,
+                        cx + w / 2 + pad, y + tp.fontMetrics.descent + 8f * s, 16f * s, 16f * s, hp)
                 }
                 canvas.drawText(line, cx, y, tp)
                 y += lh

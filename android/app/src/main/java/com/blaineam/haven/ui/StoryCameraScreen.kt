@@ -186,6 +186,7 @@ fun StoryCameraScreen(onClose: () -> Unit) {
         val preview = Preview.Builder().build().also { p ->
             p.setSurfaceProvider(ContextCompat.getMainExecutor(context)) { req ->
                 st.setDefaultBufferSize(req.resolution.width, req.resolution.height)
+                glView.setFrameSize(req.resolution.width, req.resolution.height)   // aspect-fill, no squish
                 val surface = android.view.Surface(st)
                 req.provideSurface(surface, ContextCompat.getMainExecutor(context)) { surface.release() }
             }

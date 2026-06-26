@@ -37,6 +37,9 @@ class FilteredCameraView(context: Context) : GLSurfaceView(context) {
     /** Change the live filter; rebuilds the OES program on the GL thread. */
     fun setFilter(spec: FilterSpec) = queueEvent { renderer.setSpec(spec) }
 
+    /** Tell the renderer the camera frame size so it can aspect-FILL (center-crop) instead of squish. */
+    fun setFrameSize(w: Int, h: Int) = queueEvent { renderer.setFrameSize(w, h) }
+
     private inner class CamRenderer : Renderer, SurfaceTexture.OnFrameAvailableListener {
         private var program = 0
         private var oesTex = 0
@@ -45,11 +48,27 @@ class FilteredCameraView(context: Context) : GLSurfaceView(context) {
         private var pendingSpec: FilterSpec = FilterSpec()
         private var builtSpec: FilterSpec? = null
 
-        // Full-screen quad: x,y, s,t (triangle strip).
-        private val quad: FloatBuffer = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder())
-            .asFloatBuffer().apply {
-                put(floatArrayOf(-1f, -1f, 0f, 0f, 1f, -1f, 1f, 0f, -1f, 1f, 0f, 1f, 1f, 1f, 1f, 1f)); position(0)
-            }
+        // Quad: x,y, s,t (triangle strip). Vertices are scaled so the camera frame aspect-FILLS the
+        // view (center-crop) — overflow is clipped by the viewport — instead of stretching to fit.
+        private val quad: FloatBuffer = ByteBuffer.allocateDirect(16 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer()
+        private var viewW = 0; private var viewH = 0
+        private var frameW = 0; private var frameH = 0
+
+        init { writeQuad() }
+
+        /** Rebuild the quad vertices so the (portrait) camera content covers the view without distortion. */
+        private fun writeQuad() {
+            val vA = if (viewH > 0) viewW.toFloat() / viewH else 1f
+            // Story camera is portrait: the displayed content aspect is min/max of the buffer dims.
+            val cA = if (frameW > 0 && frameH > 0) minOf(frameW, frameH).toFloat() / maxOf(frameW, frameH) else vA
+            var sx = 1f; var sy = 1f
+            if (cA > vA) sx = cA / vA else if (cA > 0f) sy = vA / cA
+            quad.clear()
+            quad.put(floatArrayOf(-sx, -sy, 0f, 0f,  sx, -sy, 1f, 0f,  -sx, sy, 0f, 1f,  sx, sy, 1f, 1f))
+            quad.position(0)
+        }
+
+        fun setFrameSize(w: Int, h: Int) { frameW = w; frameH = h; writeQuad() }
 
         fun setSpec(spec: FilterSpec) { pendingSpec = spec }
 
@@ -71,7 +90,10 @@ class FilteredCameraView(context: Context) : GLSurfaceView(context) {
 
         override fun onFrameAvailable(st: SurfaceTexture?) = requestRender()
 
-        override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) = GLES20.glViewport(0, 0, width, height)
+        override fun onSurfaceChanged(gl: GL10?, width: Int, height: Int) {
+            GLES20.glViewport(0, 0, width, height)
+            viewW = width; viewH = height; writeQuad()
+        }
 
         override fun onDrawFrame(gl: GL10?) {
             val st = surfaceTexture ?: return
