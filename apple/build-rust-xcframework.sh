@@ -10,6 +10,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 CORE="$HERE/../core"
 CARGO="${CARGO:-$HOME/.cargo/bin/cargo}"
 RUSTUP="${RUSTUP:-$HOME/.cargo/bin/rustup}"
+# Force rustup's rustc. A Homebrew `rust` install puts /opt/homebrew/bin/rustc ahead of
+# ~/.cargo/bin in PATH, and cargo would otherwise pick it up — but Homebrew rust has no iOS
+# std, so the cross-compile fails with "can't find crate for `core`". Exporting RUSTC pins it.
+export RUSTC="${RUSTC:-$HOME/.cargo/bin/rustc}"
 
 echo "▸ Ensuring Apple targets (iOS device + sim + Mac Catalyst + native macOS)…"
 # aarch64-apple-darwin = native macOS (Apple Silicon). Used by the native-macOS port (see
