@@ -59,6 +59,10 @@ final class SelfSyncCoordinator {
         m["profile:emoji"] = Data(p.emoji.utf8)
         m["profile:bio"] = Data(p.bio.utf8)
         m["profile:link"] = Data(p.link.utf8)
+        // Profile photo (small base64 JPEG) — so a freshly-linked device gets the avatar too, not just
+        // the name/bio. Was missing, which is why the avatar showed on posts but not on the profile.
+        let av = p.avatarBase64
+        if !av.isEmpty { m["profile:avatar"] = Data(av.utf8) }
         let s = SettingsStore.shared
         m["setting:saveToPhotos"] = Data([s.saveToPhotos ? 1 : 0])
         m["setting:saveOthersToPhotos"] = Data([s.saveOthersToPhotos ? 1 : 0])
@@ -97,6 +101,10 @@ final class SelfSyncCoordinator {
         if let v = h.get(key: "profile:emoji"), let s = String(data: v, encoding: .utf8), s != p.emoji { p.emoji = s }
         if let v = h.get(key: "profile:bio"), let s = String(data: v, encoding: .utf8), s != p.bio { p.bio = s }
         if let v = h.get(key: "profile:link"), let s = String(data: v, encoding: .utf8), s != p.link { p.link = s }
+        if let v = h.get(key: "profile:avatar"), let b64 = String(data: v, encoding: .utf8), b64 != p.avatarBase64,
+           let data = Data(base64Encoded: b64), let img = PlatformImage(data: data) {
+            p.setAvatar(img)
+        }
 
         let s = SettingsStore.shared
         if let b = boolValue(h, "setting:saveToPhotos"), b != s.saveToPhotos { s.saveToPhotos = b }

@@ -1064,6 +1064,7 @@ struct StoryComposerView: View {
                         StyledCaption(text: caption.isEmpty ? " " : caption, spec: captionSpec)
                         TextField("", text: $caption, axis: .vertical)
                             .focused($captionFocused)
+                            .textFieldStyle(.plain)   // no macOS field chrome (the black box over the media)
                             .multilineTextAlignment(.center)
                             .font(StoryCaptions.font(captionSpec))
                             .foregroundStyle(.clear)   // glyphs hidden (StyledCaption shows them); caret stays
