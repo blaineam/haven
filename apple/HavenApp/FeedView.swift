@@ -1,6 +1,7 @@
 import SwiftUI
 import AVKit
 import AVFoundation
+import UniformTypeIdentifiers
 
 /// Short relative time ("now", "5m", "3h", "2d") from a unix-millis SENT timestamp —
 /// so people see when something was sent, not when it reached them.
@@ -1408,6 +1409,7 @@ struct FeedView: View {
     @State private var pendingSensitive: [String]?   // attachments SCA flagged, awaiting send-anyway
     @State private var showLocation = false   // opt-in: tag the post with a photo's reverse-geocoded place
     @State private var showSchedule = false   // "send later" date picker
+    @State private var dropActive = false   // drag-and-drop media onto the composer (macOS/iPadOS)
     @State private var showMediaPicker = false
     @State private var showCamera = false
     @State private var showSongPicker = false
@@ -1531,6 +1533,7 @@ struct FeedView: View {
                         }
                         .foregroundStyle(.primary)
                     }
+                    .menuIndicator(.hidden)   // macOS adds its own chevron; keep only our styled one
                 }
                 // Manage this circle (members, invite, settings) — lives on the circle, not You.
                 ToolbarItem(placement: .havenTrailing) {
@@ -1760,7 +1763,48 @@ struct FeedView: View {
             }
             .padding(.horizontal, 16).padding(.vertical, 12)
             .background(.ultraThinMaterial)
+            .overlay(alignment: .top) {
+                if dropActive {
+                    Rectangle().fill(HavenTheme.pink.opacity(0.12))
+                        .overlay(Rectangle().strokeBorder(HavenTheme.pink, style: StrokeStyle(lineWidth: 2, dash: [6])))
+                        .overlay(Label("Drop to attach", systemImage: "tray.and.arrow.down.fill").font(.subheadline.weight(.semibold)).foregroundStyle(HavenTheme.pink))
+                        .allowsHitTesting(false)
+                }
+            }
+            // Drag media in from Finder / Files / Photos and it becomes attachments on the next post.
+            .onDrop(of: [.image, .movie, .fileURL], isTargeted: $dropActive) { providers in
+                handleComposerDrop(providers)
+            }
         }
+    }
+
+    /// Load dropped images/videos into MediaStore and attach them to the composer. Returns true if at
+    /// least one provider is a media type we can ingest.
+    private func handleComposerDrop(_ providers: [NSItemProvider]) -> Bool {
+        var handled = false
+        for p in providers {
+            if p.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
+                handled = true
+                p.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, _ in
+                    guard let url else { return }
+                    // The provided URL is a short-lived temp; copy it before the closure returns.
+                    let ext = url.pathExtension.isEmpty ? "mov" : url.pathExtension
+                    let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("drop_\(UUID().uuidString).\(ext)")
+                    try? FileManager.default.copyItem(at: url, to: tmp)
+                    Task { @MainActor in
+                        let ref = await MediaStore.shared.addVideo(url: tmp)
+                        attachedMedia.append(ref)
+                    }
+                }
+            } else if p.canLoadObject(ofClass: PlatformImage.self) {
+                handled = true
+                _ = p.loadObject(ofClass: PlatformImage.self) { obj, _ in
+                    guard let img = obj as? PlatformImage else { return }
+                    Task { @MainActor in attachedMedia.append(MediaStore.shared.addImage(img)) }
+                }
+            }
+        }
+        return handled
     }
 
     private var attachmentTray: some View {
