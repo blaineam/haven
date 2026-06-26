@@ -6,22 +6,23 @@ import SwiftUI
 private struct MacSheetClose: ViewModifier {
     @Environment(\.dismiss) private var dismiss
     func body(content: Content) -> some View {
-        #if targetEnvironment(macCatalyst)
-        // A "Done" button in the top-TRAILING corner. Leading overlapped a pushed view's back
-        // chevron; trailing is clear now that the one sheet with its own trailing action
-        // (EditProfileSheet) no longer uses this modifier. Inset down a hair so it sits below the
-        // window's traffic-light row.
-        content.overlay(alignment: .topTrailing) {
-            Button { dismiss() } label: {
-                Text("Done")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(HavenTheme.pink)
-                    .padding(.horizontal, 16).padding(.vertical, 10)
-                    .contentShape(Rectangle())
+        // Native macOS AND Mac Catalyst sheets have no swipe-to-dismiss and (for iOS-authored content)
+        // no intrinsic size, so without this they collapse to a sliver with no way to close. Give the
+        // sheet a roomy frame + a top-trailing Done button. iOS keeps its native swipe-to-dismiss.
+        #if os(macOS) || targetEnvironment(macCatalyst)
+        content
+            .frame(minWidth: 480, idealWidth: 560, minHeight: 580, idealHeight: 700)
+            .overlay(alignment: .topTrailing) {
+                Button { dismiss() } label: {
+                    Text("Done")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(HavenTheme.pink)
+                        .padding(.horizontal, 16).padding(.vertical, 12)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)   // Esc closes it too
             }
-            .buttonStyle(.plain)
-            .keyboardShortcut(.cancelAction)   // Esc closes it too
-        }
         #else
         content
         #endif

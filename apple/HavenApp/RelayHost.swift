@@ -4,7 +4,7 @@ import UIKit
 #else
 import AppKit
 #endif
-#if targetEnvironment(macCatalyst)
+#if os(macOS) || targetEnvironment(macCatalyst)
 import ServiceManagement
 #endif
 
@@ -142,18 +142,18 @@ final class RelayHost: ObservableObject {
     // process (the relay is never torn down on background/window-close — only when the toggle
     // is turned off or the app fully quits).
 
-    /// Whether "start at login" is supported on this build (Mac Catalyst only).
+    /// Whether "start at login" is supported (native macOS + Mac Catalyst).
     var loginItemSupported: Bool {
-        #if targetEnvironment(macCatalyst)
+        #if os(macOS) || targetEnvironment(macCatalyst)
         return true
         #else
         return false
         #endif
     }
 
-    /// True when the app is currently registered to launch at login. No-op (false) off Catalyst.
+    /// True when the app is currently registered to launch at login. No-op (false) on iOS.
     var startsAtLogin: Bool {
-        #if targetEnvironment(macCatalyst)
+        #if os(macOS) || targetEnvironment(macCatalyst)
         return SMAppService.mainApp.status == .enabled
         #else
         return false

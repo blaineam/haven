@@ -70,11 +70,19 @@ final class HavenAppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in RelayHost.shared.startIfEnabled() }
     }
 
-    /// When the relay is ON, closing the window must NOT quit — Haven keeps forwarding from the
-    /// menu bar (the "invisible background relay"). With the relay off it behaves like a normal
-    /// Mac app and quits when the last window closes.
+    /// When the relay is ON, closing the window must NOT quit — Haven keeps forwarding INVISIBLY (no
+    /// dock icon, no menu bar); re-launching brings the window back. With the relay off it behaves like
+    /// a normal Mac app and quits when the last window closes.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        !RelayHost.shared.enabled
+        if RelayHost.shared.enabled { MacAgent.goInvisible(); return false }
+        return true
+    }
+
+    /// Re-launching (or clicking the dock pin) while running invisibly: become a normal app again and
+    /// open the window.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        MacAgent.goVisible()
+        return true   // let AppKit/SwiftUI restore or re-create the main window
     }
 
     func application(_ application: NSApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
@@ -148,15 +156,9 @@ struct HavenApp: App {
             }
         }
 
-        #if os(macOS)
-        // The "invisible background relay": a menu-bar item that keeps the in-process RelayHost
-        // serving even after the main window is closed (the delegate keeps the app alive).
-        MenuBarExtra {
-            MacMenuBarContent()
-        } label: {
-            MacMenuBarIcon()
-        }
-        #endif
+        // No menu-bar item: the relay's controls (run-as-relay, start-at-login) live in-app under
+        // Settings, and when the window is closed while relaying the app runs fully invisibly (the
+        // delegate drops the dock icon; re-launching restores the window).
     }
 
     @ViewBuilder private var mainRoot: some View {

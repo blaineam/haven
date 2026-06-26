@@ -270,7 +270,11 @@ extension View {
         #if os(iOS)
         self.fullScreenCover(isPresented: isPresented, onDismiss: onDismiss, content: content)
         #else
-        self.sheet(isPresented: isPresented, onDismiss: onDismiss, content: content)
+        // A macOS sheet sizes to its content; iOS full-screen content carries no size, so it would
+        // collapse to a useless sliver. Give it a roomy default frame so every sheet is usable.
+        self.sheet(isPresented: isPresented, onDismiss: onDismiss) {
+            content().frame(minWidth: 460, idealWidth: 540, minHeight: 560, idealHeight: 680)
+        }
         #endif
     }
 
@@ -281,7 +285,9 @@ extension View {
         #if os(iOS)
         self.fullScreenCover(item: item, onDismiss: onDismiss, content: content)
         #else
-        self.sheet(item: item, onDismiss: onDismiss, content: content)
+        self.sheet(item: item, onDismiss: onDismiss) { it in
+            content(it).frame(minWidth: 460, idealWidth: 540, minHeight: 560, idealHeight: 680)
+        }
         #endif
     }
 }

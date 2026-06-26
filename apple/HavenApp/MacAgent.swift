@@ -67,3 +67,15 @@ enum MacAgent {
     }
 }
 #endif
+
+#if os(macOS)
+import AppKit
+
+/// Native-macOS background-agent control. When the window is closed while serving as a relay, the app
+/// keeps running but drops the dock icon (and there is no menu bar) — truly invisible. Re-launching
+/// Haven brings the window back. Uses the PUBLIC NSApplication API (no Obj-C bridge needed on native).
+enum MacAgent {
+    static func goInvisible() { NSApp.setActivationPolicy(.accessory) }   // no dock icon
+    static func goVisible()   { NSApp.setActivationPolicy(.regular) }     // normal app
+}
+#endif
