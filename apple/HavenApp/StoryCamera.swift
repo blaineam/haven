@@ -1455,7 +1455,11 @@ struct LoopingVideo: UIViewRepresentable {
             self.asset = asset
             current = filter
             let item = Self.makeItem(asset: asset, filter: filter)
-            let queue = AVQueuePlayer(playerItem: item)
+            // The queue MUST start empty: AVPlayerLooper enqueues copies of the templateItem itself.
+            // Passing the same item to AVQueuePlayer(playerItem:) AND as the template makes the looper
+            // re-insert an item already owned by the player → -[AVPlayer _insertItem:afterItem:] throws
+            // (SIGABRT). Apple's documented pattern is an empty AVQueuePlayer().
+            let queue = AVQueuePlayer()
             queue.isMuted = true
             looper = AVPlayerLooper(player: queue, templateItem: item)
             playerLayer.player = queue
@@ -1469,6 +1473,7 @@ struct LoopingVideo: UIViewRepresentable {
             guard filter != current, let asset, let queue else { return }
             current = filter
             let item = Self.makeItem(asset: asset, filter: filter)
+            queue.removeAllItems()   // clear the previous looper's enqueued items before re-looping
             looper = AVPlayerLooper(player: queue, templateItem: item)
             queue.play()
         }
@@ -1524,7 +1529,8 @@ struct LoopingVideo: NSViewRepresentable {
             self.asset = asset
             current = filter
             let item = Self.makeItem(asset: asset, filter: filter)
-            let q = AVQueuePlayer(playerItem: item)
+            // Empty queue — the looper enqueues copies of templateItem (see the iOS load() above).
+            let q = AVQueuePlayer()
             q.isMuted = true
             looper = AVPlayerLooper(player: q, templateItem: item)
             let pl = AVPlayerLayer(player: q)
@@ -1538,6 +1544,7 @@ struct LoopingVideo: NSViewRepresentable {
         func update(filter: HavenFilter) {
             guard filter != current, let asset, let queue else { return }
             current = filter
+            queue.removeAllItems()   // clear the previous looper's enqueued items before re-looping
             looper = AVPlayerLooper(player: queue, templateItem: Self.makeItem(asset: asset, filter: filter))
             queue.play()
         }
