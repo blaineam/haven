@@ -81,13 +81,21 @@ final class WatchConnectivityClient: NSObject, ObservableObject {
         loadingThread = true
         // Show what we already have immediately if the same thread is cached.
         if openThread?.threadId != threadId { openThread = nil }
-        guard activated, session.isReachable else { loadingThread = false; return }
-        session.sendMessage(WatchCodec.encode(.requestThread, WatchThreadRequest(threadId: threadId)),
-                            replyHandler: { [weak self] reply in
-            Task { @MainActor in self?.ingest(reply) }
-        }, errorHandler: { [weak self] _ in
-            Task { @MainActor in self?.loadingThread = false }
-        })
+        guard activated else { loadingThread = false; return }
+        let payload = WatchCodec.encode(.requestThread, WatchThreadRequest(threadId: threadId))
+        if session.isReachable {
+            session.sendMessage(payload, replyHandler: { [weak self] reply in
+                Task { @MainActor in self?.ingest(reply) }
+            }, errorHandler: { [weak self] _ in
+                // Live send failed mid-flight — queue it so the phone wakes to answer via userInfo
+                // (the response comes back through didReceiveUserInfo → ingest).
+                self?.session.transferUserInfo(payload)
+            })
+        } else {
+            // Phone app isn't active/reachable — DON'T give up (that left threads stuck on "No posts
+            // yet"). Queue the request; it can wake the phone in the background to respond via userInfo.
+            session.transferUserInfo(payload)
+        }
     }
 
     func sendReply(threadId: String, body: String, targetId: String? = nil) {

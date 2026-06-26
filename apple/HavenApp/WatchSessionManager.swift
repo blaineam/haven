@@ -144,12 +144,19 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
     // MARK: - Inbound routing
 
     @MainActor private func apply(_ message: [String: Any], reply: (([String: Any]) -> Void)?) {
+        // When the watch reached us via a live message, answer through its replyHandler. When the
+        // request arrived queued via userInfo (the phone app was asleep/unreachable), there is NO
+        // reply handler — push the answer back the same way, or the watch waits forever ("No posts
+        // yet"). This is exactly the path that left opened threads empty when the phone wasn't active.
+        func respond(_ payload: [String: Any]) {
+            if let reply { reply(payload) } else { session.transferUserInfo(payload) }
+        }
         switch WatchCodec.kind(of: message) {
         case .requestSnapshot:
-            reply?(WatchCodec.encode(.snapshot, Self.buildSnapshot()))
+            respond(WatchCodec.encode(.snapshot, Self.buildSnapshot()))
         case .requestThread:
             if let req = WatchCodec.decode(WatchThreadRequest.self, from: message) {
-                reply?(WatchCodec.encode(.thread, Self.buildThread(req.threadId)))
+                respond(WatchCodec.encode(.thread, Self.buildThread(req.threadId)))
             }
         case .quickReply:
             if let r = WatchCodec.decode(WatchReply.self, from: message) {
@@ -158,12 +165,12 @@ final class WatchSessionManager: NSObject, WCSessionDelegate {
                 } else {
                     FeedStore.shared.sendMessage(to: r.threadId, r.body)              // DM / thread message
                 }
-                reply?(WatchCodec.encode(.thread, Self.buildThread(r.threadId)))
+                respond(WatchCodec.encode(.thread, Self.buildThread(r.threadId)))
             }
         case .react:
             if let r = WatchCodec.decode(WatchReaction.self, from: message) {
                 FeedStore.shared.reactMessage(in: r.threadId, r.messageId, r.emoji)
-                reply?(WatchCodec.encode(.thread, Self.buildThread(r.threadId)))
+                respond(WatchCodec.encode(.thread, Self.buildThread(r.threadId)))
             }
         default:
             reply?([:])
