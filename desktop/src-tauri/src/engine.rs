@@ -1425,13 +1425,20 @@ impl Engine {
             let entry = st.incoming_media.entry(reference.clone()).or_insert(IncomingMedia { total, chunks: HashMap::new() });
             entry.chunks.insert(index, plain);
             if entry.chunks.len() as u32 >= entry.total {
-                let mut full = Vec::new();
-                for i in 0..entry.total {
-                    if let Some(c) = entry.chunks.get(&i) {
-                        full.extend_from_slice(c);
+                // Sanity cap: store_under_ref seals the whole media in memory (~2-3x its size). Skip
+                // anything absurdly large (corrupt total, or media bigger than we should hold at once)
+                // rather than risk an allocation blow-up. (Android, a low-heap phone, caps tighter.)
+                let total_size: usize = entry.chunks.values().map(|c| c.len()).sum();
+                const MAX_MEDIA: usize = 1024 * 1024 * 1024; // 1 GB
+                if total_size > 0 && total_size <= MAX_MEDIA {
+                    let mut full = Vec::with_capacity(total_size);
+                    for i in 0..entry.total {
+                        if let Some(c) = entry.chunks.get(&i) {
+                            full.extend_from_slice(c);
+                        }
                     }
+                    complete = Some(full);
                 }
-                complete = Some(full);
                 st.incoming_media.remove(&reference);
             }
         }
