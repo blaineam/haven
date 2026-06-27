@@ -649,7 +649,7 @@ struct StoryCameraView: View {
                 if !dualMode && showLiveFilters, let liveThumb {
                     FilterStrip(thumbnail: liveThumb, selection: $liveFilter)
                         .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        .padding(.horizontal, 12).padding(.bottom, 6)
+                        .padding(.horizontal, 12).padding(.bottom, 20)   // clear the shutter — don't crowd it
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 bottomBar
@@ -915,7 +915,7 @@ struct StoryCameraView: View {
                 if showLiveFilters, let liveThumb {
                     FilterStrip(thumbnail: liveThumb, selection: $liveFilter)
                         .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-                        .padding(.horizontal, 12).padding(.bottom, 6)
+                        .padding(.horizontal, 12).padding(.bottom, 20)   // clear the shutter — don't crowd it
                         .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
                 bottomBar
@@ -1031,7 +1031,9 @@ struct StoryComposerView: View {
         self.onShare = onShare
         self.onDone = onDone
         _filter = State(initialValue: initialFilter)
-        _showFilters = State(initialValue: initialFilter != .original)
+        // Filters stay hidden until the user taps the filter button — even if a live filter was carried
+        // over from capture (the chosen look is still applied to the media; only the picker strip hides).
+        _showFilters = State(initialValue: false)
     }
 
     @State private var caption = ""
