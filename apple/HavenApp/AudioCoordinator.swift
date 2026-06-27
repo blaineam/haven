@@ -25,6 +25,10 @@ final class AudioCoordinator: ObservableObject {
     private var videoPlayer: AVPlayer?
     private var activeTrack: TrackRefFfi?   // the active post's song, so unmute can (re)start it
     private var fadeTimer: Timer?
+    /// True while the app is backgrounded. Blocks AUTO playback — the system music player keeps playing
+    /// even when the app is in the background, so a background feed refresh re-running syncPlayback was
+    /// kicking the post song on out of nowhere. Cleared when the app is active again.
+    private var backgrounded = false
 
     /// Begin a post's audio. If a song is attached it plays (video muted). Otherwise the
     /// author's `muteVideo` choice decides: off → the video plays its own audio; on → silent.
@@ -40,7 +44,9 @@ final class AudioCoordinator: ObservableObject {
         let playVideoAudio = (track == nil) && !muteVideo && !SettingsStore.shared.silent && SettingsStore.shared.videoSoundOn
         videoUnmuted = playVideoAudio
         video?.volume = playVideoAudio ? 1 : 0
-        if let track { MusicPlayback.shared.play(track) }
+        // Never auto-start the song while backgrounded (the system music player would play it audibly even
+        // though the app isn't on screen). It resumes via ensureMusicPlaying when we're foreground again.
+        if let track, !backgrounded { MusicPlayback.shared.play(track) }
     }
 
     /// Tap-to-toggle a music-only post's sound (pause/resume the song).
@@ -100,15 +106,20 @@ final class AudioCoordinator: ObservableObject {
 
     /// Pause all feed playback when the app backgrounds (a call's own audio is separate).
     func pauseForBackground() {
+        backgrounded = true
         MusicPlayback.shared.duck()
         videoPlayer?.pause()
     }
+
+    /// App returned to the foreground — allow playback again (it only actually resumes on the feed, via
+    /// ensureMusicPlaying / a centered post, so returning to a non-feed tab stays silent).
+    func appBecameActive() { backgrounded = false }
 
     /// Make sure the active post's song is playing — unless the viewer is intentionally
     /// listening to a video's audio. Called when a post stays active (e.g. after a video
     /// paused it) so the music resumes as long as you haven't scrolled past the post.
     func ensureMusicPlaying() {
-        guard !videoUnmuted, !SettingsStore.shared.silent else { return }
+        guard !videoUnmuted, !SettingsStore.shared.silent, !backgrounded else { return }
         MusicPlayback.shared.resume()
     }
 
@@ -118,7 +129,7 @@ final class AudioCoordinator: ObservableObject {
     func videoFinished() {
         if videoUnmuted {
             videoPlayer?.volume = 1   // stay unmuted on the looped playback
-        } else {
+        } else if !backgrounded {
             MusicPlayback.shared.resume()
         }
     }
