@@ -870,8 +870,71 @@ final class FeedStore: ObservableObject {
         case 21: CallManager.shared.handleGroupInvite(payload)  // WebRTC mesh group-call invite
         case 22: CallManager.shared.handleCameraState(payload)  // peer toggled their camera on/off
         case 23: handleNearbySelfSync(payload)                  // another of MY devices' self-sync slot (local, relay-free)
+        case 24: handleDeviceEnrollmentRequest(payload)         // a device of mine asks to be authorized with its own key
+        case 25: handleDeviceEnrollmentGrant(payload)           // the primary granted my device a credential
         default: break
         }
+    }
+
+    /// Ask the device that holds the master seed (over the local mesh) to authorize THIS device with its
+    /// own key. The grant comes back as a type-25 message carrying our credential.
+    func requestDeviceEnrollment() {
+        var p = Data()
+        lpAppend(&p, DeviceKeyStore.deviceBundle())
+        lpAppend(&p, Data(DeviceKeyStore.deviceName.utf8))
+        lpAppend(&p, Data(DeviceKeyStore.deviceNodeHex().utf8))
+        nearbyBroadcast(24, p)
+        if let hex = social?.myNodeHex() { sendIroh(24, p, to: hex) }  // also try the iroh path
+    }
+
+    /// Turn on device-key multi-device on THIS (primary) device — register the account key as the
+    /// primary "device #0". Only the master-seed holder can. Idempotent.
+    func enableDeviceRoster() {
+        guard let seed = AccountStore.storedSeed(),
+              let bundle = (try? Account.fromSeed(seed: seed))?.publicBundle() else { return }
+        DeviceRosterManager.shared.enable(social: social, accountSeed: seed, accountBundle: bundle, accountHex: AccountStore.currentNodeHex())
+    }
+
+    /// Revoke a linked device (primary only). It stops being a recipient of future circle key commits.
+    func revokeDevice(_ nodeHex: String) {
+        guard let seed = AccountStore.storedSeed() else { return }
+        DeviceRosterManager.shared.revoke(nodeHex, social: social, accountSeed: seed)
+    }
+
+    /// I hold the master seed → I can authorize. Issue the requesting device a credential, add it to my
+    /// signed roster, and broadcast the grant back. (The requester keeps working as-is; the seed-drop
+    /// that makes revocation final is a separate, guarded step.)
+    private func handleDeviceEnrollmentRequest(_ payload: Data) {
+        guard let seed = AccountStore.storedSeed() else { return }   // only the seed-holder can authorize
+        var off = 0
+        guard let bundle = lpRead(payload, &off),
+              let nameData = lpRead(payload, &off),
+              let hexData = lpRead(payload, &off) else { return }
+        let name = String(data: nameData, encoding: .utf8) ?? "Device"
+        let hex = String(data: hexData, encoding: .utf8) ?? ""
+        guard !hex.isEmpty, hex != DeviceKeyStore.deviceNodeHex() else { return }   // not my own device's request
+        guard let accountBundle = (try? Account.fromSeed(seed: seed))?.publicBundle() else { return }
+        let accountHex = AccountStore.currentNodeHex()
+        DeviceRosterManager.shared.enable(social: social, accountSeed: seed, accountBundle: accountBundle, accountHex: accountHex)
+        guard let cred = DeviceRosterManager.shared.addLinkedDevice(bundle: bundle, nodeHex: hex, name: name, social: social, accountSeed: seed) else { return }
+        var grant = Data()
+        lpAppend(&grant, Data(hex.utf8))
+        lpAppend(&grant, cred)
+        nearbyBroadcast(25, grant)
+        refresh()
+    }
+
+    /// The primary granted my device its credential. Store it. (Engine still runs under the shared seed
+    /// for now — the seed-drop transition that finalizes revocation is a later, guarded step.)
+    private func handleDeviceEnrollmentGrant(_ payload: Data) {
+        var off = 0
+        guard let targetHexData = lpRead(payload, &off), let cred = lpRead(payload, &off) else { return }
+        let targetHex = String(data: targetHexData, encoding: .utf8) ?? ""
+        guard targetHex == DeviceKeyStore.deviceNodeHex() else { return }   // not for this device
+        DeviceCredentialStore.save(cred)
+        NotificationManager.shared.notify(title: "Device authorized",
+                                          body: "This device is now a secure linked device.",
+                                          dedupeKey: "device-auth-grant")
     }
 
     /// Share my S3 bucket as the active circle's mailbox — WITHOUT sending the credentials.

@@ -432,8 +432,11 @@ struct IdentityBackupView: View {
                     NavigationLink { RestoreIdentityView(accountStore: accountStore, onRestored: { reload() }) } label: {
                         Label("Add / restore an identity here", systemImage: "arrow.down.circle")
                     }
+                    NavigationLink { AuthorizedDevicesView() } label: {
+                        Label("Devices", systemImage: "laptopcomputer.and.iphone")
+                    }
                 } header: { Text("Transfer & restore") }
-                footer: { Text("Move an identity to a new device by scanning a QR code, or add/restore one onto this device from a transfer code.") }
+                footer: { Text("Move an identity to a new device by scanning a QR code, add/restore one from a transfer code, or manage + revoke the devices authorized on your account.") }
 
                 Section {
                     Button(role: .destructive) { showFactoryReset = true } label: {

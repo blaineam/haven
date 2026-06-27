@@ -52,6 +52,17 @@ enum DeviceKeyStore {
     }
 }
 
+/// This device's account-signed credential (proof it's authorized), stored once enrollment grants it.
+/// Its presence means "this device has been authorized with its own key"; the seed-drop that finalizes
+/// revocation is a separate, guarded transition.
+enum DeviceCredentialStore {
+    private static let key = "haven.device-credential.v1"
+    static func save(_ cred: Data) { UserDefaults.standard.set(cred, forKey: key) }
+    static func load() -> Data? { UserDefaults.standard.data(forKey: key) }
+    static var isAuthorized: Bool { load() != nil }
+    static func clear() { UserDefaults.standard.removeObject(forKey: key) }
+}
+
 /// One device in the account's roster (for the Authorized-Devices UI).
 struct RosterDevice: Identifiable, Equatable {
     let nodeHex: String
@@ -171,5 +182,73 @@ final class DeviceRosterManager: ObservableObject {
         guard let d = store.data(forKey: key), let s = try? JSONDecoder().decode(Saved.self, from: d) else { return }
         version = s.version; primaryHex = s.primaryHex; revoked = Set(s.revoked)
         entries = s.entries.mapValues { Entry(bundle: $0.bundle, name: $0.name, isPrimary: $0.isPrimary) }
+    }
+}
+
+/// Manage which devices can act for this account, and revoke any of them. The primary (master-key)
+/// device turns on management; another device asks (over the local mesh) to be authorized with its own
+/// key. Revoke cuts a device off from everything posted afterward.
+struct AuthorizedDevicesView: View {
+    @ObservedObject private var roster = DeviceRosterManager.shared
+    @ObservedObject private var store = FeedStore.shared
+    @State private var revokeTarget: RosterDevice?
+
+    private var thisDeviceAuthorized: Bool { DeviceCredentialStore.isAuthorized }
+    private var hasSeed: Bool { AccountStore.storedSeed() != nil }
+
+    var body: some View {
+        ZStack {
+            HavenBackground()
+            Form {
+                Section {
+                    if roster.devices.isEmpty {
+                        Text("No devices linked yet.").foregroundStyle(.secondary)
+                    }
+                    ForEach(roster.devices) { d in
+                        HStack(spacing: 12) {
+                            Image(systemName: d.isPrimary ? "key.fill" : (d.isThisDevice ? "checkmark.seal.fill" : "laptopcomputer"))
+                                .foregroundStyle(d.isPrimary ? HavenTheme.pink : .secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(d.name).font(.subheadline.weight(.medium))
+                                Text(d.isPrimary ? "Master key" : (d.isThisDevice ? "This device" : "Linked device"))
+                                    .font(.caption2).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if !d.isPrimary {
+                                Button(role: .destructive) { revokeTarget = d } label: { Text("Revoke") }
+                                    .buttonStyle(.borderless).tint(.red)
+                            }
+                        }
+                    }
+                } header: { Text("Authorized devices") }
+                footer: { Text("Each linked device has its own key, authorized by your master key. Revoke a device to cut it off from everything posted afterward.")
+                    .fixedSize(horizontal: false, vertical: true) }
+
+                if hasSeed && !roster.isEnabled {
+                    Section {
+                        Button { store.enableDeviceRoster() } label: { Label("Turn on device management", systemImage: "checkmark.shield") }
+                    } footer: { Text("Registers this device as your primary (master-key) device.") }
+                }
+                if !thisDeviceAuthorized {
+                    Section {
+                        Button { store.requestDeviceEnrollment() } label: { Label("Make this a secure linked device", systemImage: "link.badge.plus") }
+                    } footer: { Text("Asks your primary device (it must be nearby) to authorize this device with its own revocable key.")
+                        .fixedSize(horizontal: false, vertical: true) }
+                }
+            }
+            .havenSettingsForm()
+        }
+        .navigationTitle("Devices")
+        .havenInlineNavTitle()
+        .confirmationDialog(revokeTarget.map { "Revoke “\($0.name)”?" } ?? "",
+                            isPresented: Binding(get: { revokeTarget != nil }, set: { if !$0 { revokeTarget = nil } }),
+                            titleVisibility: .visible) {
+            if let t = revokeTarget {
+                Button("Revoke device", role: .destructive) { store.revokeDevice(t.nodeHex); revokeTarget = nil }
+            }
+            Button("Cancel", role: .cancel) { revokeTarget = nil }
+        } message: {
+            Text("This device will no longer receive anything posted to your circles afterward. To use it again you'd re-link it.")
+        }
     }
 }
