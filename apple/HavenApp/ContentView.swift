@@ -363,6 +363,9 @@ struct IdentityBackupView: View {
     @State private var switchTarget: AccountStore.IdentitySummary?
     @State private var renameTarget: AccountStore.IdentitySummary?
     @State private var renameDraft = ""
+    @State private var deleteTarget: AccountStore.IdentitySummary?
+    @State private var showFactoryReset = false
+    @State private var showFactoryResetFinal = false
 
     var body: some View {
         ZStack {
@@ -403,6 +406,11 @@ struct IdentityBackupView: View {
                             Button { renameDraft = id.name; renameTarget = id } label: {
                                 Label("Rename", systemImage: "pencil")
                             }
+                            if !id.isCurrent {
+                                Button(role: .destructive) { deleteTarget = id } label: {
+                                    Label("Delete this identity", systemImage: "trash")
+                                }
+                            }
                         }
                     }
                 } header: { Text("Your identities") }
@@ -426,6 +434,13 @@ struct IdentityBackupView: View {
                     }
                 } header: { Text("Transfer & restore") }
                 footer: { Text("Move an identity to a new device by scanning a QR code, or add/restore one onto this device from a transfer code.") }
+
+                Section {
+                    Button(role: .destructive) { showFactoryReset = true } label: {
+                        Label("Erase app & all identities", systemImage: "trash.fill")
+                    }
+                } header: { Text("Danger zone") }
+                footer: { Text("Permanently erase every identity, circle, post, DM, and setting on this device and return Haven to a clean state. This cannot be undone, and — unlike “Start over” — nothing is recoverable, even with iCloud backup on.") }
             }
             .formStyle(.grouped)   // grouped sections (not macOS right-aligned columns)
             .scrollContentBackground(.hidden)
@@ -461,6 +476,35 @@ struct IdentityBackupView: View {
             Button("Cancel", role: .cancel) { renameTarget = nil }
         } message: {
             Text("Give this identity a name so you can tell your identities apart.")
+        }
+        .confirmationDialog(deleteTarget.map { "Delete “\($0.name)”?" } ?? "",
+                            isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } }),
+                            titleVisibility: .visible) {
+            if let t = deleteTarget {
+                Button("Delete this identity", role: .destructive) {
+                    accountStore.deleteIdentity(seedB64: t.seedB64)
+                    deleteTarget = nil; reload()
+                }
+            }
+            Button("Cancel", role: .cancel) { deleteTarget = nil }
+        } message: {
+            Text("This permanently removes this stored identity and its recovery copy from this device (and from iCloud backup). You won't be able to switch back to it. This can't be undone.")
+        }
+        // Two-step "ample warning" factory reset.
+        .confirmationDialog("Erase Haven and every identity?", isPresented: $showFactoryReset, titleVisibility: .visible) {
+            Button("Continue…", role: .destructive) { showFactoryResetFinal = true }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This wipes ALL identities, circles, posts, DMs, media, and settings on this device and resets Haven to a clean state. Nothing is recoverable — not even with iCloud backup. The people in your circles will no longer recognize any of these identities.")
+        }
+        .alert("Are you absolutely sure?", isPresented: $showFactoryResetFinal) {
+            Button("Erase everything", role: .destructive) {
+                accountStore.factoryReset()
+                reload()
+            }
+            Button("Keep my data", role: .cancel) {}
+        } message: {
+            Text("Last chance — this permanently destroys everything in Haven on this device and cannot be undone.")
         }
     }
 

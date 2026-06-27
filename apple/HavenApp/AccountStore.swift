@@ -443,4 +443,40 @@ final class AccountStore: ObservableObject {
         ProfileStore.shared.reloadForCurrentIdentity()   // load this identity's own name/photo/bio
         return true
     }
+
+    /// Forget a stored (non-active) identity: drop its seed from the recovery archive and its label.
+    /// The active identity can't be deleted here — switch away first, or use `factoryReset()`.
+    @discardableResult
+    func deleteIdentity(seedB64: String) -> Bool {
+        guard seedB64 != account.secretSeed().base64EncodedString() else { return false }
+        var hist = Self.previousIdentities()
+        let before = hist.count
+        hist.removeAll { $0 == seedB64 }
+        guard hist.count != before else { return false }
+        Self.storeHistory(hist)
+        if let seed = Data(base64Encoded: seedB64), let acct = try? Account.fromSeed(seed: seed) {
+            var m = Self.identityLabels(); m[acct.nodeIdHex()] = nil
+            UserDefaults.standard.set(m, forKey: Self.labelsKey)
+        }
+        return true
+    }
+
+    /// Factory reset: erase EVERYTHING — the active identity, every archived/recoverable identity
+    /// (local + iCloud-synced), all labels, locked circles, queued push, and all social state — then
+    /// start fresh with a single blank identity. Unlike `reset()`, nothing here is recoverable.
+    func factoryReset() {
+        Self.deleteSeed()
+        var delHist = Self.historyQuery()
+        delHist[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
+        SecItemDelete(delHist as CFDictionary)
+        UserDefaults.standard.removeObject(forKey: Self.labelsKey)
+        SharedLockedCircles.write([])
+        _ = SharedInbox.drain()
+        let fresh = Account.generate()
+        Self.saveSeed(fresh.secretSeed())
+        SharedSeed.write(fresh.secretSeed())
+        account = fresh
+        ProfileStore.shared.reloadForCurrentIdentity()
+        FeedStore.shared.reconfigure(seed: fresh.secretSeed())
+    }
 }

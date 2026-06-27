@@ -42,7 +42,8 @@ struct ConnectView: View {
             }
             .navigationTitle("Connect")
             .havenInlineNavTitle()
-            .toolbar { ToolbarItem(placement: .havenConfirmTrailing) { Button("Done") { dismiss() } } }
+            // The "added!" confirmation screen has its own prominent Done — don't also show the toolbar one.
+            .toolbar { if addedName == nil { ToolbarItem(placement: .havenConfirmTrailing) { Button("Done") { dismiss() } } } }
             .sheet(isPresented: $showScanner) { scannerSheet }
             .onAppear {
                 guard let link = incomingLink, !link.isEmpty else { return }
