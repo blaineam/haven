@@ -29,6 +29,10 @@ final class BackgroundUploader {
         }
     }
 
+    /// Whether any authored event for this circle is still waiting to reach the relay mailbox (drives
+    /// the post sync-status light: pending = "syncing", empty = "in the relay").
+    func hasPending(circleId: String) -> Bool { queue.contains { $0.circleId == circleId } }
+
     /// Queue an authored event for mailbox upload and kick off a flush.
     func enqueue(circleId: String, env: Data) {
         queue.append(Pending(circleId: circleId, env: env))

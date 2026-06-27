@@ -523,6 +523,16 @@ final class FeedStore: ObservableObject {
         SpotlightIndex.reindexAll()   // no-op unless the user enabled Spotlight indexing
     }
 
+    /// Delivery status for a circle, for the composer's status light. green = a relay holds your content
+    /// (or, with no relay, a nearby member has it); yellow = still syncing; red = only on this device.
+    func syncStatus(circleId: String) -> PostSyncStatus {
+        if !RelayMailboxStore.shared.relays(forCircle: circleId).isEmpty {
+            return BackgroundUploader.shared.hasPending(circleId: circleId) ? .pending : .synced
+        }
+        if nearby?.hasConnectedPeers == true { return .synced }   // delivered directly to ≥1 nearby member
+        return online ? .pending : .stuck                          // online = trying; offline = device-only
+    }
+
     // MARK: - Sensitive content (federated SCA flags)
 
     /// Cache of sensitive media refs per circle (from the shared event log). Cleared on each refresh.
@@ -1554,6 +1564,39 @@ final class FeedStore: ObservableObject {
     }
 }
 
+/// Delivery state of a circle's authored content (the composer status light).
+enum PostSyncStatus {
+    case synced, pending, stuck
+    var color: Color { switch self { case .synced: return .green; case .pending: return .yellow; case .stuck: return .red } }
+    var label: String {
+        switch self {
+        case .synced: return "Synced"
+        case .pending: return "Syncing…"
+        case .stuck: return "On this device only"
+        }
+    }
+}
+
+/// A small green/yellow/red light + label showing whether posts in this circle are getting out. Recomputed
+/// on a light timer so it reflects an upload finishing or a peer connecting without needing a manual refresh.
+struct SyncStatusBadge: View {
+    let circleId: String
+    @ObservedObject private var store = FeedStore.shared
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 2.5)) { _ in
+            let s = store.syncStatus(circleId: circleId)
+            HStack(spacing: 5) {
+                Circle().fill(s.color).frame(width: 7, height: 7)
+                    .shadow(color: s.color.opacity(0.6), radius: 2)
+                Text(s.label).font(.caption2).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(.ultraThinMaterial, in: Capsule())
+            .help("Green: safely in your relay or delivered to a member. Yellow: still syncing. Red: only on this device.")
+        }
+    }
+}
+
 struct FeedView: View {
     @ObservedObject private var store = FeedStore.shared
     @ObservedObject private var settings = SettingsStore.shared
@@ -1895,6 +1938,9 @@ struct FeedView: View {
     private var composerBar: some View {
         VStack { Spacer()
             VStack(spacing: 8) {
+                // Delivery status for this circle: green = safely in your relay / reached a member,
+                // yellow = still syncing, red = only on this device. So you know if a post got out.
+                HStack { Spacer(); SyncStatusBadge(circleId: store.activeCircleId) }
                 if !attachedMedia.isEmpty || attachedTrack != nil || composeRetention != nil { attachmentTray }
                 // Opt-in location tag — only when a photo/video with GPS is attached. Default off.
                 if MediaStore.shared.anyLocated(attachedMedia) {
