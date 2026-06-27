@@ -1007,8 +1007,12 @@ fn receive_key_commit(st: &mut NetState, idx: usize, body: &[u8]) -> Result<bool
     let me_hex = hex(&st.me.public().node_id_bytes());
     let committer = if sender_hex == me_hex {
         Some(st.me.public()) // my own re-synced commit (e.g. multi-device / backfill)
+    } else if let Some(m) = st.circles[idx].members.iter().find(|m| hex(&m.node_id_bytes()) == sender_hex) {
+        Some(m.clone())
     } else {
-        st.circles[idx].members.iter().find(|m| hex(&m.node_id_bytes()) == sender_hex).cloned()
+        // Or an AUTHORIZED DEVICE of a member: its credential chain was verified against the member's
+        // account when the roster was ingested, so a device acting for a member is accepted here.
+        authorized_device_bundle(st, idx, &sender_hex)
     };
     let Some(committer) = committer else { return Ok(false) };
     let opened = match open_key_commit(&st.me, &committer, &env) {
@@ -1047,11 +1051,15 @@ fn receive_epoch_event(st: &mut NetState, idx: usize, body: &[u8]) -> Result<boo
         .map_err(|e| HavenError::Invalid { msg: format!("bad epoch envelope: {e}") })?;
     let sender_hex = env.sender_hex();
     let me_hex = hex(&st.me.public().node_id_bytes());
-    let sender = st.circles[idx]
+    let sender = match st.circles[idx]
         .members
         .iter()
         .find(|m| hex(&m.node_id_bytes()) == sender_hex)
-        .cloned();
+        .cloned()
+    {
+        Some(m) => Some(m),
+        None => authorized_device_bundle(st, idx, &sender_hex), // a member's authorized device
+    };
     let Some(sender) = sender else { return Ok(false) }; // unknown / removed sender → drop
     let Some(key) = st.circles[idx].key_for(&me_hex, &sender_hex, env.epoch) else {
         // Epoch key not learned yet — buffer (capped + de-duped); a later key commit unlocks it.
@@ -1818,6 +1826,27 @@ fn verify_and_store_roster(st: &mut NetState, account: &HavenId, list_bytes: &[u
     true
 }
 
+/// If `sender_hex` is an AUTHORIZED device of a member of circle `idx` (or of me), return that device's
+/// bundle — the verifying key for content the device authored on the account's behalf. The device's
+/// credential chain was already verified when its roster was ingested, so the device's account being a
+/// circle member is the only remaining check.
+fn authorized_device_bundle(st: &NetState, idx: usize, sender_hex: &str) -> Option<HavenId> {
+    let my_id = st.me.public().node_id_bytes();
+    for (acct_id, cd) in &st.device_lists {
+        let acct_in_circle =
+            *acct_id == my_id || st.circles[idx].members.iter().any(|m| m.node_id_bytes() == *acct_id);
+        if !acct_in_circle {
+            continue;
+        }
+        for bundle in cd.authorized_bundles() {
+            if hex(&bundle.node_id_bytes()) == sender_hex {
+                return Some(bundle);
+            }
+        }
+    }
+    None
+}
+
 /// Wire layout: `lp(account_bundle) ‖ lp(device_list) ‖ u32 n ‖ lp(credential)*n` (all u32-LE lengths).
 fn encode_roster(account: &HavenId, cd: &ContactDevices) -> Vec<u8> {
     fn lp(out: &mut Vec<u8>, b: &[u8]) {
@@ -2118,5 +2147,48 @@ mod net_tests {
         assert!(alice.ingest_device_roster(account.public().to_bytes(), v3.to_bytes(), vec![cred.to_bytes()]));
         let stale = DeviceList::signed(&account, 2, 0, vec![], vec![]);
         assert!(!alice.ingest_device_roster(account.public().to_bytes(), stale.to_bytes(), vec![]));
+    }
+
+    /// End-to-end: a member's AUTHORIZED linked device receives the circle's content, and REVOKING it
+    /// cuts it off from everything posted afterward. This is "revocable device linking" working.
+    #[test]
+    fn linked_device_receives_then_revocation_cuts_it_off() {
+        let alice = HavenSocial::new([1u8; 32].to_vec()).unwrap();
+        let bob = HavenSocial::new([2u8; 32].to_vec()).unwrap();
+        let bob_phone = HavenSocial::new([22u8; 32].to_vec()).unwrap();
+        let cid = DEFAULT_CIRCLE.to_string();
+
+        alice.add_contact_bundle(cid.clone(), bob.my_bundle()).unwrap();
+        bob.add_contact_bundle(cid.clone(), alice.my_bundle()).unwrap();
+        bob_phone.add_contact_bundle(cid.clone(), alice.my_bundle()).unwrap(); // phone verifies Alice's commits
+
+        let bob_acct_id = Identity::from_seed(&[2u8; 32]).public().node_id_bytes().to_vec();
+        let phone_id = Identity::from_seed(&[22u8; 32]).public().node_id_bytes().to_vec();
+        let acct_cred = crate::multidevice::issue_device_credential([2u8; 32].to_vec(), bob.my_bundle(), "bob-primary".into(), 0).unwrap();
+        let phone_cred = crate::multidevice::issue_device_credential([2u8; 32].to_vec(), bob_phone.my_bundle(), "bob-phone".into(), 1).unwrap();
+
+        // Bob's roster v1 authorizes his account + his phone. Alice learns it.
+        let v1 = crate::multidevice::sign_device_list([2u8; 32].to_vec(), 1, 0, vec![bob_acct_id.clone(), phone_id.clone()], vec![]).unwrap();
+        assert!(bob.set_my_device_roster(v1.clone(), vec![acct_cred.clone(), phone_cred.clone()]));
+        assert!(alice.ingest_device_roster(bob.my_bundle(), v1, vec![acct_cred.clone(), phone_cred.clone()]));
+
+        // Alice posts → her key commit seals to Bob's phone too → the phone receives it.
+        let _ = alice.post(cid.clone(), "before revoke".into(), vec![], None, None, false, false, 1_000).unwrap();
+        sync(&alice, &bob_phone, &cid);
+        let feed = bob_phone.feed(cid.clone(), 2_000, None);
+        assert_eq!(feed.len(), 1, "linked device received the post");
+        assert_eq!(feed[0].body, "before revoke");
+
+        // Bob REVOKES the phone (roster v2: phone moved to revoked). Alice learns it (rotating her epoch).
+        let v2 = crate::multidevice::sign_device_list([2u8; 32].to_vec(), 2, 1, vec![bob_acct_id], vec![phone_id]).unwrap();
+        assert!(alice.ingest_device_roster(bob.my_bundle(), v2, vec![acct_cred]));
+
+        // Alice posts again → her NEW key commit is sealed only to the remaining devices; the revoked
+        // phone is not a recipient, so it can't learn the new epoch key and never sees this post.
+        let _ = alice.post(cid.clone(), "after revoke".into(), vec![], None, None, false, false, 3_000).unwrap();
+        sync(&alice, &bob_phone, &cid);
+        let feed2 = bob_phone.feed(cid.clone(), 4_000, None);
+        assert!(feed2.iter().all(|m| m.body != "after revoke"),
+                "REVOKED device must not receive anything posted after revocation");
     }
 }
