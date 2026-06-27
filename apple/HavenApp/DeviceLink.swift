@@ -77,7 +77,7 @@ struct LinkDeviceView: View {
                     Image(systemName: "iphone.and.arrow.forward")
                         .font(.system(size: 44)).foregroundStyle(HavenTheme.pink).padding(.top, 8)
                     Text("Link a new device").font(.title3.bold())
-                    Text("On your other device, open Haven → **Settings → Advanced → Restore identity here** and scan this code. Both devices then act as **you** — each can post and receive, and they sync to each other directly when they're near or online together.")
+                    Text("On your other device, choose **“Link this as another of my devices”** on its welcome screen (or Settings → Devices), then scan this code — or tap Copy and paste it there. Both devices then act as **you**, each posting + receiving and syncing directly when near or online together.")
                         .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
 
                     if revealed {

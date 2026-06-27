@@ -199,6 +199,9 @@ final class DeviceRosterManager: ObservableObject {
 /// device turns on management; another device asks (over the local mesh) to be authorized with its own
 /// key. Revoke cuts a device off from everything posted afterward.
 struct AuthorizedDevicesView: View {
+    /// Passed in so this screen can show a link code for a NEW device to scan/paste. Optional only so
+    /// older call sites still compile; always pass it where you can.
+    var accountStore: AccountStore? = nil
     @ObservedObject private var roster = DeviceRosterManager.shared
     @ObservedObject private var store = FeedStore.shared
     @State private var revokeTarget: RosterDevice?
@@ -234,6 +237,16 @@ struct AuthorizedDevicesView: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
+                }
+                // Show a link code for a NEW device to scan/paste — this was missing, so there was no way
+                // to actually link from here. Any device holding the account can present it.
+                if let accountStore, hasSeed {
+                    Section {
+                        NavigationLink { LinkDeviceView(accountStore: accountStore) } label: {
+                            Label("Link another device…", systemImage: "qrcode")
+                        }
+                    } footer: { Text("Show a QR/code for your other device to scan or paste on its welcome screen (“Link this as another of my devices”).")
+                        .fixedSize(horizontal: false, vertical: true) }
                 }
                 Section {
                     if roster.devices.isEmpty {

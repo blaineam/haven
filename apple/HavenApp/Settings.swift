@@ -167,7 +167,7 @@ struct SettingsView: View {
                     Text("Back up your identity to iCloud so it follows you to a new Apple device, move it to another device with a QR code, or restore/swap an identity here.")
                 }
                 Section {
-                    NavigationLink { AuthorizedDevicesView() } label: {
+                    NavigationLink { AuthorizedDevicesView(accountStore: accountStore) } label: {
                         Label("Devices", systemImage: "laptopcomputer.and.iphone")
                     }
                 } footer: {

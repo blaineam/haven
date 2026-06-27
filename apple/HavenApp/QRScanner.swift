@@ -199,13 +199,20 @@ final class ScannerNSView: NSView {
         // connection is live). Setting `.qr` BEFORE that either throws "unsupported type" → SIGABRT, or
         // (with the earlier guard) silently no-ops so the scanner never fires — which is why the Mac
         // webcam wouldn't read the link QR. Set it here, post-run, when .qr is actually available.
+        // `availableMetadataObjectTypes` populates only once the connection is live, and on the Mac
+        // webcam that can lag well past startRunning(). A single retry sometimes missed it entirely, so
+        // the scanner never armed and "never accepted" any QR. Poll for up to ~3s until .qr is offered.
+        armQRType(output, attemptsLeft: 12)
+    }
+
+    private func armQRType(_ output: AVCaptureMetadataOutput, attemptsLeft: Int) {
         if output.availableMetadataObjectTypes.contains(.qr) {
             output.metadataObjectTypes = [.qr]
-        } else {
-            // Connection metadata can lag a beat behind startRunning(); retry once it's up.
-            sessionQueue.asyncAfter(deadline: .now() + 0.2) {
-                if output.availableMetadataObjectTypes.contains(.qr) { output.metadataObjectTypes = [.qr] }
-            }
+            return
+        }
+        guard attemptsLeft > 0 else { return }
+        sessionQueue.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            self?.armQRType(output, attemptsLeft: attemptsLeft - 1)
         }
     }
 
