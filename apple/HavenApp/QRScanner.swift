@@ -106,10 +106,13 @@ final class ScannerVC: UIViewController, AVCaptureMetadataOutputObjectsDelegate 
 #endif
 
 #if os(macOS)
-/// Native macOS live camera QR scanner. Mirrors the iOS `QRScannerView` public surface
-/// (a single `onFound: (String) -> Void`) using an `NSViewRepresentable` that hosts an
-/// `AVCaptureVideoPreviewLayer` over an `AVCaptureSession` with an `AVCaptureMetadataOutput`
-/// configured for `.qr`. `onFound` fires exactly once, on the main actor, with the decoded value.
+import Vision
+
+/// Native macOS live camera QR scanner. The old version used `AVCaptureMetadataOutput` configured for
+/// `.qr`, which is unreliable on the Mac webcam (the `.qr` type often never becomes available, so it
+/// never detected anything). This version pulls raw frames via `AVCaptureVideoDataOutput` and runs
+/// Vision's `VNDetectBarcodesRequest` on each — Vision QR detection is solid on macOS. `onFound` fires
+/// exactly once, on the main actor, with the decoded value.
 struct QRScannerView: NSViewRepresentable {
     var onFound: (String) -> Void
 
@@ -127,21 +130,23 @@ struct QRScannerView: NSViewRepresentable {
         nsView.stop()
     }
 
-    final class Coordinator: NSObject, AVCaptureMetadataOutputObjectsDelegate {
+    final class Coordinator: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
         private let onFound: (String) -> Void
         private var fired = false
         weak var view: ScannerNSView?
         init(onFound: @escaping (String) -> Void) { self.onFound = onFound }
 
-        func metadataOutput(_ output: AVCaptureMetadataOutput,
-                            didOutput metadataObjects: [AVMetadataObject],
-                            from connection: AVCaptureConnection) {
-            guard !fired,
-                  let obj = metadataObjects.first as? AVMetadataMachineReadableCodeObject,
-                  let value = obj.stringValue, !value.isEmpty else { return }
+        func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer,
+                           from connection: AVCaptureConnection) {
+            guard !fired, let pixels = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
+            let request = VNDetectBarcodesRequest()
+            request.symbologies = [.qr]
+            let handler = VNImageRequestHandler(cvPixelBuffer: pixels, options: [:])
+            try? handler.perform([request])
+            guard let payload = (request.results?.first)?.payloadStringValue, !payload.isEmpty else { return }
             fired = true
             view?.stop()
-            Task { @MainActor in self.onFound(value) }
+            Task { @MainActor in self.onFound(payload) }
         }
     }
 }
@@ -151,6 +156,7 @@ final class ScannerNSView: NSView {
     private let session = AVCaptureSession()
     private var preview: AVCaptureVideoPreviewLayer?
     private let sessionQueue = DispatchQueue(label: "haven.qrscanner.session")
+    private let frameQueue = DispatchQueue(label: "haven.qrscanner.frames")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -177,13 +183,14 @@ final class ScannerNSView: NSView {
         }
         session.addInput(input)
 
-        let output = AVCaptureMetadataOutput()
+        let output = AVCaptureVideoDataOutput()
+        output.alwaysDiscardsLateVideoFrames = true
         guard session.canAddOutput(output) else {
             session.commitConfiguration()
             return
         }
+        output.setSampleBufferDelegate(coordinator, queue: frameQueue)
         session.addOutput(output)
-        output.setMetadataObjectsDelegate(coordinator, queue: .main)
         session.commitConfiguration()
 
         Task { @MainActor in
@@ -195,25 +202,6 @@ final class ScannerNSView: NSView {
         }
 
         if !session.isRunning { session.startRunning() }
-        // `availableMetadataObjectTypes` is only populated once the session is RUNNING (the output's
-        // connection is live). Setting `.qr` BEFORE that either throws "unsupported type" → SIGABRT, or
-        // (with the earlier guard) silently no-ops so the scanner never fires — which is why the Mac
-        // webcam wouldn't read the link QR. Set it here, post-run, when .qr is actually available.
-        // `availableMetadataObjectTypes` populates only once the connection is live, and on the Mac
-        // webcam that can lag well past startRunning(). A single retry sometimes missed it entirely, so
-        // the scanner never armed and "never accepted" any QR. Poll for up to ~3s until .qr is offered.
-        armQRType(output, attemptsLeft: 12)
-    }
-
-    private func armQRType(_ output: AVCaptureMetadataOutput, attemptsLeft: Int) {
-        if output.availableMetadataObjectTypes.contains(.qr) {
-            output.metadataObjectTypes = [.qr]
-            return
-        }
-        guard attemptsLeft > 0 else { return }
-        sessionQueue.asyncAfter(deadline: .now() + 0.25) { [weak self] in
-            self?.armQRType(output, attemptsLeft: attemptsLeft - 1)
-        }
     }
 
     func stop() {
