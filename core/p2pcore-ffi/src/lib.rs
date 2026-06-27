@@ -12,6 +12,7 @@ use haven_net::Node;
 use haven_net::blobstore::{BlobClient, BlobServer};
 use std::path::PathBuf;
 use p2pcore::crypto::{decapsulate, encapsulate_to, open, seal, Encapsulation};
+use p2pcore::device::{recipients_with_devices, ContactDevices, DeviceCredential, DeviceList};
 use p2pcore::identity::{Identity, HavenId};
 use p2pcore::link::HavenLink;
 use p2pcore::social::{
@@ -27,6 +28,7 @@ use p2pcore::groupkey::{
 /// JSON beginning with `{` (0x7b), so any tag byte we choose that isn't `{` is unambiguous.
 const TAG_EPOCH_EVENT: u8 = 0x02; // an EpochEnvelope (event sealed under a circle epoch key)
 const TAG_KEY_COMMIT: u8 = 0x03; // a SealedEnvelope carrying a circle epoch key (KeyCommit)
+const TAG_DEVICE_ROSTER: u8 = 0x04; // an account's signed device roster (DeviceList + DeviceCredentials)
 
 uniffi::setup_scaffolding!();
 
@@ -928,6 +930,11 @@ impl Circle {
 struct NetState {
     me: Identity,
     circles: Vec<Circle>,
+    /// Verified multi-device rosters keyed by account node id — MINE (so my own linked devices receive
+    /// content) and each contact's (so I seal to their devices, never a revoked one). Empty for any
+    /// account whose devices I haven't learned yet → that member falls back to its account key, so
+    /// pre-multidevice peers keep working. See `recipients_with_devices`.
+    device_lists: std::collections::HashMap<[u8; 32], ContactDevices>,
 }
 
 const DEFAULT_CIRCLE: &str = "default";
@@ -1170,6 +1177,7 @@ impl HavenSocial {
             state: Mutex::new(NetState {
                 me: Identity::from_seed(&seed),
                 circles: vec![Circle::bare(DEFAULT_CIRCLE.to_string(), "My Circle".to_string())],
+                device_lists: std::collections::HashMap::new(),
             }),
         }))
     }
@@ -1458,6 +1466,35 @@ impl HavenSocial {
         self.epoch_sync_bundle(&circle_id)
     }
 
+    // ---- Multi-device (D16/Phase 4): seal circles to authorized devices, revoke by dropping one ----
+
+    /// Record THIS account's own signed device roster (my linked devices) so my circles' key commits
+    /// seal to all of them. Verified against my own account key; rotates my epochs so it takes effect.
+    pub fn set_my_device_roster(&self, list: Vec<u8>, credentials: Vec<Vec<u8>>) -> bool {
+        let mut st = self.state.lock().unwrap();
+        let me_pub = st.me.public();
+        verify_and_store_roster(&mut st, &me_pub, &list, &credentials)
+    }
+
+    /// Record a CONTACT's signed device roster (verified against their pinned account bundle) so I seal
+    /// to their devices and honor revocations. False on a forged / stale (rolled-back) roster.
+    pub fn ingest_device_roster(&self, account_bundle: Vec<u8>, list: Vec<u8>, credentials: Vec<Vec<u8>>) -> bool {
+        let Ok(account) = HavenId::from_bytes(&account_bundle) else { return false };
+        let mut st = self.state.lock().unwrap();
+        verify_and_store_roster(&mut st, &account, &list, &credentials)
+    }
+
+    /// My own device roster, wire-encoded for sharing with contacts (rides the sync bundle so peers
+    /// learn which of my devices to seal to). Empty if I haven't enrolled any devices yet.
+    pub fn my_device_roster_wire(&self) -> Vec<u8> {
+        let st = self.state.lock().unwrap();
+        let me_pub = st.me.public();
+        match st.device_lists.get(&me_pub.node_id_bytes()) {
+            Some(cd) => tagged(TAG_DEVICE_ROSTER, &encode_roster(&me_pub, cd)),
+            None => vec![],
+        }
+    }
+
     /// Everything a freshly-synced peer (or the relay mailbox) needs to read my contributions to a
     /// circle: the current epoch **key commit** (so they can open my epoch events) followed by my own
     /// events re-sealed under that epoch. Tagged for `receive`'s router. This is the *only* transport
@@ -1471,9 +1508,19 @@ impl HavenSocial {
         let epoch = st.circles[idx].my_epoch;
         let Some(key) = st.circles[idx].current_key() else { return vec![] };
         let secret = st.circles[idx].my_circle_secret;
-        let mut members = vec![st.me.public()];
-        members.extend(st.circles[idx].members.iter().cloned());
+        let mut accounts = vec![st.me.public()];
+        accounts.extend(st.circles[idx].members.iter().cloned());
+        // Expand each account member to its AUTHORIZED devices (mine + each contact's), so the circle's
+        // key commit seals to every trusted device and NEVER a revoked one. Members whose device roster
+        // we haven't learned fall back to their account key — pre-multidevice peers keep working.
+        let members = recipients_with_devices(&accounts, &st.device_lists);
         let mut out: Vec<Vec<u8>> = Vec::new();
+        // Share my OWN device roster so peers seal their content to all my devices (and never a revoked
+        // one). Idempotent: a same-version roster is ignored on the receiver, so this can't rotation-storm.
+        let me_pub = st.me.public();
+        if let Some(cd) = st.device_lists.get(&me_pub.node_id_bytes()) {
+            out.push(tagged(TAG_DEVICE_ROSTER, &encode_roster(&me_pub, cd)));
+        }
         if let Ok(commit) = seal_key_commit(&st.me, &members, circle_id, epoch, &key, &secret) {
             out.push(tagged(TAG_KEY_COMMIT, &commit.to_bytes()));
         }
@@ -1500,6 +1547,16 @@ impl HavenSocial {
         match envelope[0] {
             TAG_KEY_COMMIT => receive_key_commit(&mut st, idx, &envelope[1..]),
             TAG_EPOCH_EVENT => receive_epoch_event(&mut st, idx, &envelope[1..]),
+            TAG_DEVICE_ROSTER => {
+                // Account-level (not circle-specific) — verify against the carried account bundle, store,
+                // and rotate affected epochs. Forged/stale rosters are rejected inside the verifier.
+                match decode_roster(&envelope[1..]).and_then(|(acct, list, creds)| {
+                    HavenId::from_bytes(&acct).ok().map(|a| (a, list, creds))
+                }) {
+                    Some((account, list, creds)) => Ok(verify_and_store_roster(&mut st, &account, &list, &creds)),
+                    None => Ok(false),
+                }
+            }
             _ => receive_legacy(&mut st, idx, &envelope), // untagged JSON `{…}` = legacy envelope
         }
     }
@@ -1723,6 +1780,84 @@ fn tagged(tag: u8, body: &[u8]) -> Vec<u8> {
     v.push(tag);
     v.extend_from_slice(body);
     v
+}
+
+// ---- Multi-device device-roster storage + wire codec (D16/Phase 4) ------------------------------
+
+/// Verify a signed device roster against `account` (the list AND every credential must chain to it),
+/// store it (higher-version-wins, rollback-defended), and rotate every circle epoch this account is in
+/// so the new device set takes effect — a revoked device can't open content sealed afterward, a new one
+/// can. Returns false on a forged or stale roster.
+fn verify_and_store_roster(st: &mut NetState, account: &HavenId, list_bytes: &[u8], cred_bytes: &[Vec<u8>]) -> bool {
+    let Ok(list) = DeviceList::from_bytes(list_bytes) else { return false };
+    if list.verify(account).is_err() {
+        return false;
+    }
+    let mut credentials = Vec::with_capacity(cred_bytes.len());
+    for cb in cred_bytes {
+        let Ok(cred) = DeviceCredential::from_bytes(cb) else { return false };
+        if cred.verify(account).is_err() {
+            return false; // every credential must be signed by THIS account — no smuggling a rogue device.
+        }
+        credentials.push(cred);
+    }
+    let acct_id = account.node_id_bytes();
+    if let Some(existing) = st.device_lists.get(&acct_id) {
+        if existing.list.version >= list.version {
+            return false; // rollback / replay of an older roster — ignore.
+        }
+    }
+    st.device_lists.insert(acct_id, ContactDevices { list, credentials });
+    let my_id = st.me.public().node_id_bytes();
+    for c in st.circles.iter_mut() {
+        let affected = acct_id == my_id || c.members.iter().any(|m| m.node_id_bytes() == acct_id);
+        if affected {
+            c.rotate_epoch();
+        }
+    }
+    true
+}
+
+/// Wire layout: `lp(account_bundle) ‖ lp(device_list) ‖ u32 n ‖ lp(credential)*n` (all u32-LE lengths).
+fn encode_roster(account: &HavenId, cd: &ContactDevices) -> Vec<u8> {
+    fn lp(out: &mut Vec<u8>, b: &[u8]) {
+        out.extend_from_slice(&(b.len() as u32).to_le_bytes());
+        out.extend_from_slice(b);
+    }
+    let mut out = Vec::new();
+    lp(&mut out, &account.to_bytes());
+    lp(&mut out, &cd.list.to_bytes());
+    out.extend_from_slice(&(cd.credentials.len() as u32).to_le_bytes());
+    for c in &cd.credentials {
+        lp(&mut out, &c.to_bytes());
+    }
+    out
+}
+
+/// Inverse of [`encode_roster`]: returns `(account_bundle, device_list_bytes, credential_bytes)`.
+fn decode_roster(b: &[u8]) -> Option<(Vec<u8>, Vec<u8>, Vec<Vec<u8>>)> {
+    let mut i = 0usize;
+    fn u32_at(b: &[u8], i: &mut usize) -> Option<usize> {
+        if *i + 4 > b.len() { return None; }
+        let n = u32::from_le_bytes(b[*i..*i + 4].try_into().ok()?) as usize;
+        *i += 4;
+        Some(n)
+    }
+    fn lp(b: &[u8], i: &mut usize) -> Option<Vec<u8>> {
+        let n = u32_at(b, i)?;
+        if *i + n > b.len() { return None; }
+        let v = b[*i..*i + n].to_vec();
+        *i += n;
+        Some(v)
+    }
+    let account = lp(b, &mut i)?;
+    let list = lp(b, &mut i)?;
+    let n = u32_at(b, &mut i)?;
+    let mut creds = Vec::with_capacity(n);
+    for _ in 0..n {
+        creds.push(lp(b, &mut i)?);
+    }
+    Some((account, list, creds))
 }
 
 /// Domain-separated bytes for a profile-card signature (audit H3): a purpose tag prefixed to the JSON
@@ -1949,5 +2084,39 @@ mod net_tests {
         );
         // Posting still works after pruning (current epoch key is always retained).
         assert!(!alice.post(cid, "after rotations".into(), vec![], None, None, false, false, 2).unwrap().is_empty());
+    }
+
+    #[test]
+    fn device_roster_wire_verification_and_rollback() {
+        use p2pcore::device::{DeviceCredential, DeviceList};
+        let account = Identity::from_seed(&[1u8; 32]);
+        let phone = Identity::from_seed(&[2u8; 32]);
+        let imposter = Identity::from_seed(&[9u8; 32]);
+
+        let list = DeviceList::signed(&account, 1, 0, vec![phone.public().node_id_bytes()], vec![]);
+        let cred = DeviceCredential::issue(&account, &phone.public(), "phone", 1);
+        let cd = ContactDevices { list: list.clone(), credentials: vec![cred.clone()] };
+
+        // Wire round-trip.
+        let (acct_b, list_b, creds_b) = decode_roster(&encode_roster(&account.public(), &cd)).expect("decode");
+        assert_eq!(acct_b, account.public().to_bytes());
+        assert_eq!(list_b, list.to_bytes());
+        assert_eq!(creds_b, vec![cred.to_bytes()]);
+
+        let alice = HavenSocial::new([5u8; 32].to_vec()).unwrap();
+        // A valid roster (list + creds both signed by the account) is accepted.
+        assert!(alice.ingest_device_roster(account.public().to_bytes(), list.to_bytes(), vec![cred.to_bytes()]));
+        // A roster NOT signed by the claimed account is rejected (anti-rogue-device).
+        let forged = DeviceList::signed(&imposter, 2, 0, vec![phone.public().node_id_bytes()], vec![]);
+        assert!(!alice.ingest_device_roster(account.public().to_bytes(), forged.to_bytes(), vec![]));
+        // A credential signed by someone else can't be smuggled into a valid list.
+        let rogue_cred = DeviceCredential::issue(&imposter, &phone.public(), "rogue", 1);
+        let list2 = DeviceList::signed(&account, 2, 0, vec![phone.public().node_id_bytes()], vec![]);
+        assert!(!alice.ingest_device_roster(account.public().to_bytes(), list2.to_bytes(), vec![rogue_cred.to_bytes()]));
+        // Rollback defense: after storing v3, a v2 replay is rejected.
+        let v3 = DeviceList::signed(&account, 3, 0, vec![phone.public().node_id_bytes()], vec![]);
+        assert!(alice.ingest_device_roster(account.public().to_bytes(), v3.to_bytes(), vec![cred.to_bytes()]));
+        let stale = DeviceList::signed(&account, 2, 0, vec![], vec![]);
+        assert!(!alice.ingest_device_roster(account.public().to_bytes(), stale.to_bytes(), vec![]));
     }
 }
