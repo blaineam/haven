@@ -404,8 +404,14 @@ final class FeedStore: ObservableObject {
     private func bringOnline(seed: Data) {
         // Nearby Bluetooth / Wi-Fi mesh — works even with no internet at all.
         if let social {
+            // Display name must be UNIQUE PER DEVICE, not per account: two of my own devices share the
+            // account node hex, so an account-hex name made the "smaller name invites" tie-breaker a
+            // no-op between them (displayName == displayName) — they NEVER connected over the mesh, which
+            // is why local self-sync silently did nothing. Mix in the per-device key hex. (Identity is
+            // still proven by the Hello bundle, so this only affects who-invites-whom.)
+            let nearbyName = String(social.myNodeHex().prefix(28)) + "-" + String(DeviceKeyStore.deviceNodeHex().prefix(28))
             let nt = NearbyTransport(
-                displayName: social.myNodeHex(),
+                displayName: nearbyName,
                 onInbound: { [weak self] data in Task { @MainActor in self?.handleInbound(data, viaNearby: true) } },
                 onPeerConnected: { [weak self] in Task { @MainActor in self?.nearbyPeerConnected() } }
             )
@@ -886,6 +892,12 @@ final class FeedStore: ObservableObject {
         lpAppend(&p, Data(DeviceKeyStore.deviceNodeHex().utf8))
         nearbyBroadcast(24, p)
         if let hex = social?.myNodeHex() { sendIroh(24, p, to: hex) }  // also try the iroh path
+        let connected = nearby?.hasConnectedPeers ?? false
+        NotificationManager.shared.notify(
+            title: connected ? "Asked your primary device" : "Looking for your primary device…",
+            body: connected ? "Pulling your profile + posts…"
+                            : "Keep your primary device (iPhone) open on the same Wi-Fi/Bluetooth.",
+            dedupeKey: "device-resync-request")
     }
 
     /// Turn on device-key multi-device on THIS (primary) device — register the account key as the

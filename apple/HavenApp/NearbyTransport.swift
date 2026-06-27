@@ -39,6 +39,10 @@ final class NearbyTransport: NSObject {
         browser.delegate = self
     }
 
+    /// Whether any nearby peer is currently connected (used to tell the user whether a device-link
+    /// request actually has a path to the other device).
+    var hasConnectedPeers: Bool { !session.connectedPeers.isEmpty }
+
     func start() {
         advertiser.startAdvertisingPeer()
         browser.startBrowsingForPeers()
