@@ -108,27 +108,31 @@ struct MediaPicker: View {
     var body: some View {
         Color.clear
             .onAppear {
-                let panel = NSOpenPanel()
-                panel.allowedContentTypes = [.image, .movie]
-                panel.allowsMultipleSelection = true
-                panel.canChooseDirectories = false
-                panel.canChooseFiles = true
-
-                panel.begin { response in
-                    guard response == .OK else {
-                        dismiss()
-                        return
-                    }
+                // Defer to the next runloop tick: running a modal panel synchronously inside onAppear
+                // (mid SwiftUI update) is re-entrant. `begin`'s sheet-less callback was opening the panel
+                // behind this host sheet, so it looked like "the picker doesn't work" — runModal presents
+                // it reliably in front.
+                DispatchQueue.main.async {
+                    let panel = NSOpenPanel()
+                    panel.allowedContentTypes = [.image, .movie]
+                    panel.allowsMultipleSelection = true
+                    panel.canChooseDirectories = false
+                    panel.canChooseFiles = true
+                    panel.message = "Choose photos or videos to share"
+                    panel.prompt = "Add"
+                    guard panel.runModal() == .OK else { dismiss(); return }
                     let urls = panel.urls
                     Task { @MainActor in
                         var refs: [String] = []
                         for url in urls {
+                            let scoped = url.startAccessingSecurityScopedResource()
                             let type = try? url.resourceValues(forKeys: [.contentTypeKey]).contentType
                             if let type, type.conforms(to: .movie) {
                                 refs.append(await MediaStore.shared.addVideo(url: url))
                             } else if let img = PlatformImage(contentsOf: url) {
                                 refs.append(MediaStore.shared.addImage(img))
                             }
+                            if scoped { url.stopAccessingSecurityScopedResource() }
                         }
                         onPicked(refs)
                         dismiss()

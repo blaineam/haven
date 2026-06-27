@@ -306,12 +306,16 @@ final class CameraModel: NSObject, ObservableObject {
             self.session.beginConfiguration()
             self.session.sessionPreset = .high
             self.configureInputs()
-            if self.session.canAddOutput(self.photoOutput) { self.session.addOutput(self.photoOutput) }
-            if self.session.canAddOutput(self.movieOutput) { self.session.addOutput(self.movieOutput) }
+            // Order matters on macOS: a session caps how many outputs it accepts, and whichever is
+            // added last can be rejected. videoDataOutput MUST win — it feeds both the live preview and
+            // (via frameTap.latest) the photo capture. movieOutput is next for video; photoOutput is
+            // last and optional (we capture stills from the frame tap, not it).
             if self.session.canAddOutput(self.videoDataOutput) {
                 self.videoDataOutput.wireLivePreview(tap: self.frameTap, queue: self.queue)
                 self.session.addOutput(self.videoDataOutput)
             }
+            if self.session.canAddOutput(self.movieOutput) { self.session.addOutput(self.movieOutput) }
+            if self.session.canAddOutput(self.photoOutput) { self.session.addOutput(self.photoOutput) }
             self.session.commitConfiguration()
             if !self.session.isRunning { self.session.startRunning() }
             Task { @MainActor in self.ready = true }
