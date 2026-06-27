@@ -857,7 +857,7 @@ final class FeedStore: ObservableObject {
             if head.count == 64, ConnectionsStore.shared.isBlocked(head) { return }
         }
         switch type {
-        case 0: handleHello(payload)
+        case 0: handleHello(payload, viaNearby: viaNearby)
         case 1: handleEvent(payload)
         case 3: handleMediaRequest(payload)
         case 5: handleMediaChunk(payload)
@@ -1401,7 +1401,7 @@ final class FeedStore: ObservableObject {
         ContactsStore.shared.contacts.contains { $0.idHex == idHex }
     }
 
-    private func handleHello(_ payload: Data) {
+    private func handleHello(_ payload: Data, viaNearby: Bool = false) {
         guard let social else { return }
         // [LP circleId][LP circleName][LP bundle][signed profile]
         var off = 0
@@ -1426,6 +1426,11 @@ final class FeedStore: ObservableObject {
         // Someone new reaching us through our invite → hold for approval (don't auto-add).
         // One person scans; the other gets asked, with safety words to verify.
         if !isContact(idHex) {
+            // BUT: a non-contact Hello that arrived over the NEARBY mesh is just proximity — another
+            // Haven user happened to be in Bluetooth/Wi-Fi range. That must NOT pop a connection request
+            // (it did, repeatedly, for everyone nearby). Real new connections come from scanning an
+            // invite, which sends a TARGETED Hello over iroh/relay (viaNearby == false) — those still ask.
+            if viaNearby { return }
             let name = social.verifyProfile(bundle: bundle, blob: profileBlob) ?? "Someone"
             let vhex = (try? social.bundleVerificationHex(bundle: bundle)) ?? ""
             let display = name.isEmpty ? "Someone" : name
