@@ -173,6 +173,10 @@ struct InAppBrowserView: View {
                 .tint(HavenTheme.pink)
             #else
             WebView(url: url, model: model)
+                // WKWebView reports no intrinsic size, and a macOS .sheet sizes to its content's ideal
+                // size — so without an explicit frame the sheet collapsed to just the toolbar height (the
+                // page squished to a sliver). Give it a real browser-sized frame.
+                .frame(minWidth: 820, idealWidth: 1040, minHeight: 600, idealHeight: 740)
                 .toolbar {
                     ToolbarItem(placement: .navigation) {
                         Button { dismiss() } label: { Image(systemName: "xmark") }
