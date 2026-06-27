@@ -226,11 +226,12 @@ final class LinkMetaLoader: ObservableObject {
             let host = meta.url?.host ?? meta.originalURL?.host ?? ""
             let imageProvider = meta.imageProvider
             if let imageProvider, imageProvider.canLoadObject(ofClass: PlatformImage.self) {
-                imageProvider.loadObject(ofClass: PlatformImage.self) { obj, _ in
+                imageProvider.loadObject(ofClass: PlatformImage.self) { [weak self] obj, _ in
+                    let img = obj as? PlatformImage
                     Task { @MainActor in
                         self?.title = title
                         if !host.isEmpty { self?.host = host }
-                        self?.image = obj as? PlatformImage
+                        self?.image = img
                     }
                 }
             } else {

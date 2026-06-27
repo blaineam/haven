@@ -185,12 +185,6 @@ final class ScannerNSView: NSView {
         session.addOutput(output)
         output.setMetadataObjectsDelegate(coordinator, queue: .main)
         session.commitConfiguration()
-        // `availableMetadataObjectTypes` is only valid AFTER the output is connected (post-commit).
-        // Setting a type that isn't available yet throws "unsupported type" → SIGABRT (the macOS
-        // restore/scan crash). Guard it.
-        if output.availableMetadataObjectTypes.contains(.qr) {
-            output.metadataObjectTypes = [.qr]
-        }
 
         Task { @MainActor in
             let layer = AVCaptureVideoPreviewLayer(session: self.session)
@@ -201,6 +195,18 @@ final class ScannerNSView: NSView {
         }
 
         if !session.isRunning { session.startRunning() }
+        // `availableMetadataObjectTypes` is only populated once the session is RUNNING (the output's
+        // connection is live). Setting `.qr` BEFORE that either throws "unsupported type" → SIGABRT, or
+        // (with the earlier guard) silently no-ops so the scanner never fires — which is why the Mac
+        // webcam wouldn't read the link QR. Set it here, post-run, when .qr is actually available.
+        if output.availableMetadataObjectTypes.contains(.qr) {
+            output.metadataObjectTypes = [.qr]
+        } else {
+            // Connection metadata can lag a beat behind startRunning(); retry once it's up.
+            sessionQueue.asyncAfter(deadline: .now() + 0.2) {
+                if output.availableMetadataObjectTypes.contains(.qr) { output.metadataObjectTypes = [.qr] }
+            }
+        }
     }
 
     func stop() {

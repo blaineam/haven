@@ -28,7 +28,7 @@ import AppKit
 /// for the Metal view to render, and periodically emits a small thumbnail for the filter strip
 /// swatches. Orientation + front-camera mirroring are handled on the capture *connection* by the
 /// owner, so the `CIImage` here is already upright and correctly mirrored.
-final class LiveFrameTap: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
+final class LiveFrameTap: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
     private let lock = NSLock()
     private var _latest: CIImage?
     private var frameCount = 0

@@ -200,19 +200,21 @@ struct CameraCaptureRepresentable: View {
 /// filtered preview via the shared `LiveFrameTap` (rendered by `FilteredCameraPreview`).
 @MainActor
 final class MacCameraEngine: NSObject, ObservableObject {
-    let session = AVCaptureSession()
+    // Capture session + outputs live exclusively on `queue`, so they're nonisolated(unsafe) (access is
+    // serialized by the queue, not the main actor). Only the @Published UI state stays main-isolated.
+    nonisolated(unsafe) let session = AVCaptureSession()
     @Published var ready = false
     @Published var capturing = false
     @Published var isRecording = false
 
-    private let photoOutput = AVCapturePhotoOutput()
-    private let movieOutput = AVCaptureMovieFileOutput()
+    nonisolated(unsafe) private let photoOutput = AVCapturePhotoOutput()
+    nonisolated(unsafe) private let movieOutput = AVCaptureMovieFileOutput()
     /// Live filtered preview: tapped frames → FilterEngine → MetalCameraPreview (same as iOS).
-    let frameTap = LiveFrameTap()
-    private let videoDataOutput = AVCaptureVideoDataOutput()
+    let frameTap = LiveFrameTap()   // @unchecked Sendable
+    nonisolated(unsafe) private let videoDataOutput = AVCaptureVideoDataOutput()
     private let queue = DispatchQueue(label: "haven.maccamera.session")
-    private var onPhoto: ((PlatformImage?) -> Void)?
-    private var onVideo: ((URL?) -> Void)?
+    nonisolated(unsafe) private var onPhoto: ((PlatformImage?) -> Void)?
+    nonisolated(unsafe) private var onVideo: ((URL?) -> Void)?
 
     func start() {
         AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
@@ -223,7 +225,7 @@ final class MacCameraEngine: NSObject, ObservableObject {
         }
     }
 
-    private func configure() {
+    nonisolated private func configure() {
         session.beginConfiguration()
         session.sessionPreset = .high
         if let device = AVCaptureDevice.default(for: .video),
@@ -246,25 +248,26 @@ final class MacCameraEngine: NSObject, ObservableObject {
     }
 
     func stop() {
-        queue.async { [session, movieOutput] in
-            if movieOutput.isRecording { movieOutput.stopRecording() }
-            if session.isRunning { session.stopRunning() }
-            // Release the camera device so the macOS camera indicator goes off.
-            session.beginConfiguration()
-            for input in session.inputs { session.removeInput(input) }
-            for output in session.outputs { session.removeOutput(output) }
-            session.commitConfiguration()
-        }
+        queue.async { [weak self] in self?.teardownSession() }
+    }
+
+    nonisolated private func teardownSession() {
+        if movieOutput.isRecording { movieOutput.stopRecording() }
+        if session.isRunning { session.stopRunning() }
+        // Release the camera device so the macOS camera indicator goes off.
+        session.beginConfiguration()
+        for input in session.inputs { session.removeInput(input) }
+        for output in session.outputs { session.removeOutput(output) }
+        session.commitConfiguration()
     }
 
     func capturePhoto(_ completion: @escaping (PlatformImage?) -> Void) {
         guard !capturing, !isRecording else { return }
         capturing = true
         onPhoto = completion
-        let settings = AVCapturePhotoSettings()
         queue.async { [weak self] in
             guard let self else { return }
-            self.photoOutput.capturePhoto(with: settings, delegate: self)
+            self.photoOutput.capturePhoto(with: AVCapturePhotoSettings(), delegate: self)
         }
     }
 

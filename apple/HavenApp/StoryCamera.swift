@@ -237,9 +237,11 @@ final class CameraModel: NSObject, ObservableObject {
         movieOutput.startRecording(to: url, recordingDelegate: self)
         isRecording = true
         recordTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            self.recordingSeconds += 0.1
-            if self.recordingSeconds >= self.capSeconds { self.stopRecording() }
+            Task { @MainActor in
+                guard let self else { return }
+                self.recordingSeconds += 0.1
+                if self.recordingSeconds >= self.capSeconds { self.stopRecording() }
+            }
         }
     }
 
@@ -271,14 +273,17 @@ extension CameraModel: AVCaptureFileOutputRecordingDelegate {
 /// camera (else no-op). `setZoom` is best-effort and no-ops on Macs without ramp-able zoom.
 @MainActor
 final class CameraModel: NSObject, ObservableObject {
-    let session = AVCaptureSession()
-    private let photoOutput = AVCapturePhotoOutput()
-    private let movieOutput = AVCaptureMovieFileOutput()
+    // The capture session, its outputs, the frame tap and all device bookkeeping live exclusively on
+    // `queue` (a serial DispatchQueue), so they're nonisolated(unsafe) — access is serialized by the
+    // queue, not the main actor. Only the @Published UI state below stays main-actor isolated.
+    nonisolated(unsafe) let session = AVCaptureSession()
+    nonisolated(unsafe) private let photoOutput = AVCapturePhotoOutput()
+    nonisolated(unsafe) private let movieOutput = AVCaptureMovieFileOutput()
     private let queue = DispatchQueue(label: "haven.camera.mac")
     // Live filtered preview: frames are tapped here and rendered through FilterEngine by the
     // FilteredCameraPreview/MetalCameraPreview (same pipeline as iOS — only the view layer differs).
-    let frameTap = LiveFrameTap()
-    private let videoDataOutput = AVCaptureVideoDataOutput()
+    let frameTap = LiveFrameTap()   // @unchecked Sendable — crosses to the camera queue freely
+    nonisolated(unsafe) private let videoDataOutput = AVCaptureVideoDataOutput()
 
     @Published var isRecording = false
     @Published var position: AVCaptureDevice.Position = .back
@@ -288,14 +293,14 @@ final class CameraModel: NSObject, ObservableObject {
     // Macs typically have a single fixed-zoom FaceTime camera, so there are no lens presets.
     @Published var lensPresets: [Double] = []
 
-    private var device: AVCaptureDevice?
+    nonisolated(unsafe) private var device: AVCaptureDevice?
     /// All video-capable devices on this Mac, in discovery order. `flip()` cycles through these.
-    private var availableDevices: [AVCaptureDevice] = []
-    private var deviceIndex = 0
-    private var onPhoto: ((PlatformImage) -> Void)?
-    private var onVideo: ((URL) -> Void)?
-    private var recordTimer: Timer?
-    private var capSeconds = StoryCaptureModel.maxTotal
+    nonisolated(unsafe) private var availableDevices: [AVCaptureDevice] = []
+    nonisolated(unsafe) private var deviceIndex = 0
+    nonisolated(unsafe) private var onPhoto: ((PlatformImage) -> Void)?
+    nonisolated(unsafe) private var onVideo: ((URL) -> Void)?
+    nonisolated(unsafe) private var recordTimer: Timer?
+    nonisolated(unsafe) private var capSeconds = StoryCaptureModel.maxTotal
 
     func start() {
         AVCaptureDevice.requestAccess(for: .video) { _ in }
@@ -336,7 +341,7 @@ final class CameraModel: NSObject, ObservableObject {
         }
     }
 
-    private func discoverDevices() {
+    nonisolated private func discoverDevices() {
         let session = AVCaptureDevice.DiscoverySession(
             deviceTypes: [.builtInWideAngleCamera, .external],
             mediaType: .video, position: .unspecified)
@@ -346,7 +351,7 @@ final class CameraModel: NSObject, ObservableObject {
         }
     }
 
-    private func configureInputs() {
+    nonisolated private func configureInputs() {
         for input in session.inputs { session.removeInput(input) }
         let cam = availableDevices.indices.contains(deviceIndex)
             ? availableDevices[deviceIndex]
@@ -400,10 +405,9 @@ final class CameraModel: NSObject, ObservableObject {
         }
         // Fallback if no frame has arrived yet.
         onPhoto = completion
-        let settings = AVCapturePhotoSettings()
         queue.async { [weak self] in
             guard let self else { return }
-            self.photoOutput.capturePhoto(with: settings, delegate: self)
+            self.photoOutput.capturePhoto(with: AVCapturePhotoSettings(), delegate: self)
         }
     }
 
@@ -416,9 +420,11 @@ final class CameraModel: NSObject, ObservableObject {
         movieOutput.startRecording(to: url, recordingDelegate: self)
         isRecording = true
         recordTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
-            guard let self else { return }
-            self.recordingSeconds += 0.1
-            if self.recordingSeconds >= self.capSeconds { self.stopRecording() }
+            Task { @MainActor in
+                guard let self else { return }
+                self.recordingSeconds += 0.1
+                if self.recordingSeconds >= self.capSeconds { self.stopRecording() }
+            }
         }
     }
 
@@ -518,7 +524,7 @@ private struct CameraUnavailablePlaceholder: View {
 /// (split into 15s chunks at share); the whole session is capped at 90s combined.
 @MainActor
 final class StoryCaptureModel: ObservableObject {
-    static let maxTotal = 90.0   // 1.5 min combined
+    nonisolated static let maxTotal = 90.0   // 1.5 min combined
     static let chunk = 15.0      // each story chunk
 
     struct Segment: Identifiable { let id = UUID(); let ref: String; let duration: Double; let thumb: PlatformImage? }

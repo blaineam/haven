@@ -1299,6 +1299,14 @@ final class FeedStore: ObservableObject {
         guard !circleId.isEmpty else { return }
         let profileBlob = payload.subdata(in: (payload.startIndex + off)..<payload.endIndex)
         let idHex = nodeHex(bundle.prefix(32))
+        // A handshake from ANOTHER OF MY OWN DEVICES (linked → same identity, same node id). NEVER treat
+        // it as a stranger's connection request ("connect with yourself") — just trade self-sync slots so
+        // the two devices converge. This is the fix for the "asked to connect with an identity of myself
+        // when linking my Mac" bug.
+        if idHex == social.myNodeHex() {
+            if let slot = SelfSyncCoordinator.shared.sealedLocalSlot(social: social) { nearbyBroadcast(23, slot) }
+            return
+        }
         // Blocked people get dropped entirely — no add, no re-add.
         if ConnectionsStore.shared.isBlocked(idHex) { return }
         // Someone new reaching us through our invite → hold for approval (don't auto-add).
@@ -2325,10 +2333,12 @@ struct PostCard: View {
         let postId = item.id
         NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime,
                                                object: p.currentItem, queue: .main) { _ in
-            p.seek(to: .zero)
-            if AudioCoordinator.shared.centeredPostId == postId {
-                p.play()
-                AudioCoordinator.shared.videoFinished()
+            MainActor.assumeIsolated {   // observer is delivered on .main, so this is genuinely isolated
+                p.seek(to: .zero)
+                if AudioCoordinator.shared.centeredPostId == postId {
+                    p.play()
+                    AudioCoordinator.shared.videoFinished()
+                }
             }
         }
         DispatchQueue.main.async {
