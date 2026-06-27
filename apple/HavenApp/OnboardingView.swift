@@ -11,6 +11,7 @@ struct OnboardingView: View {
     @State private var pickedImage: PlatformImage?
     @State private var showPhotoPicker = false
     @State private var showRestore = false
+    @State private var showLink = false
 
     var body: some View {
         ZStack {
@@ -29,6 +30,13 @@ struct OnboardingView: View {
         .sheet(isPresented: $showRestore) {
             NavigationStack {
                 RestoreIdentityView(accountStore: accountStore) {
+                    withAnimation(HavenTheme.smooth) { profile.onboarded = true }
+                }
+            }
+        }
+        .sheet(isPresented: $showLink) {
+            NavigationStack {
+                RestoreIdentityView(accountStore: accountStore, linkMode: true) {
                     withAnimation(HavenTheme.smooth) { profile.onboarded = true }
                 }
             }
@@ -56,8 +64,14 @@ struct OnboardingView: View {
                 .font(.body)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-            Button { showRestore = true } label: {
-                Text("I already have Haven — restore my identity").font(.subheadline.weight(.medium))
+            VStack(spacing: 10) {
+                Button { showLink = true } label: {
+                    Label("Link this as another of my devices", systemImage: "laptopcomputer.and.iphone")
+                        .font(.subheadline.weight(.medium))
+                }
+                Button { showRestore = true } label: {
+                    Text("Restore my identity from a code").font(.subheadline.weight(.medium))
+                }
             }
             .tint(HavenTheme.pink)
             Spacer()

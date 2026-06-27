@@ -119,6 +119,9 @@ struct LinkDeviceView: View {
 /// Adopt an existing identity on this device by scanning/pasting a transfer code.
 struct RestoreIdentityView: View {
     let accountStore: AccountStore
+    /// When true, the copy frames this as adding a *secondary device* to an existing account (vs.
+    /// moving/restoring an identity). Mechanically identical — both adopt the account via its code.
+    var linkMode: Bool = false
     var onRestored: () -> Void
     @Environment(\.dismiss) private var dismiss
 
@@ -131,8 +134,10 @@ struct RestoreIdentityView: View {
             HavenBackground()
             ScrollView {
                 VStack(spacing: 18) {
-                    Text("Restore your identity").font(.title3.bold()).padding(.top, 8)
-                    Text("Scan the transfer code from your other device, or paste it below.")
+                    Text(linkMode ? "Link this as your device" : "Restore your identity").font(.title3.bold()).padding(.top, 8)
+                    Text(linkMode
+                         ? "On your primary device, open Settings → Devices and show its link code, then scan it here — or paste it below."
+                         : "Scan the transfer code from your other device, or paste it below.")
                         .font(.subheadline).foregroundStyle(.secondary).multilineTextAlignment(.center)
 
                     if scanning {
@@ -154,7 +159,8 @@ struct RestoreIdentityView: View {
                         Label("That code isn't valid. Check you copied the whole thing.", systemImage: "xmark.octagon.fill")
                             .font(.caption).foregroundStyle(.red)
                     }
-                    Label("This replaces the identity on this device.", systemImage: "info.circle")
+                    Label(linkMode ? "This device joins your account and syncs your profile + posts. Your primary device can revoke it anytime."
+                                   : "This replaces the identity on this device.", systemImage: "info.circle")
                         .font(.caption2).foregroundStyle(.secondary)
                 }
                 .padding(20)
@@ -167,6 +173,12 @@ struct RestoreIdentityView: View {
     private func attempt(_ code: String) {
         if accountStore.restore(fromTransferCode: code) {
             FeedStore.shared.reconfigure(seed: accountStore.account.secretSeed())
+            // As a secondary device, register with the primary so it's a revocable linked device and
+            // pulls state. Best-effort + delayed so the engine/transport is up; it also re-asks on the
+            // Devices screen, and the primary pushes state whenever the two next connect.
+            if linkMode {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { FeedStore.shared.requestDeviceEnrollment() }
+            }
             onRestored()
             dismiss()
         } else {
