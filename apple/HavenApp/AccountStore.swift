@@ -200,22 +200,30 @@ final class AccountStore: ObservableObject {
     /// authoritative seed and the device-local recovery archive.
     private static let seedBox = SecureEnclaveBox(tag: "com.blaineam.kith.seed-se-key")
 
-    private static func baseQuery() -> [String: Any] {
-        [
+    /// Generic-password blobs live in the **data-protection keychain** (entitlement-governed → a single
+    /// implicit grant for the app, no repeated "X wants to use your keychain" prompts on macOS) rather
+    /// than the legacy file keychain. Reads fall back to the legacy keychain and migrate forward, so a
+    /// pre-migration seed is never mistaken for "no identity". (SE keys are token-backed and unaffected.)
+    private static func baseQuery(dataProtection: Bool = true) -> [String: Any] {
+        var q: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: seedKey,
         ]
+        if dataProtection { q[kSecUseDataProtectionKeychain as String] = true }
+        return q
     }
 
     /// Keychain query for the SE-wrapped ciphertext blob (a generic-password item, distinct
     /// account from the legacy plaintext seed so the two can coexist during migration).
-    private static func wrappedQuery() -> [String: Any] {
-        [
+    private static func wrappedQuery(dataProtection: Bool = true) -> [String: Any] {
+        var q: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: wrappedSeedKey,
         ]
+        if dataProtection { q[kSecUseDataProtectionKeychain as String] = true }
+        return q
     }
 
     /// Persist the seed. Prefers Secure-Enclave wrapping; falls back to a device-local plaintext
@@ -269,14 +277,32 @@ final class AccountStore: ObservableObject {
         }
 
         // 2. Legacy / fallback plaintext seed (pre-migration users, or Simulator/no-SE devices).
-        var query = baseQuery()
-        query[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &item)
-        switch status {
-        case errSecSuccess: return (item as? Data).map { .found($0) } ?? .lockedOrError
+        func readPlain(dataProtection: Bool) -> (OSStatus, Data?) {
+            var query = baseQuery(dataProtection: dataProtection)
+            query[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
+            query[kSecReturnData as String] = true
+            query[kSecMatchLimit as String] = kSecMatchLimitOne
+            var item: CFTypeRef?
+            return (SecItemCopyMatching(query as CFDictionary, &item), item as? Data)
+        }
+        let (dpStatus, dpData) = readPlain(dataProtection: true)
+        if dpStatus == errSecSuccess { return dpData.map { .found($0) } ?? .lockedOrError }
+        if dpStatus != errSecItemNotFound { return .lockedOrError }
+        let (legStatus, legData) = readPlain(dataProtection: false)
+        switch legStatus {
+        case errSecSuccess:
+            guard let d = legData else { return .lockedOrError }
+            var add = baseQuery(dataProtection: true)
+            add[kSecValueData as String] = d
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            add[kSecAttrSynchronizable as String] = kCFBooleanFalse!
+            let s = SecItemAdd(add as CFDictionary, nil)
+            if s == errSecSuccess || s == errSecDuplicateItem {
+                var del = baseQuery(dataProtection: false)
+                del[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
+                SecItemDelete(del as CFDictionary)
+            }
+            return .found(d)
         case errSecItemNotFound: return .notFound
         default: return .lockedOrError   // errSecInteractionNotAllowed, etc. — don't clobber
         }
@@ -286,12 +312,15 @@ final class AccountStore: ObservableObject {
     /// Secure-Enclave private key itself is intentionally LEFT in place: it holds no identity (it
     /// only wraps the seed) and is reused for the next `saveSeed`, avoiding needless key churn.
     private static func deleteSeed() {
-        var query = baseQuery()
-        query[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny   // delete either variant
-        SecItemDelete(query as CFDictionary)
-        var wrapped = wrappedQuery()
-        wrapped[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
-        SecItemDelete(wrapped as CFDictionary)
+        // Clear both the data-protection AND legacy keychains so neither representation lingers.
+        for dp in [true, false] {
+            var query = baseQuery(dataProtection: dp)
+            query[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny   // delete either variant
+            SecItemDelete(query as CFDictionary)
+            var wrapped = wrappedQuery(dataProtection: dp)
+            wrapped[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
+            SecItemDelete(wrapped as CFDictionary)
+        }
     }
 
     // MARK: - Secure Enclave wrapping
@@ -301,14 +330,34 @@ final class AccountStore: ObservableObject {
     /// Read the SE-wrapped ciphertext blob, distinguishing absent from locked (same discipline as
     /// the seed itself — a locked read must never look like "no blob").
     private static func loadWrappedBlob() -> BlobStatus {
-        var q = wrappedQuery()
-        q[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
-        q[kSecReturnData as String] = true
-        q[kSecMatchLimit as String] = kSecMatchLimitOne
-        var item: CFTypeRef?
-        let status = SecItemCopyMatching(q as CFDictionary, &item)
-        switch status {
-        case errSecSuccess: return (item as? Data).map { .found($0) } ?? .locked
+        func read(dataProtection: Bool) -> (OSStatus, Data?) {
+            var q = wrappedQuery(dataProtection: dataProtection)
+            q[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
+            q[kSecReturnData as String] = true
+            q[kSecMatchLimit as String] = kSecMatchLimitOne
+            var item: CFTypeRef?
+            return (SecItemCopyMatching(q as CFDictionary, &item), item as? Data)
+        }
+        // Prefer the data-protection keychain.
+        let (dpStatus, dpData) = read(dataProtection: true)
+        if dpStatus == errSecSuccess { return dpData.map { .found($0) } ?? .locked }
+        if dpStatus != errSecItemNotFound { return .locked }   // locked/error → never "absent"
+        // Absent in the DP keychain → check the legacy keychain and migrate it forward if present.
+        let (legStatus, legData) = read(dataProtection: false)
+        switch legStatus {
+        case errSecSuccess:
+            guard let d = legData else { return .locked }
+            var add = wrappedQuery(dataProtection: true)
+            add[kSecValueData as String] = d
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+            add[kSecAttrSynchronizable as String] = kCFBooleanFalse!
+            let s = SecItemAdd(add as CFDictionary, nil)
+            if s == errSecSuccess || s == errSecDuplicateItem {
+                var del = wrappedQuery(dataProtection: false)   // only drop legacy AFTER the DP copy lands
+                del[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
+                SecItemDelete(del as CFDictionary)
+            }
+            return .found(d)
         case errSecItemNotFound: return .notFound
         default: return .locked
         }
@@ -330,9 +379,11 @@ final class AccountStore: ObservableObject {
     // MARK: - Recoverable identity history (for rolling back a changed identity)
 
     private static let historyKey = "account-identity-history"
-    private static func historyQuery() -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword,
-         kSecAttrService as String: service, kSecAttrAccount as String: historyKey]
+    private static func historyQuery(dataProtection: Bool = true) -> [String: Any] {
+        var q: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                kSecAttrService as String: service, kSecAttrAccount as String: historyKey]
+        if dataProtection { q[kSecUseDataProtectionKeychain as String] = true }
+        return q
     }
 
     /// Append a seed to the identity history (newest first, deduped, capped at 12). The history is
@@ -359,8 +410,10 @@ final class AccountStore: ObservableObject {
     /// than waiting for the next identity change.
     private static func storeHistory(_ hist: [String]) {
         guard let json = try? JSONEncoder().encode(hist) else { return }
-        var del = historyQuery(); del[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
-        SecItemDelete(del as CFDictionary)
+        for dp in [true, false] {   // clear both keychains so no stale legacy archive lingers
+            var del = historyQuery(dataProtection: dp); del[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
+            SecItemDelete(del as CFDictionary)
+        }
 
         let synced = iCloudSyncEnabled
         var add = historyQuery()
@@ -383,13 +436,17 @@ final class AccountStore: ObservableObject {
     /// SE-wrapped device-local archive (unwrapped via `seedBox`) and a plaintext/synced JSON
     /// archive. Legacy plaintext archives are upgraded to SE-wrapped by the next `archive()` call.
     static func previousIdentities() -> [String] {
-        var q = historyQuery()
-        q[kSecReturnData as String] = true
-        q[kSecMatchLimit as String] = kSecMatchLimitOne
-        q[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
-        var item: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &item) == errSecSuccess,
-              let d = item as? Data else { return [] }
+        func read(dataProtection: Bool) -> Data? {
+            var q = historyQuery(dataProtection: dataProtection)
+            q[kSecReturnData as String] = true
+            q[kSecMatchLimit as String] = kSecMatchLimitOne
+            q[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
+            var item: CFTypeRef?
+            return SecItemCopyMatching(q as CFDictionary, &item) == errSecSuccess ? item as? Data : nil
+        }
+        // DP keychain (covers synced + migrated archives) first, then the legacy keychain — the next
+        // archive()/storeHistory writes it back to DP, so this only needs to keep recovery working.
+        guard let d = read(dataProtection: true) ?? read(dataProtection: false) else { return [] }
         // Plaintext/synced JSON decodes directly; otherwise it's an SE-wrapped blob to open first.
         if let arr = try? JSONDecoder().decode([String].self, from: d) { return arr }
         if case .ok(let json) = seedBox.open(d),
