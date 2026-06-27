@@ -1157,6 +1157,10 @@ struct PersistCircle {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct PersistState {
     circles: Vec<PersistCircle>,
+    /// Verified device rosters (account_bundle, device_list_bytes, credential_bytes), so multi-device
+    /// state survives restarts WITHOUT re-rotating epochs (those persist alongside in PersistCircle).
+    #[serde(default)]
+    device_rosters: Vec<(Vec<u8>, Vec<u8>, Vec<Vec<u8>>)>,
 }
 /// Legacy single-circle on-disk form — migrated into the default circle on load.
 #[derive(serde::Deserialize)]
@@ -1691,6 +1695,7 @@ impl HavenSocial {
                 my_circle_secret: c.my_circle_secret,
                 peer_circle_secrets: c.peer_circle_secrets.iter().map(|(a, s)| (a.clone(), *s)).collect(),
             }).collect(),
+            device_rosters: vec![], // populated in Stage 2 once ContactDevices carries the account bundle
         };
         serde_json::to_vec(&ps).unwrap_or_default()
     }
