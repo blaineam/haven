@@ -220,6 +220,19 @@ struct EditProfileSheet: View {
     @ObservedObject private var profile = ProfileStore.shared
     @Environment(\.dismiss) private var dismiss
     @State private var showPhotoPicker = false
+    // Edit LOCAL copies of the text fields, not the live store. Self-sync writes incoming profile values
+    // straight into ProfileStore; binding the text fields to it made them jump/swap mid-type whenever a
+    // sync landed. We seed these once on appear and commit them back on Done/dismiss (last write wins).
+    @State private var name = ""
+    @State private var bio = ""
+    @State private var link = ""
+    @State private var loaded = false
+
+    private func commit() {
+        if profile.displayName != name { profile.displayName = name }
+        if profile.bio != bio { profile.bio = bio }
+        if profile.link != link { profile.link = link }
+    }
 
     var body: some View {
         NavigationStack {
@@ -228,7 +241,7 @@ struct EditProfileSheet: View {
                 ScrollView {
                     VStack(spacing: 22) {
                         Color.clear.frame(height: 0)
-                            .onDisappear { FeedStore.shared.rebroadcastProfile() }   // sync edits to contacts
+                            .onDisappear { commit(); FeedStore.shared.rebroadcastProfile() }   // save edits + sync to contacts
                         HavenAvatar(image: profile.avatar, emoji: profile.emoji, size: 110)
                             .shadow(color: HavenTheme.pink.opacity(0.3), radius: 14, y: 8)
 
@@ -243,18 +256,18 @@ struct EditProfileSheet: View {
                             }
                         }
 
-                        TextField("Your name", text: $profile.displayName)
+                        TextField("Your name", text: $name)
                             .font(.title3).multilineTextAlignment(.center)
                             .padding(.vertical, 12).background(.background, in: Capsule())
                             .overlay(Capsule().strokeBorder(Color.white.opacity(0.1))).padding(.horizontal, 30)
 
                         VStack(spacing: 10) {
-                            TextField("Add a short bio", text: $profile.bio, axis: .vertical)
+                            TextField("Add a short bio", text: $bio, axis: .vertical)
                                 .lineLimit(1...3)
                                 .havenAutocap(.sentences)
                                 .padding(12).background(.background, in: RoundedRectangle(cornerRadius: 14))
                                 .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.white.opacity(0.1)))
-                            TextField("Add a link (e.g. yoursite.com)", text: $profile.link)
+                            TextField("Add a link (e.g. yoursite.com)", text: $link)
                                 .havenAutocap(.never)
                                 .autocorrectionDisabled()
                                 .havenURLKeyboard()
@@ -282,7 +295,12 @@ struct EditProfileSheet: View {
             }
             .navigationTitle("Edit profile")
             .havenInlineNavTitle()
-            .toolbar { ToolbarItem(placement: .havenConfirmTrailing) { Button("Done") { dismiss() } } }
+            .onAppear {
+                guard !loaded else { return }   // seed once; later syncs won't clobber what you're typing
+                name = profile.displayName; bio = profile.bio; link = profile.link
+                loaded = true
+            }
+            .toolbar { ToolbarItem(placement: .havenConfirmTrailing) { Button("Done") { commit(); dismiss() } } }
             .sheet(isPresented: $showPhotoPicker) {
                 SingleImagePicker { profile.setAvatar($0) }
             }
