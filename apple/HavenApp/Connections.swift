@@ -23,13 +23,36 @@ final class ConnectionsStore: ObservableObject {
     /// People we deliberately did NOT share past history with — they see new posts only.
     @Published private(set) var noHistory: Set<String> = []
 
+    /// People explicitly removed from a specific circle, keyed "<circleId>|<nodeHex>". Unlike a global
+    /// block, this only bans them from that one circle — and crucially it survives their handshakes, so
+    /// a removed member can't auto-rejoin the circle on their next Hello.
+    @Published private(set) var circleRemovals: Set<String> = []
+
     private let d = UserDefaults.standard
     private let blockedKey = "haven.blocked"
     private let noHistoryKey = "haven.noHistory"
+    private let circleRemovalsKey = "haven.circleRemovals"
+    private func removalKey(_ circleId: String, _ idHex: String) -> String { "\(circleId)|\(idHex)" }
 
     private init() {
         if let arr = d.array(forKey: blockedKey) as? [String] { blocked = Set(arr) }
         if let arr = d.array(forKey: noHistoryKey) as? [String] { noHistory = Set(arr) }
+        if let arr = d.array(forKey: circleRemovalsKey) as? [String] { circleRemovals = Set(arr) }
+    }
+
+    /// Mark a member as removed from a circle (prevents handshake re-add).
+    func removeFromCircle(_ idHex: String, circleId: String) {
+        circleRemovals.insert(removalKey(circleId, idHex))
+        d.set(Array(circleRemovals), forKey: circleRemovalsKey)
+    }
+    /// Was this member explicitly removed from this circle?
+    func isRemovedFromCircle(_ idHex: String, circleId: String) -> Bool {
+        circleRemovals.contains(removalKey(circleId, idHex))
+    }
+    /// Re-allow a member into a circle (clears the removal) — e.g. when you deliberately re-add them.
+    func clearCircleRemoval(_ idHex: String, circleId: String) {
+        circleRemovals.remove(removalKey(circleId, idHex))
+        d.set(Array(circleRemovals), forKey: circleRemovalsKey)
     }
 
     func setNoHistory(_ idHex: String) {

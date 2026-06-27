@@ -175,15 +175,19 @@ final class FeedStore: ObservableObject {
     /// Add a known contact to the active circle, then sync so the circle forms on theirs.
     func addContactToActiveCircle(idHex: String) {
         guard let social else { return }
+        ConnectionsStore.shared.clearCircleRemoval(idHex, circleId: activeCircleId)  // deliberate re-add un-bans them
         try? social.addExistingToCircle(circleId: activeCircleId, nodeHex: idHex)
         persist(); refreshCircles()
         syncWithContacts()
     }
 
-    /// Remove a member from the active (custom) circle only — not a global block.
+    /// Remove a member from the active (custom) circle only — not a global block. This is durable: the
+    /// member is recorded as removed so they can't auto-rejoin on their next handshake, and the core
+    /// purges their posts + rotates the circle's epoch so they can't read anything posted afterward.
     func removeFromActiveCircle(_ idHex: String) {
         guard let social, activeCircleId != "default" else { return }
-        social.removeFromCircle(circleId: activeCircleId, nodeHex: idHex)
+        social.removeFromCircle(circleId: activeCircleId, nodeHex: idHex)  // purges their events + rotates epoch
+        ConnectionsStore.shared.removeFromCircle(idHex, circleId: activeCircleId)  // block handshake re-add
         persist(); refreshCircles(); refresh()
     }
 
@@ -1319,6 +1323,8 @@ final class FeedStore: ObservableObject {
         // A DM circle is strictly its two encoded parties — never let a third party (e.g. a
         // contact who picked up a broadcast Hello) handshake their way into someone else's DM.
         if circleId.hasPrefix("dm:") && !dmCircleAllows(circleId, idHex) { return }
+        // A member you explicitly removed from this circle must NOT auto-rejoin on their handshake.
+        if ConnectionsStore.shared.isRemovedFromCircle(idHex, circleId: circleId) { return }
         // Ensure the circle exists on our side, then add the sender to it.
         let isNewCircle = circleId != "default" && !circles.contains { $0.id == circleId }
         social.createCircle(id: circleId, name: circleName)
