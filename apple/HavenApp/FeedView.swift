@@ -754,7 +754,7 @@ final class FeedStore: ObservableObject {
     /// Poll the shared mailbox and ingest any envelopes uploaded while we (or the sender)
     /// were offline. This is what delivers posts without both ends being online at once.
     func pollMailboxNow() {
-        guard let social else { return }
+        guard social != nil else { return }
         // Multi-device self-sync runs on every poll, independent of per-circle mailboxes — it has
         // its own transport (any configured relay OR the user's S3 bucket). (D16 Phase 3.) When it
         // pulls in changes from another device (e.g. a synced circle) persist + refresh.

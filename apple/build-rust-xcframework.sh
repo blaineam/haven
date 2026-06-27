@@ -20,6 +20,11 @@ echo "▸ Ensuring Apple targets (iOS device + sim + Mac Catalyst + native macOS
 # docs/MACOS-NATIVE-PORT.md); harmless for the Catalyst build.
 "$RUSTUP" target add aarch64-apple-ios aarch64-apple-ios-sim aarch64-apple-ios-macabi aarch64-apple-darwin >/dev/null
 
+# Pin the same minimum-OS as the apps (project.yml: iOS 17.0, macOS 14.0). Without these the Rust
+# objects default to a higher min version than the app links against → "built for newer version than
+# being linked" link warnings on every build.
+export IPHONEOS_DEPLOYMENT_TARGET="17.0"
+export MACOSX_DEPLOYMENT_TARGET="14.0"
 echo "▸ Building static libs (device + simulator + Mac Catalyst + native macOS)…"
 ( cd "$CORE" && "$CARGO" build -p haven_ffi --lib --release --target aarch64-apple-ios )
 ( cd "$CORE" && "$CARGO" build -p haven_ffi --lib --release --target aarch64-apple-ios-sim )
