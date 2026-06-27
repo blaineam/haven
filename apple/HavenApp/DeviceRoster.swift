@@ -51,3 +51,125 @@ enum DeviceKeyStore {
         SecItemAdd(add as CFDictionary, nil)
     }
 }
+
+/// One device in the account's roster (for the Authorized-Devices UI).
+struct RosterDevice: Identifiable, Equatable {
+    let nodeHex: String
+    let name: String
+    let isThisDevice: Bool
+    let isPrimary: Bool          // the account key itself (the device that holds the master seed)
+    var id: String { nodeHex }
+}
+
+/// Maintains the account's signed device roster on the **primary** (the device holding the master seed).
+/// The roster = the account key as "device #0" (so the seed-holding device keeps receiving) plus each
+/// linked device's own key. Issuing/revoking re-signs a versioned DeviceList + per-device credentials
+/// and pushes them to the engine (`setMyDeviceRoster`); the engine + contacts pick it up via sync.
+@MainActor
+final class DeviceRosterManager: ObservableObject {
+    static let shared = DeviceRosterManager()
+
+    @Published private(set) var devices: [RosterDevice] = []
+
+    private struct Entry { var bundle: Data; var name: String; var isPrimary: Bool }
+    private var entries: [String: Entry] = [:]   // nodeHex → entry (active devices)
+    private var revoked: Set<String> = []
+    private var version: UInt64 = 0
+    private var primaryHex = ""
+
+    private let store = UserDefaults.standard
+    private let key = "haven.deviceRoster.v2"
+
+    private init() { load(); rebuild() }
+
+    var isEnabled: Bool { version > 0 }
+
+    /// Turn multi-device on: register the account key as the primary "device #0". Idempotent.
+    @discardableResult
+    func enable(social: HavenSocial?, accountSeed: Data, accountBundle: Data, accountHex: String) -> Bool {
+        primaryHex = accountHex
+        if entries[accountHex] == nil {
+            entries[accountHex] = Entry(bundle: accountBundle, name: "Primary (this account's master key)", isPrimary: true)
+        }
+        return resign(social: social, accountSeed: accountSeed)
+    }
+
+    /// Authorize a newly-linked device. Returns that device's credential (to hand back via QR-C), or nil.
+    func addLinkedDevice(bundle: Data, nodeHex: String, name: String,
+                         social: HavenSocial?, accountSeed: Data) -> Data? {
+        revoked.remove(nodeHex)
+        entries[nodeHex] = Entry(bundle: bundle, name: name, isPrimary: false)
+        guard resign(social: social, accountSeed: accountSeed) else { return nil }
+        let now = UInt64(Date().timeIntervalSince1970)
+        return try? issueDeviceCredential(accountSeed: accountSeed, deviceBundle: bundle, name: name, createdAt: now)
+    }
+
+    /// Revoke a device: drop it from the active set, bump the version, re-sign. It stops being a
+    /// recipient of any circle's future key commits → it can decrypt nothing posted afterward.
+    @discardableResult
+    func revoke(_ nodeHex: String, social: HavenSocial?, accountSeed: Data) -> Bool {
+        guard nodeHex != primaryHex else { return false }   // never revoke the master key
+        entries[nodeHex] = nil
+        revoked.insert(nodeHex)
+        return resign(social: social, accountSeed: accountSeed)
+    }
+
+    /// Re-issue every active device's credential + a fresh signed DeviceList and push to the engine.
+    @discardableResult
+    private func resign(social: HavenSocial?, accountSeed: Data) -> Bool {
+        version &+= 1
+        let now = UInt64(Date().timeIntervalSince1970)
+        var creds: [Data] = []
+        var activeIds: [Data] = []
+        for (hex, e) in entries where !revoked.contains(hex) {
+            guard let id = Self.hexToData(hex) else { continue }
+            activeIds.append(id)
+            if let c = try? issueDeviceCredential(accountSeed: accountSeed, deviceBundle: e.bundle, name: e.name, createdAt: now) {
+                creds.append(c)
+            }
+        }
+        let revokedIds = revoked.compactMap { Self.hexToData($0) }
+        guard let list = try? signDeviceList(accountSeed: accountSeed, version: version, updatedAt: now,
+                                             devices: activeIds, revoked: revokedIds) else { return false }
+        let ok = social?.setMyDeviceRoster(list: list, credentials: creds) ?? false
+        rebuild(); save()
+        return ok
+    }
+
+    private func rebuild() {
+        let me = DeviceKeyStore.deviceNodeHex()
+        devices = entries.map { (hex, e) in
+            RosterDevice(nodeHex: hex, name: e.name,
+                         isThisDevice: hex == me || (e.isPrimary && AccountStore.currentNodeHex() == hex),
+                         isPrimary: e.isPrimary)
+        }.sorted { ($0.isPrimary ? 0 : 1, $0.name) < ($1.isPrimary ? 0 : 1, $1.name) }
+    }
+
+    static func hexToData(_ hex: String) -> Data? {
+        var d = Data(); var i = hex.startIndex
+        while i < hex.endIndex {
+            let j = hex.index(i, offsetBy: 2, limitedBy: hex.endIndex) ?? hex.endIndex
+            guard let b = UInt8(hex[i..<j], radix: 16) else { return nil }
+            d.append(b); i = j
+        }
+        return d.count == 32 ? d : nil
+    }
+
+    // MARK: persistence
+    private struct Saved: Codable {
+        var version: UInt64; var primaryHex: String
+        var entries: [String: EntryCodable]; var revoked: [String]
+        struct EntryCodable: Codable { var bundle: Data; var name: String; var isPrimary: Bool }
+    }
+    private func save() {
+        let s = Saved(version: version, primaryHex: primaryHex,
+                      entries: entries.mapValues { .init(bundle: $0.bundle, name: $0.name, isPrimary: $0.isPrimary) },
+                      revoked: Array(revoked))
+        if let d = try? JSONEncoder().encode(s) { store.set(d, forKey: key) }
+    }
+    private func load() {
+        guard let d = store.data(forKey: key), let s = try? JSONDecoder().decode(Saved.self, from: d) else { return }
+        version = s.version; primaryHex = s.primaryHex; revoked = Set(s.revoked)
+        entries = s.entries.mapValues { Entry(bundle: $0.bundle, name: $0.name, isPrimary: $0.isPrimary) }
+    }
+}
