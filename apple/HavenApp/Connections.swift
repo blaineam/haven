@@ -40,6 +40,12 @@ final class ConnectionsStore: ObservableObject {
         if let arr = d.array(forKey: circleRemovalsKey) as? [String] { circleRemovals = Set(arr) }
     }
 
+    /// Factory-reset this store — clear in-memory + persisted state.
+    func wipe() {
+        pending = []; blocked = []; noHistory = []; circleRemovals = []
+        [blockedKey, noHistoryKey, circleRemovalsKey].forEach { d.removeObject(forKey: $0) }
+    }
+
     /// Mark a member as removed from a circle (prevents handshake re-add).
     func removeFromCircle(_ idHex: String, circleId: String) {
         circleRemovals.insert(removalKey(circleId, idHex))

@@ -1579,6 +1579,37 @@ struct FeedView: View {
         self.friendName = friendName
     }
 
+    /// The "My Circles" switcher (also: show/hide hidden posts, new circle). Extracted so it can be
+    /// placed centered on iOS but pinned leading on macOS (where it would otherwise shove the top tabs).
+    @ViewBuilder private var circlePicker: some View {
+        Menu {
+            ForEach(store.feedCircles, id: \.id) { c in
+                Button { store.setActiveCircle(c.id) } label: {
+                    Label(c.name, systemImage: c.id == store.activeCircleId ? "checkmark" : "circle.dashed")
+                }
+            }
+            Divider()
+            if !HiddenStore.shared.hidden.isEmpty {
+                Button {
+                    HiddenStore.shared.toggleShowHidden(); store.refresh()
+                } label: {
+                    Label(HiddenStore.shared.showHidden ? "Hide hidden posts" : "Show hidden posts (\(HiddenStore.shared.hidden.count))",
+                          systemImage: HiddenStore.shared.showHidden ? "eye.slash" : "eye")
+                }
+            }
+            Button { newCircleName = ""; showNewCircle = true } label: {
+                Label("New circle…", systemImage: "plus.circle")
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Text(store.activeCircleName).font(.headline)
+                Image(systemName: "chevron.down").font(.caption2)
+            }
+            .foregroundStyle(.primary)
+        }
+        .menuIndicator(.hidden)   // macOS adds its own chevron; keep only our styled one
+    }
+
     var body: some View {
         NavigationStack {
             ZStack {
@@ -1652,34 +1683,14 @@ struct FeedView: View {
             .navigationTitle(store.activeCircleName)
             .havenInlineNavTitle()
             .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Menu {
-                        ForEach(store.feedCircles, id: \.id) { c in
-                            Button { store.setActiveCircle(c.id) } label: {
-                                Label(c.name, systemImage: c.id == store.activeCircleId ? "checkmark" : "circle.dashed")
-                            }
-                        }
-                        Divider()
-                        if !HiddenStore.shared.hidden.isEmpty {
-                            Button {
-                                HiddenStore.shared.toggleShowHidden(); store.refresh()
-                            } label: {
-                                Label(HiddenStore.shared.showHidden ? "Hide hidden posts" : "Show hidden posts (\(HiddenStore.shared.hidden.count))",
-                                      systemImage: HiddenStore.shared.showHidden ? "eye.slash" : "eye")
-                            }
-                        }
-                        Button { newCircleName = ""; showNewCircle = true } label: {
-                            Label("New circle…", systemImage: "plus.circle")
-                        }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Text(store.activeCircleName).font(.headline)
-                            Image(systemName: "chevron.down").font(.caption2)
-                        }
-                        .foregroundStyle(.primary)
-                    }
-                    .menuIndicator(.hidden)   // macOS adds its own chevron; keep only our styled one
-                }
+                #if os(macOS)
+                // On macOS the TabView's tabs (Circle / Messages / You) sit centered at the top; a
+                // centered (.principal) circle switcher fought them for space and shoved them around as
+                // its label width changed. Pin the switcher to the leading edge so the tabs stay put.
+                ToolbarItem(placement: .havenLeading) { circlePicker }
+                #else
+                ToolbarItem(placement: .principal) { circlePicker }
+                #endif
                 // Manage this circle (members, invite, settings) — lives on the circle, not You.
                 ToolbarItem(placement: .havenTrailing) {
                     Button { showCircle = true } label: { Image(systemName: "person.2.fill") }

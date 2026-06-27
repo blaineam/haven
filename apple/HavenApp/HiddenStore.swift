@@ -18,6 +18,9 @@ final class HiddenStore: ObservableObject {
         hidden = Set(d.stringArray(forKey: key) ?? [])
     }
 
+    /// Factory-reset this store — clear hidden-post ids (in-memory + persisted).
+    func wipe() { hidden = []; showHidden = false; d.removeObject(forKey: key) }
+
     func isHidden(_ id: String) -> Bool { hidden.contains(id) }
 
     func hide(_ id: String) {

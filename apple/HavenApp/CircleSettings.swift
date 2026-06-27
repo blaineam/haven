@@ -35,6 +35,12 @@ final class CircleSettingsStore: ObservableObject {
         retention = (d.dictionary(forKey: kRetention) as? [String: Int]) ?? [:]
     }
 
+    /// Factory-reset this store — clear all per-circle settings + unlocks (in-memory + persisted).
+    func wipe() {
+        spotlight = [:]; biometric = [:]; saveOwn = [:]; saveOthers = [:]; optimize = [:]; retention = [:]
+        [kSpot, kBio, kSaveOwn, kSaveOthers, kOptimize, kRetention].forEach { d.removeObject(forKey: $0) }
+    }
+
     // MARK: Media settings (per circle, falling back to the global default)
 
     func saveOwnToPhotos(_ c: String) -> Bool { saveOwn[c] ?? SettingsStore.shared.saveToPhotos }

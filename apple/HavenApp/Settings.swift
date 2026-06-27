@@ -22,12 +22,17 @@ final class SettingsStore: ObservableObject {
     @Published var silent: Bool {
         didSet { d.set(silent, forKey: kSilent); AudioCoordinator.shared.setSilent(silent) }
     }
+    /// GLOBAL video-sound toggle. Tapping unmute/mute on ANY video flips this, and it persists — so a
+    /// video stays unmuted across its own loops and as you scroll between videos (default muted, like
+    /// every other social feed: you tap once to turn sound on for all of them).
+    @Published var videoSoundOn: Bool { didSet { d.set(videoSoundOn, forKey: kVideoSound) } }
     private let d = UserDefaults.standard
     private let kSave = "haven.saveToPhotos"
     private let kSaveOthers = "haven.saveOthersToPhotos"
     private let kOpt = "haven.autoOptimize"
     private let kRet = "haven.retentionDays"
     private let kSilent = "haven.silent"
+    private let kVideoSound = "haven.videoSoundOn"
 
     private init() {
         saveToPhotos = d.object(forKey: kSave) as? Bool ?? true   // default ON
@@ -35,6 +40,7 @@ final class SettingsStore: ObservableObject {
         autoOptimize = d.object(forKey: kOpt) as? Bool ?? true
         retentionDays = d.object(forKey: kRet) as? Int ?? 0       // default forever
         silent = d.object(forKey: kSilent) as? Bool ?? false
+        videoSoundOn = d.object(forKey: kVideoSound) as? Bool ?? false   // default muted; tap any video to unmute all
     }
 
     /// Viewer retention in seconds (nil = forever).
@@ -161,11 +167,11 @@ struct SettingsView: View {
                     Text("Back up your identity to iCloud so it follows you to a new Apple device, move it to another device with a QR code, or restore/swap an identity here.")
                 }
                 Section {
-                    NavigationLink { LinkDeviceView(accountStore: accountStore) } label: {
-                        Label("Link a new device", systemImage: "iphone.and.arrow.forward")
+                    NavigationLink { AuthorizedDevicesView() } label: {
+                        Label("Devices", systemImage: "laptopcomputer.and.iphone")
                     }
                 } footer: {
-                    Text("Use this identity on another device too — both can post and receive, and sync to each other directly.")
+                    Text("Link this account to your other devices — each gets its own revocable key and syncs your profile + posts. See which devices are authorized, re-sync, or revoke one.")
                 }
                 Section {
                     NavigationLink {

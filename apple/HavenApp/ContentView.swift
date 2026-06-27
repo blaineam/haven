@@ -432,11 +432,10 @@ struct IdentityBackupView: View {
                     NavigationLink { RestoreIdentityView(accountStore: accountStore, onRestored: { reload() }) } label: {
                         Label("Add / restore an identity here", systemImage: "arrow.down.circle")
                     }
-                    NavigationLink { AuthorizedDevicesView() } label: {
-                        Label("Devices", systemImage: "laptopcomputer.and.iphone")
-                    }
+                    // "Devices" moved up to a top-level Settings entry — managing/revoking linked devices
+                    // isn't a backup/transfer task, and it was buried three levels deep here.
                 } header: { Text("Transfer & restore") }
-                footer: { Text("Move an identity to a new device by scanning a QR code, add/restore one from a transfer code, or manage + revoke the devices authorized on your account.") }
+                footer: { Text("Move an identity to a new device by scanning a QR code, or add/restore one from a transfer code.") }
 
                 Section {
                     Button(role: .destructive) { showFactoryReset = true } label: {

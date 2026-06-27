@@ -207,10 +207,34 @@ struct AuthorizedDevicesView: View {
     private var thisDeviceAuthorized: Bool { DeviceCredentialStore.isAuthorized }
     private var hasSeed: Bool { AccountStore.storedSeed() != nil }
 
+    /// This device's role, shown at the top so a linked Mac clearly reads as "linked", not "primary".
+    private var role: (icon: String, title: String, subtitle: String) {
+        if roster.isEnabled {
+            return ("key.fill", "This is your primary device",
+                    "It holds your master key and authorizes or revokes your other devices.")
+        } else if thisDeviceAuthorized {
+            return ("checkmark.seal.fill", "This is a linked device",
+                    "It acts on behalf of your primary device, which can revoke it at any time.")
+        } else {
+            return ("laptopcomputer", "This device isn’t linked yet",
+                    "Make it your primary, or link it to the device that already is.")
+        }
+    }
+
     var body: some View {
         ZStack {
             HavenBackground()
             Form {
+                Section {
+                    HStack(spacing: 12) {
+                        Image(systemName: role.icon).font(.title3).foregroundStyle(HavenTheme.pink)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(role.title).font(.subheadline.weight(.semibold))
+                            Text(role.subtitle).font(.caption).foregroundStyle(.secondary)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
                 Section {
                     if roster.devices.isEmpty {
                         Text("No devices linked yet.").foregroundStyle(.secondary)

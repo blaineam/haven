@@ -211,7 +211,32 @@ struct MediaItem: Identifiable {
 @MainActor
 final class MediaStore: ObservableObject {
     static let shared = MediaStore()
-    private var cache: [String: MediaItem] = [:]
+
+    /// Decoded media is held in an NSCache, NOT a plain dictionary — a dictionary held every image ever
+    /// viewed at full resolution (~26 MB each at 2560px) forever, which walked the app past the
+    /// per-process memory limit and got it jetsam-killed (~3.5 GB OOM). NSCache bounds total decoded
+    /// bytes, auto-evicts least-recently-used entries, and dumps everything on a memory warning. The
+    /// bytes are always on disk under haven-media, so an eviction just means the next `item(_:)`
+    /// re-decodes from the file — cheap, and bounded.
+    private final class Boxed { let item: MediaItem; init(_ i: MediaItem) { item = i } }
+    private let cache: NSCache<NSString, Boxed> = {
+        let c = NSCache<NSString, Boxed>()
+        c.totalCostLimit = 192 * 1024 * 1024   // ~192 MB of decoded media resident, then evict LRU
+        return c
+    }()
+    private func cacheGet(_ ref: String) -> MediaItem? { cache.object(forKey: ref as NSString)?.item }
+    private func cachePut(_ ref: String, _ item: MediaItem) {
+        cache.setObject(Boxed(item), forKey: ref as NSString, cost: Self.decodedCost(item))
+    }
+    private func cacheRemove(_ ref: String) { cache.removeObject(forKey: ref as NSString) }
+    /// Approximate decoded RAM footprint (≈4 bytes/pixel) so NSCache's cost accounting keeps total
+    /// resident bytes under the limit. Audio/video shells (no decoded image) are near-free.
+    private static func decodedCost(_ item: MediaItem) -> Int {
+        guard let s = item.image?.size, s.width > 0, s.height > 0 else { return 4096 }
+        return max(4096, Int(s.width * s.height) * 4)
+    }
+    /// Drop all decoded media from memory (factory reset, or to proactively relieve pressure).
+    func clearMemoryCache() { cache.removeAllObjects() }
 
     // MARK: - Captured location (opt-in)
 
@@ -272,7 +297,7 @@ final class MediaStore: ObservableObject {
         if let data = img.jpegData(compressionQuality: quality), let url = fileURL(ref) {
             try? data.write(to: url)
         }
-        cache[ref] = MediaItem(id: ref, kind: .image, image: img, videoURL: nil)
+        cachePut(ref, MediaItem(id: ref, kind: .image, image: img, videoURL: nil))
         return ref
     }
 
@@ -300,7 +325,7 @@ final class MediaStore: ObservableObject {
         if !ok {
             try? FileManager.default.copyItem(at: src, to: dst)
         }
-        cache[ref] = MediaItem(id: ref, kind: .video, image: Self.poster(for: dst), videoURL: dst)
+        cachePut(ref, MediaItem(id: ref, kind: .video, image: Self.poster(for: dst), videoURL: dst))
         return ref
     }
 
@@ -353,7 +378,7 @@ final class MediaStore: ObservableObject {
             export.exportAsynchronously { c.resume() }
         }
         guard export.status == .completed else { return nil }
-        cache[newRef] = MediaItem(id: newRef, kind: .video, image: Self.poster(for: dst), videoURL: dst)
+        cachePut(newRef, MediaItem(id: newRef, kind: .video, image: Self.poster(for: dst), videoURL: dst))
         return newRef
     }
 
@@ -378,7 +403,7 @@ final class MediaStore: ObservableObject {
             export.exportAsynchronously { c.resume() }
         }
         guard export.status == .completed else { return nil }
-        cache[newRef] = MediaItem(id: newRef, kind: .video, image: Self.poster(for: dst), videoURL: dst)
+        cachePut(newRef, MediaItem(id: newRef, kind: .video, image: Self.poster(for: dst), videoURL: dst))
         return newRef
     }
 
@@ -388,7 +413,7 @@ final class MediaStore: ObservableObject {
         if let dst = fileURL(ref) {
             try? FileManager.default.removeItem(at: dst)
             try? FileManager.default.copyItem(at: url, to: dst)
-            cache[ref] = MediaItem(id: ref, kind: .video, image: Self.poster(for: dst), videoURL: dst)
+            cachePut(ref, MediaItem(id: ref, kind: .video, image: Self.poster(for: dst), videoURL: dst))
         }
         return ref
     }
@@ -426,7 +451,7 @@ final class MediaStore: ObservableObject {
         let quality: CGFloat = optimize ? 0.88 : 0.95
         guard let data = img.jpegData(compressionQuality: quality) else { return false }
         do { try data.write(to: url) } catch { return false }
-        cache[ref] = MediaItem(id: ref, kind: .image, image: img, videoURL: nil)
+        cachePut(ref, MediaItem(id: ref, kind: .image, image: img, videoURL: nil))
         return true
     }
 
@@ -460,7 +485,7 @@ final class MediaStore: ObservableObject {
             try? FileManager.default.removeItem(at: dst)
             return nil
         }
-        cache[newRef] = MediaItem(id: newRef, kind: .video, image: Self.poster(for: dst), videoURL: dst)
+        cachePut(newRef, MediaItem(id: newRef, kind: .video, image: Self.poster(for: dst), videoURL: dst))
         return newRef
     }
 
@@ -527,14 +552,14 @@ final class MediaStore: ObservableObject {
         if let dst = fileURL(ref) {
             try? FileManager.default.removeItem(at: dst)
             try? FileManager.default.copyItem(at: src, to: dst)
-            cache[ref] = MediaItem(id: ref, kind: .audio, image: nil, videoURL: dst)
+            cachePut(ref, MediaItem(id: ref, kind: .audio, image: nil, videoURL: dst))
         }
         return ref
     }
 
     /// Do we already hold the bytes for this ref?
     func has(_ ref: String) -> Bool {
-        if cache[ref] != nil { return true }
+        if cacheGet(ref) != nil { return true }
         guard let url = fileURL(ref) else { return false }
         return FileManager.default.fileExists(atPath: url.path)
     }
@@ -550,9 +575,9 @@ final class MediaStore: ObservableObject {
         guard let kind = MediaKind(ref: ref), let url = fileURL(ref) else { return }
         try? bytes.write(to: url)
         switch kind {
-        case .image: cache[ref] = MediaItem(id: ref, kind: .image, image: PlatformImage(data: bytes), videoURL: nil)
-        case .video: cache[ref] = MediaItem(id: ref, kind: .video, image: Self.poster(for: url), videoURL: url)
-        case .audio: cache[ref] = MediaItem(id: ref, kind: .audio, image: nil, videoURL: url)
+        case .image: cachePut(ref, MediaItem(id: ref, kind: .image, image: PlatformImage(data: bytes), videoURL: nil))
+        case .video: cachePut(ref, MediaItem(id: ref, kind: .video, image: Self.poster(for: url), videoURL: url))
+        case .audio: cachePut(ref, MediaItem(id: ref, kind: .audio, image: nil, videoURL: url))
         }
     }
 
@@ -572,14 +597,14 @@ final class MediaStore: ObservableObject {
         try? FileManager.default.removeItem(at: dst)
         do { try FileManager.default.moveItem(at: temp, to: dst) } catch { return }
         switch kind {
-        case .image: cache[ref] = MediaItem(id: ref, kind: .image, image: PlatformImage(contentsOfFile: dst.path), videoURL: nil)
-        case .video: cache[ref] = MediaItem(id: ref, kind: .video, image: Self.poster(for: dst), videoURL: dst)
-        case .audio: cache[ref] = MediaItem(id: ref, kind: .audio, image: nil, videoURL: dst)
+        case .image: cachePut(ref, MediaItem(id: ref, kind: .image, image: PlatformImage(contentsOfFile: dst.path), videoURL: nil))
+        case .video: cachePut(ref, MediaItem(id: ref, kind: .video, image: Self.poster(for: dst), videoURL: dst))
+        case .audio: cachePut(ref, MediaItem(id: ref, kind: .audio, image: nil, videoURL: dst))
         }
     }
 
     func item(_ ref: String) -> MediaItem? {
-        if let c = cache[ref] { return c }
+        if let c = cacheGet(ref) { return c }
         guard let kind = MediaKind(ref: ref), let url = fileURL(ref),
               FileManager.default.fileExists(atPath: url.path) else { return nil }
         let item: MediaItem
@@ -588,7 +613,7 @@ final class MediaStore: ObservableObject {
         case .video: item = MediaItem(id: ref, kind: .video, image: Self.poster(for: url), videoURL: url)
         case .audio: item = MediaItem(id: ref, kind: .audio, image: nil, videoURL: url)
         }
-        cache[ref] = item
+        cachePut(ref, item)
         return item
     }
 

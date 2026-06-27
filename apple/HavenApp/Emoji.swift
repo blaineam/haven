@@ -11,6 +11,9 @@ final class EmojiStore: ObservableObject {
         counts = (UserDefaults.standard.dictionary(forKey: key) as? [String: Int]) ?? [:]
     }
 
+    /// Factory-reset this store — clear recent-emoji counts (in-memory + persisted).
+    func wipe() { counts = [:]; UserDefaults.standard.removeObject(forKey: key) }
+
     func record(_ e: String) {
         counts[e, default: 0] += 1
         UserDefaults.standard.set(counts, forKey: key)

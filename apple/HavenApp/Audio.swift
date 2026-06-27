@@ -85,14 +85,13 @@ struct AudioRecorderView: View {
 /// A small play/pause pill for an audio reply.
 struct AudioPlayerPill: View {
     let url: URL
-    @State private var player: AVAudioPlayer?
-    @State private var playing = false
+    @StateObject private var engine = AudioPillEngine()
 
     var body: some View {
-        Button(action: toggle) {
+        Button(action: { engine.toggle(url: url) }) {
             HStack(spacing: 8) {
-                Image(systemName: playing ? "pause.fill" : "play.fill")
-                EqualizerBars(animating: playing)
+                Image(systemName: engine.playing ? "pause.fill" : "play.fill")
+                EqualizerBars(animating: engine.playing)
                 Text("Audio").font(.caption.weight(.medium))
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
@@ -100,20 +99,48 @@ struct AudioPlayerPill: View {
             .overlay(Capsule().strokeBorder(HavenTheme.pink.opacity(0.35)))
         }
         .buttonStyle(PressableStyle())
+        .onDisappear { engine.stop() }
+    }
+}
+
+/// Owns the AVAudioPlayer + its delegate so a voice reply actually makes sound and the pill resets when
+/// the clip ends. Two bugs this fixes: (1) the session was only *categorized* `.playback` but never
+/// *activated* — without `setActive(true)` the output route never switches, so it played silently;
+/// (2) there was no finished-callback, so the pill stayed stuck showing "pause" after the clip ended.
+@MainActor final class AudioPillEngine: NSObject, ObservableObject, AVAudioPlayerDelegate {
+    @Published var playing = false
+    private var player: AVAudioPlayer?
+
+    func toggle(url: URL) {
+        if playing { player?.pause(); playing = false; return }
+        if player == nil {
+            #if os(iOS)
+            let s = AVAudioSession.sharedInstance()
+            try? s.setCategory(.playback, mode: .spokenAudio)
+            try? s.setActive(true)   // REQUIRED — categorizing alone leaves the route unset → silence
+            #endif
+            let p = try? AVAudioPlayer(contentsOf: url)
+            p?.delegate = self
+            p?.volume = 1
+            p?.prepareToPlay()
+            player = p
+        }
+        player?.play(); playing = true
     }
 
-    private func toggle() {
-        if playing {
-            player?.pause(); playing = false
-        } else {
-            if player == nil {
-                #if os(iOS)
-                try? AVAudioSession.sharedInstance().setCategory(.playback)
-                #endif
-                player = try? AVAudioPlayer(contentsOf: url)
-                player?.prepareToPlay()
-            }
-            player?.play(); playing = true
+    func stop() {
+        player?.stop(); playing = false
+        #if os(iOS)
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        #endif
+    }
+
+    nonisolated func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {
+        Task { @MainActor in
+            self.playing = false
+            #if os(iOS)
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            #endif
         }
     }
 }

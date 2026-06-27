@@ -554,14 +554,44 @@ final class AccountStore: ObservableObject {
         var delHist = Self.historyQuery()
         delHist[kSecAttrSynchronizable as String] = kSecAttrSynchronizableAny
         SecItemDelete(delHist as CFDictionary)
-        UserDefaults.standard.removeObject(forKey: Self.labelsKey)
+
+        // Sweep EVERY persisted Haven preference so no screen keeps stale state (blocked list, circle
+        // settings, hidden posts, contacts, relay/S3 config, photo-album links, last-heard, scheduled
+        // posts, camera prefs, onboarding flags — all of it). A previous reset only cleared the seed +
+        // a couple of keys, so half the app stayed populated.
+        let d = UserDefaults.standard
+        for key in d.dictionaryRepresentation().keys where key.hasPrefix("haven.") { d.removeObject(forKey: key) }
         SharedLockedCircles.write([])
         _ = SharedInbox.drain()
+
+        // Reset the in-memory singletons too, so the LIVE UI reverts now (not just after a relaunch).
+        ConnectionsStore.shared.wipe()
+        ContactsStore.shared.wipe()
+        CircleSettingsStore.shared.wipe()
+        HiddenStore.shared.wipe()
+        EmojiStore.shared.wipe()
+        MediaStore.shared.clearMemoryCache()
+        DeviceRosterManager.shared.stepDown()
+        DeviceCredentialStore.clear()
+        Self.deleteAllOnDiskMedia()
+
+        // Back to a single blank identity AND the welcome/setup flow.
         let fresh = Account.generate()
         Self.saveSeed(fresh.secretSeed())
         SharedSeed.write(fresh.secretSeed())
         account = fresh
         ProfileStore.shared.reloadForCurrentIdentity()
         FeedStore.shared.reconfigure(seed: fresh.secretSeed())
+        ProfileStore.shared.onboarded = false   // ← drops the user back on the welcome screen, fresh-install style
+    }
+
+    /// Delete every on-disk media file + cached avatar so a factory reset leaves nothing behind.
+    private static func deleteAllOnDiskMedia() {
+        let fm = FileManager.default
+        guard let appSup = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return }
+        try? fm.removeItem(at: appSup.appendingPathComponent("haven-media", isDirectory: true))
+        if let items = try? fm.contentsOfDirectory(at: appSup, includingPropertiesForKeys: nil) {
+            for u in items where u.lastPathComponent.hasPrefix("haven-avatar") { try? fm.removeItem(at: u) }
+        }
     }
 }

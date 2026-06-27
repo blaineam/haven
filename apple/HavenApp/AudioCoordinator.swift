@@ -34,9 +34,10 @@ final class AudioCoordinator: ObservableObject {
         activePostId = postId
         videoPlayer = video
         activeTrack = track
-        // Play the video's own audio only when there's no song, the author left it unmuted,
-        // and the app isn't globally silenced.
-        let playVideoAudio = (track == nil) && !muteVideo && !SettingsStore.shared.silent
+        // Play the video's own audio only when there's no song, the author left it unmuted, the app
+        // isn't globally silenced, AND the viewer's GLOBAL video-sound toggle is on. The global flag is
+        // what makes "tap one video to unmute" carry to every other video + survive loops.
+        let playVideoAudio = (track == nil) && !muteVideo && !SettingsStore.shared.silent && SettingsStore.shared.videoSoundOn
         videoUnmuted = playVideoAudio
         video?.volume = playVideoAudio ? 1 : 0
         if let track { MusicPlayback.shared.play(track) }
@@ -72,11 +73,14 @@ final class AudioCoordinator: ObservableObject {
         }
     }
 
-    /// Toggle the video's own audio, crossfading against the song.
+    /// Toggle the video's own audio, crossfading against the song. Flips the GLOBAL video-sound toggle
+    /// so the choice applies to every video and persists across loops/scroll (not just this one post).
     func toggleVideoAudio() {
         guard !SettingsStore.shared.silent else { return }   // app is muted
-        videoUnmuted.toggle()
-        if videoUnmuted {
+        let on = !videoUnmuted
+        videoUnmuted = on
+        SettingsStore.shared.videoSoundOn = on
+        if on {
             MusicPlayback.shared.duck()              // music down
             fadeVideo(to: 1.0)                        // video up
         } else {
@@ -108,13 +112,15 @@ final class AudioCoordinator: ObservableObject {
         MusicPlayback.shared.resume()
     }
 
-    /// The active post's video finished playing — re-mute it and bring the song back.
+    /// The active post's video looped. KEEP the viewer's unmute choice across the loop (it used to
+    /// force re-mute every loop, which is exactly the bug). Only bring the song back if the video is
+    /// muted; if the viewer is listening to the video, leave it up and don't resume the song.
     func videoFinished() {
         if videoUnmuted {
-            videoUnmuted = false
-            videoPlayer?.volume = 0
+            videoPlayer?.volume = 1   // stay unmuted on the looped playback
+        } else {
+            MusicPlayback.shared.resume()
         }
-        MusicPlayback.shared.resume()
     }
 
     private func fadeVideo(to target: Float, duration: TimeInterval = 0.45) {

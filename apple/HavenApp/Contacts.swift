@@ -43,6 +43,9 @@ final class ContactsStore: ObservableObject {
     @Published private(set) var contacts: [Contact] = []
     private let key = "haven.contacts"
 
+    /// Factory-reset this store — clear in-memory + persisted contacts.
+    func wipe() { contacts = []; UserDefaults.standard.removeObject(forKey: key) }
+
     init() {
         if let data = UserDefaults.standard.data(forKey: key),
            let list = try? JSONDecoder().decode([Contact].self, from: data) {
