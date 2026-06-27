@@ -587,8 +587,11 @@ struct StoryCameraView: View {
                     .simultaneousGesture(MagnificationGesture()
                         .onChanged { v in cam.setZoom(min(maxZoom, max(minZoom, pinchBaseZoom * v))) }
                         .onEnded { _ in pinchBaseZoom = cam.zoom })
-                    // Swipe left/right to flip through filters at full frame rate.
-                    .simultaneousGesture(DragGesture(minimumDistance: 24)
+                    // Swipe left/right on the PREVIEW to flip filters — but only when the filter strip is
+                    // hidden. While the strip is open this simultaneousGesture fought its horizontal scroll
+                    // (every swipe both scrolled AND cycled the filter), which is why scrolling it felt
+                    // stuck and took way too much dragging.
+                    .simultaneousGesture(showLiveFilters ? nil : DragGesture(minimumDistance: 24)
                         .onEnded { v in
                             guard abs(v.translation.width) > abs(v.translation.height) * 1.5,
                                   abs(v.translation.width) > 44 else { return }
