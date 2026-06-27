@@ -56,15 +56,18 @@ extension UIViewController {
 #if !os(macOS)
 @MainActor
 final class CameraModel: NSObject, ObservableObject {
-    let session = AVCaptureSession()
-    private let photoOutput = AVCapturePhotoOutput()
-    private let movieOutput = AVCaptureMovieFileOutput()
+    // Capture session + outputs + device bookkeeping live exclusively on `queue` (serial), so they're
+    // nonisolated(unsafe) — serialized by the queue, not the main actor. Only @Published UI state below
+    // stays main-isolated.
+    nonisolated(unsafe) let session = AVCaptureSession()
+    nonisolated(unsafe) private let photoOutput = AVCapturePhotoOutput()
+    nonisolated(unsafe) private let movieOutput = AVCaptureMovieFileOutput()
     private let queue = DispatchQueue(label: "haven.camera")
     // Live filtered preview: frames are tapped here and rendered through FilterEngine by the
     // FilteredCameraPreview/MetalCameraPreview. The story camera is portrait-locked, so the
     // preview connection is always 90° (portrait), mirrored on the front camera.
-    let frameTap = LiveFrameTap()
-    private let videoDataOutput = AVCaptureVideoDataOutput()
+    let frameTap = LiveFrameTap()   // @unchecked Sendable
+    nonisolated(unsafe) private let videoDataOutput = AVCaptureVideoDataOutput()
 
     @Published var isRecording = false
     @Published var position: AVCaptureDevice.Position = .back
@@ -76,13 +79,13 @@ final class CameraModel: NSObject, ObservableObject {
     /// The lens presets available on this device's back camera (e.g. [0.5, 1, 2]).
     @Published var lensPresets: [Double] = [1, 2]
 
-    private var device: AVCaptureDevice?
-    private var usingUltraWide = false
-    private var onPhoto: ((PlatformImage) -> Void)?
-    private var onVideo: ((URL) -> Void)?
-    private var recordTimer: Timer?
+    nonisolated(unsafe) private var device: AVCaptureDevice?
+    nonisolated(unsafe) private var usingUltraWide = false
+    nonisolated(unsafe) private var onPhoto: ((PlatformImage) -> Void)?
+    nonisolated(unsafe) private var onVideo: ((URL) -> Void)?
+    nonisolated(unsafe) private var recordTimer: Timer?
     /// When the current clip hits this many seconds, recording auto-stops (the 90s total cap).
-    private var capSeconds = StoryCaptureModel.maxTotal
+    nonisolated(unsafe) private var capSeconds = StoryCaptureModel.maxTotal
 
     func start() {
         AVCaptureDevice.requestAccess(for: .video) { _ in }
