@@ -236,12 +236,14 @@ final class MacCameraEngine: NSObject, ObservableObject {
            let micIn = try? AVCaptureDeviceInput(device: mic), session.canAddInput(micIn) {
             session.addInput(micIn)
         }
-        if session.canAddOutput(photoOutput) { session.addOutput(photoOutput) }
-        if session.canAddOutput(movieOutput) { session.addOutput(movieOutput) }
+        // videoDataOutput MUST be added first: a macOS session caps how many outputs it accepts and
+        // rejects the last one. It feeds the live preview AND (via frameTap.latest) the photo capture.
         if session.canAddOutput(videoDataOutput) {
             videoDataOutput.wireLivePreview(tap: frameTap, queue: queue)
             session.addOutput(videoDataOutput)
         }
+        if session.canAddOutput(movieOutput) { session.addOutput(movieOutput) }
+        if session.canAddOutput(photoOutput) { session.addOutput(photoOutput) }
         session.commitConfiguration()
         if !session.isRunning { session.startRunning() }
         Task { @MainActor in self.ready = true }
@@ -263,6 +265,17 @@ final class MacCameraEngine: NSObject, ObservableObject {
 
     func capturePhoto(_ completion: @escaping (PlatformImage?) -> Void) {
         guard !capturing, !isRecording else { return }
+        // macOS: AVCapturePhotoOutput silently fails to deliver while an AVCaptureMovieFileOutput is on
+        // the same session — the reason the Mac camera "can't take a single photo". Grab the still from
+        // the live preview frame instead; always available once the session is running.
+        if let ci = frameTap.latest {
+            let ctx = CIContext()
+            if let cg = ctx.createCGImage(ci, from: ci.extent) {
+                completion(NSImage(cgImage: cg, size: NSSize(width: ci.extent.width, height: ci.extent.height)))
+                return
+            }
+        }
+        // Fallback if no frame has arrived yet.
         capturing = true
         onPhoto = completion
         queue.async { [weak self] in

@@ -1440,6 +1440,7 @@ struct FeedView: View {
     @State private var showSchedule = false   // "send later" date picker
     @State private var dropActive = false   // drag-and-drop media onto the composer (macOS/iPadOS)
     @State private var showFilesImporter = false   // pick media from the Files app (iOS/iPadOS)
+    @State private var showFilePicker = false      // macOS file browser (NSOpenPanel)
     @State private var showMediaPicker = false
     @State private var showCamera = false
     @State private var showSongPicker = false
@@ -1592,6 +1593,11 @@ struct FeedView: View {
             .sheet(isPresented: $showMediaPicker) {
                 MediaPicker { refs in attachedMedia.append(contentsOf: refs) }.macSheetClose()
             }
+            #if os(macOS)
+            .sheet(isPresented: $showFilePicker) {
+                FilePicker { refs in attachedMedia.append(contentsOf: refs) }
+            }
+            #endif
             .sheet(isPresented: $showLocationPicker) {
                 LocationPicker { ref in attachedMedia.append(ref) }.macSheetClose()
             }
@@ -1758,9 +1764,13 @@ struct FeedView: View {
                 HStack(spacing: 10) {
                     Menu {
                         Button { showMediaPicker = true } label: { Label("Photo or Video", systemImage: "photo.on.rectangle") }
-                        #if os(iOS)
-                        Button { showFilesImporter = true } label: { Label("Files…", systemImage: "folder") }
-                        #endif
+                        Button {
+                            #if os(iOS)
+                            showFilesImporter = true   // Files app
+                            #else
+                            showFilePicker = true       // macOS file browser (NSOpenPanel)
+                            #endif
+                        } label: { Label("Files…", systemImage: "folder") }
                         Button { showCamera = true } label: { Label("Camera", systemImage: "camera") }
                         Button { showSongPicker = true } label: { Label("Add a song", systemImage: "music.note") }
                         Button { showLocationPicker = true } label: { Label("Pin a location", systemImage: "mappin.and.ellipse") }

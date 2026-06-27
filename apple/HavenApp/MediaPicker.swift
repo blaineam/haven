@@ -98,20 +98,71 @@ struct MediaPicker: UIViewControllerRepresentable {
 
 #if os(macOS)
 
-/// Native macOS photo/video picker. Mirrors the iOS `MediaPicker` signature exactly:
-/// a single `onPicked: ([String]) -> Void` closure returning media refs registered in
-/// `MediaStore`. PHPicker presentation differs on the Mac, so this uses `NSOpenPanel`.
-struct MediaPicker: View {
+/// macOS photo/video picker — the **Photos library** (PHPickerViewController, macOS 13+), matching
+/// iOS. (The file browser is a separate `FilePicker`, offered as the "Files…" attach option.)
+struct MediaPicker: NSViewControllerRepresentable {
+    var onPicked: ([String]) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    func makeNSViewController(context: Context) -> PHPickerViewController {
+        var config = PHPickerConfiguration(photoLibrary: .shared())
+        config.filter = .any(of: [.images, .videos])
+        config.selectionLimit = 30
+        config.preferredAssetRepresentationMode = .current
+        let picker = PHPickerViewController(configuration: config)
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateNSViewController(_ vc: PHPickerViewController, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, PHPickerViewControllerDelegate {
+        let parent: MediaPicker
+        private var finished = false
+        init(_ parent: MediaPicker) { self.parent = parent }
+
+        func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
+            guard !finished else { return }
+            finished = true
+            let providers = results.map(\.itemProvider)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                var refs: [String] = []
+                for provider in providers {
+                    if provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
+                        let dest: URL? = await withCheckedContinuation { cont in
+                            provider.loadFileRepresentation(forTypeIdentifier: UTType.movie.identifier) { url, _ in
+                                guard let url else { cont.resume(returning: nil); return }
+                                let dest = FileManager.default.temporaryDirectory
+                                    .appendingPathComponent(UUID().uuidString + "." + url.pathExtension)
+                                try? FileManager.default.copyItem(at: url, to: dest)
+                                cont.resume(returning: dest)
+                            }
+                        }
+                        if let dest { refs.append(await MediaStore.shared.addVideo(url: dest)) }
+                    } else if provider.canLoadObject(ofClass: PlatformImage.self) {
+                        let img: PlatformImage? = await withCheckedContinuation { cont in
+                            provider.loadObject(ofClass: PlatformImage.self) { obj, _ in cont.resume(returning: obj as? PlatformImage) }
+                        }
+                        if let img { refs.append(MediaStore.shared.addImage(img)) }
+                    }
+                }
+                self.parent.onPicked(refs)
+                self.parent.dismiss()
+            }
+        }
+    }
+}
+
+/// macOS file-browser picker (the "Files…" attach option) — pick photos/videos from anywhere on disk.
+struct FilePicker: View {
     var onPicked: ([String]) -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         Color.clear
             .onAppear {
-                // Defer to the next runloop tick: running a modal panel synchronously inside onAppear
-                // (mid SwiftUI update) is re-entrant. `begin`'s sheet-less callback was opening the panel
-                // behind this host sheet, so it looked like "the picker doesn't work" — runModal presents
-                // it reliably in front.
                 DispatchQueue.main.async {
                     let panel = NSOpenPanel()
                     panel.allowedContentTypes = [.image, .movie]
