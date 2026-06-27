@@ -211,6 +211,24 @@ final class CallManager: NSObject, ObservableObject {
 
     private func rosterCSV() -> String { roster.sorted().joined(separator: ",") }
 
+    /// Add someone to the call already in progress: put them in the roster, ring them (group-invite +
+    /// push), and re-send the updated roster to everyone already in so the newcomer meshes with all of
+    /// them. Existing participants union the new roster on receipt and connect to the new peer.
+    func addToCall(_ hex: String) {
+        guard active, !hex.isEmpty, hex != myHex, !roster.contains(hex) else { return }
+        roster.insert(hex)
+        refreshParticipants()
+        sendInvites()                                                  // updated roster → all invitees + newcomer
+        FeedStore.shared.pushCallInvite(to: hex, callerName: myName)   // wake just the newcomer
+    }
+
+    /// Contacts not already in the call — the candidates for the in-call "add" button.
+    func addableContacts() -> [(hex: String, name: String)] {
+        ContactsStore.shared.contacts
+            .filter { !roster.contains($0.idHex) && $0.idHex != myHex && !ConnectionsStore.shared.isBlocked($0.idHex) }
+            .map { ($0.idHex, $0.displayName) }
+    }
+
     /// Frame 21: group-invite carrying the session id + group name + full roster, sent to everyone.
     private func sendInvites() {
         var f = Data(myHex.utf8)
@@ -1157,8 +1175,42 @@ struct RTCVideoView: NSViewRepresentable {
 /// In-call overlay (CallKit shows the system UI; this is the in-app screen). Active calls show a
 /// GRID of remote tiles (one per connected peer — video, or an avatar/initial tile when a peer has
 /// no camera) with the local camera as a picture-in-picture and a name/status top bar.
+/// In-call "add someone" picker — lists contacts not already on the call; tap to ring them in.
+struct AddToCallPicker: View {
+    @ObservedObject private var call = CallManager.shared
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                HavenBackground()
+                let people = call.addableContacts()
+                if people.isEmpty {
+                    Text("Everyone you know is already on the call.").foregroundStyle(.secondary).padding()
+                } else {
+                    List(people, id: \.hex) { p in
+                        Button { CallManager.shared.addToCall(p.hex); dismiss() } label: {
+                            HStack(spacing: 12) {
+                                PeerAvatar(nodeHex: p.hex, name: p.name, size: 40)
+                                Text(p.name).foregroundStyle(.primary)
+                                Spacer()
+                                Image(systemName: "plus.circle.fill").foregroundStyle(HavenTheme.pink)
+                            }.contentShape(Rectangle())
+                        }
+                        .listRowBackground(Color.clear)
+                    }
+                    .scrollContentBackground(.hidden)
+                }
+            }
+            .navigationTitle("Add to call")
+            .havenInlineNavTitle()
+            .toolbar { ToolbarItem(placement: .havenCancelLeading) { Button("Cancel") { dismiss() } } }
+        }
+    }
+}
+
 struct CallOverlay: View {
     @ObservedObject private var call = CallManager.shared
+    @State private var showAddPicker = false
     var body: some View {
         if call.ringing { incoming }
         // Minimized → render nothing here; the return-to-call bar lives above the tab bar
@@ -1434,6 +1486,8 @@ struct CallOverlay: View {
                 }
             }
             #endif
+            // Add another person to the live call — rings them and meshes them with everyone already in.
+            Button { showAddPicker = true } label: { callButton("person.badge.plus", on: false) }
             Button { CallManager.shared.endCall() } label: {
                 Image(systemName: "phone.down.fill").font(.title2)
                     .foregroundStyle(.white).frame(width: 58, height: 58)
@@ -1441,6 +1495,7 @@ struct CallOverlay: View {
             }
         }
         .padding(.horizontal, 12)
+        .sheet(isPresented: $showAddPicker) { AddToCallPicker() }
     }
 
     #if targetEnvironment(macCatalyst)
