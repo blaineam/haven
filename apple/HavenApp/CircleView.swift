@@ -34,6 +34,7 @@ struct CircleView: View {
                     ForEach(membersInCircle) { c in
                         row(c)
                             .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)   // the default hairline dividers looked harsh over the gradient
                             .contextMenu {
                                 Button { nicknameDraft = c.nickname ?? ""; nicknameTarget = c } label: {
                                     Label("Set nickname", systemImage: "pencil")
@@ -74,6 +75,7 @@ struct CircleView: View {
                     Text(isDefault
                          ? "“Waiting” means the secure handshake hasn't completed yet. Now just one of you needs to scan the other's invite — the other gets a request to approve. Swipe to remove, or swipe left to block."
                          : "Swipe to remove someone from just this circle (they stay in your other circles). Swipe left to block them everywhere.")
+                        .fixedSize(horizontal: false, vertical: true)   // wrap fully instead of truncating
                 }
 
                 if !nonContactMembers.isEmpty {
@@ -149,6 +151,10 @@ struct CircleView: View {
                 .accessibilityLabel("Circle settings")
             }
         }
+        #if os(macOS)
+        // Let the gradient show through the sheet's toolbar bars instead of their default gray.
+        .toolbarBackground(.hidden, for: .windowToolbar)
+        #endif
         .sheet(isPresented: $showInvite) { ConnectView(account: account, contacts: contacts).macSheetClose() }
         .alert("Nickname", isPresented: Binding(get: { nicknameTarget != nil }, set: { if !$0 { nicknameTarget = nil } })) {
             TextField("Nickname", text: $nicknameDraft)

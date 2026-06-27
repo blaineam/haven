@@ -2274,6 +2274,7 @@ struct PostCard: View {
     @State private var showEdit = false
     @State private var zoomTarget: ZoomTarget?
     @State private var players: [String: AVPlayer] = [:]
+    @State private var playerObservers: [String: NSObjectProtocol] = [:]   // loop observers, removed on teardown
     @State private var showReactionPicker = false
     @State private var editCommentId: String?
     @State private var editCommentText = ""
@@ -2382,7 +2383,7 @@ struct PostCard: View {
         }
         .havenCard()
         .onAppear { syncPlayback() }
-        .onDisappear { pauseVideos() }
+        .onDisappear { teardownPlayers() }
         .onChange(of: audio.centeredPostId) { syncPlayback() }
         .onChange(of: currentPage) { if isActive { playVisibleVideo() } }
         .sheet(isPresented: $showEdit) { EditPostSheet(item: item) }
@@ -2560,8 +2561,13 @@ struct PostCard: View {
         // When the clip ends, loop it (muted) and — if we're still on this post —
         // bring the song back, so the music never stays paused under an idle video.
         let postId = item.id
-        NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime,
-                                               object: p.currentItem, queue: .main) { _ in
+        // CRITICAL: capture the player WEAKLY. addObserver(forName:) returns a token whose closure is
+        // retained by NotificationCenter until removed — a strong `p` capture meant every AVPlayer (and
+        // its video decode buffers) lived forever even after the card scrolled away. That was the runaway
+        // leak (memory climbed into the tens of GB). We also store the token and remove it on teardown.
+        let token = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime,
+                                               object: p.currentItem, queue: .main) { [weak p] _ in
+            guard let p else { return }
             MainActor.assumeIsolated {   // observer is delivered on .main, so this is genuinely isolated
                 p.seek(to: .zero)
                 if AudioCoordinator.shared.centeredPostId == postId {
@@ -2572,6 +2578,7 @@ struct PostCard: View {
         }
         DispatchQueue.main.async {
             players[ref] = p
+            playerObservers[ref] = token
             if isActive { playVisibleVideo() }
         }
         return p
@@ -2590,6 +2597,16 @@ struct PostCard: View {
     }
 
     private func pauseVideos() { players.values.forEach { $0.pause() } }
+
+    /// Fully release this card's video players when it scrolls off-screen — pause, replace each item with
+    /// nothing (frees the decode pipeline), remove the loop observers, and drop the dicts. Without this an
+    /// off-screen card kept buffering video forever; combined with the leaked observers it ran to ~100 GB.
+    private func teardownPlayers() {
+        for (_, token) in playerObservers { NotificationCenter.default.removeObserver(token) }
+        for (_, p) in players { p.pause(); p.replaceCurrentItem(with: nil) }
+        playerObservers.removeAll()
+        players.removeAll()
+    }
 
     private func playVisibleVideo() {
         guard isActive else { return }

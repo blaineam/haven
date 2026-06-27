@@ -148,6 +148,17 @@ struct DMThreadView: View {
     struct ReactTarget: Identifiable { let id: String }
     @FocusState private var focused: Bool
 
+    /// Thread title + presence ("Online" / "Last seen …"). Placed centered on iOS, leading on macOS.
+    @ViewBuilder private var dmHeader: some View {
+        let p = store.dmPresence(circleId)
+        VStack(alignment: .leading, spacing: 1) {
+            Text(store.dmPartnerName(circleId)).font(.headline)
+            Text(p.online ? "Online"
+                 : (p.lastSeen.map { "Last seen \(relativeTimeShort(UInt64($0.timeIntervalSince1970 * 1000))) ago" } ?? "Offline"))
+                .font(.caption2).foregroundStyle(p.online ? Color.green : Color.secondary)
+        }
+    }
+
     var body: some View {
         ZStack {
             HavenBackground()
@@ -171,15 +182,13 @@ struct DMThreadView: View {
         }
         .havenInlineNavTitle()
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                let p = store.dmPresence(circleId)
-                VStack(spacing: 1) {
-                    Text(store.dmPartnerName(circleId)).font(.headline)
-                    Text(p.online ? "Online"
-                         : (p.lastSeen.map { "Last seen \(relativeTimeShort(UInt64($0.timeIntervalSince1970 * 1000))) ago" } ?? "Offline"))
-                        .font(.caption2).foregroundStyle(p.online ? Color.green : Color.secondary)
-                }
-            }
+            // On macOS a centered (.principal) header pushes the window's top tabs around as the name +
+            // "last seen" line changes width — so pin it to the leading edge by the back button instead.
+            #if os(macOS)
+            ToolbarItem(placement: .havenLeading) { dmHeader }
+            #else
+            ToolbarItem(placement: .principal) { dmHeader }
+            #endif
             ToolbarItem(placement: .havenTrailing) {
                 Button {
                     // Ring EVERYONE in the thread — one person for a 1:1, the whole roster for a group DM.
@@ -382,8 +391,14 @@ struct DMThreadView: View {
                 } label: {
                     Image(systemName: "plus.circle.fill").font(.title2).foregroundStyle(HavenTheme.pink)
                 }
+                .menuIndicator(.hidden)
+                #if os(macOS)
+                .menuStyle(.borderlessButton)   // match the feed composer: just the pink circle, no button chrome
+                .fixedSize()
+                #endif
                 TextField(secret ? "Secret message…" : "Message…", text: $text, axis: .vertical)
                     .focused($focused)
+                    .textFieldStyle(.plain)   // drop macOS's default field border (was doubling with the overlay)
                     .padding(.horizontal, 14).padding(.vertical, 10)
                     // Fixed-radius rounded rect — a Capsule clips into multi-line text.
                     .background(.background, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
