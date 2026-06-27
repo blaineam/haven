@@ -1695,7 +1695,21 @@ impl HavenSocial {
                 my_circle_secret: c.my_circle_secret,
                 peer_circle_secrets: c.peer_circle_secrets.iter().map(|(a, s)| (a.clone(), *s)).collect(),
             }).collect(),
-            device_rosters: vec![], // populated in Stage 2 once ContactDevices carries the account bundle
+            device_rosters: {
+                let me_id = st.me.public().node_id_bytes();
+                let me_bundle = st.me.public().to_bytes();
+                st.device_lists.iter().filter_map(|(acct_id, cd)| {
+                    // Resolve the account's FULL bundle (needed to re-verify on import) from me or a member.
+                    let account_bundle = if *acct_id == me_id {
+                        me_bundle.clone()
+                    } else {
+                        st.circles.iter().flat_map(|c| c.members.iter())
+                            .find(|m| m.node_id_bytes() == *acct_id)
+                            .map(|m| m.to_bytes())?
+                    };
+                    Some((account_bundle, cd.list.to_bytes(), cd.credentials.iter().map(|c| c.to_bytes()).collect()))
+                }).collect()
+            },
         };
         serde_json::to_vec(&ps).unwrap_or_default()
     }
@@ -1708,6 +1722,11 @@ impl HavenSocial {
         if let Ok(ps) = serde_json::from_slice::<PersistState>(&data) {
             for pc in ps.circles {
                 Self::merge_circle(&mut st, pc);
+            }
+            // Restore device rosters AFTER circles (no epoch rotation — the restored epochs already
+            // reflect them; re-verified against the carried account bundle, higher-version-wins).
+            for (acct, list, creds) in ps.device_rosters {
+                restore_roster(&mut st, &acct, &list, &creds);
             }
         } else if let Ok(old) = serde_json::from_slice::<LegacyPersistState>(&data) {
             Self::merge_circle(&mut st, PersistCircle {
@@ -1829,6 +1848,31 @@ fn verify_and_store_roster(st: &mut NetState, account: &HavenId, list_bytes: &[u
         }
     }
     true
+}
+
+/// Restore a persisted device roster on load: re-verify it against the carried account bundle and store
+/// it WITHOUT rotating epochs (the saved epochs already reflect it). Higher-version-wins.
+fn restore_roster(st: &mut NetState, account_bundle: &[u8], list_bytes: &[u8], cred_bytes: &[Vec<u8>]) {
+    let Ok(account) = HavenId::from_bytes(account_bundle) else { return };
+    let Ok(list) = DeviceList::from_bytes(list_bytes) else { return };
+    if list.verify(&account).is_err() {
+        return;
+    }
+    let mut credentials = Vec::new();
+    for cb in cred_bytes {
+        if let Ok(cred) = DeviceCredential::from_bytes(cb) {
+            if cred.verify(&account).is_ok() {
+                credentials.push(cred);
+            }
+        }
+    }
+    let acct_id = account.node_id_bytes();
+    if let Some(existing) = st.device_lists.get(&acct_id) {
+        if existing.list.version >= list.version {
+            return;
+        }
+    }
+    st.device_lists.insert(acct_id, ContactDevices { list, credentials });
 }
 
 /// If `sender_hex` is an AUTHORIZED device of a member of circle `idx` (or of me), return that device's
@@ -2152,6 +2196,17 @@ mod net_tests {
         assert!(alice.ingest_device_roster(account.public().to_bytes(), v3.to_bytes(), vec![cred.to_bytes()]));
         let stale = DeviceList::signed(&account, 2, 0, vec![], vec![]);
         assert!(!alice.ingest_device_roster(account.public().to_bytes(), stale.to_bytes(), vec![]));
+
+        // Roster survives an export/import round-trip (so restarts keep it, without re-rotating epochs).
+        let v5 = DeviceList::signed(&account, 5, 0, vec![phone.public().node_id_bytes()], vec![]);
+        let s = HavenSocial::new([6u8; 32].to_vec()).unwrap();
+        s.add_contact_bundle(DEFAULT_CIRCLE.to_string(), account.public().to_bytes()).unwrap(); // member → export resolves the account bundle
+        assert!(s.ingest_device_roster(account.public().to_bytes(), v5.to_bytes(), vec![cred.to_bytes()]));
+        let reloaded = HavenSocial::new([6u8; 32].to_vec()).unwrap();
+        reloaded.import_state(s.export_state());
+        let v4 = DeviceList::signed(&account, 4, 0, vec![], vec![]);
+        assert!(!reloaded.ingest_device_roster(account.public().to_bytes(), v4.to_bytes(), vec![]),
+                "the restored v5 roster makes a v4 replay stale → it round-tripped");
     }
 
     /// End-to-end: a member's AUTHORIZED linked device receives the circle's content, and REVOKING it
