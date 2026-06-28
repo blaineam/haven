@@ -1017,6 +1017,29 @@ async function callStart(others, name, video) {
   renderCallOverlay();
 }
 
+/** Add people to the IN-PROGRESS call: invite the newcomers and re-broadcast the updated roster so
+ *  everyone (old + new) meshes together. */
+async function addToCall(others) {
+  if (!(call.inCall || call.connecting)) return;
+  const fresh = others.filter((o) => o !== call.me && !call.roster.has(o));
+  if (!fresh.length) return;
+  fresh.forEach((o) => call.roster.add(o));
+  await invoke("call_group_invite", { sessionId: call.session, groupName: call.name || "Haven call", roster: [...call.roster], to: invitees() });
+  if (call.localStream) fresh.forEach(connectPeerIfNeeded);
+  renderCallOverlay();
+}
+
+function addToCallDialog() {
+  const addable = (state.contacts || []).filter((c) => !call.roster.has(c.id_hex));
+  if (!addable.length) { toast("No one else to add"); return; }
+  modal(el("div", {}, el("h2", {}, "Add to call"),
+    el("div", { class: "col", style: "max-height:300px;overflow:auto" },
+      ...addable.map((c) => el("div", { class: "list-item" },
+        el("div", { class: "avatar", style: "width:30px;height:30px;font-size:12px" }, initials(c.name)),
+        el("div", { style: "flex:1" }, c.name),
+        el("button", { class: "btn small", onclick: async (e) => { await addToCall([c.id_hex]); e.target.textContent = "Added ✓"; e.target.disabled = true; } }, "Add"))))));
+}
+
 async function callAccept() {
   call.ringing = false; call.inCall = true;
   await invoke("call_accept", { sessionId: call.session, to: invitees() });
@@ -1221,6 +1244,7 @@ function renderCallOverlay() {
       el("button", { class: "btn " + (call.micOn ? "" : "danger"), onclick: toggleMic }, call.micOn ? "🎤 Mute" : "🔇 Unmute"),
       call.video ? el("button", { class: "btn " + (call.camOn ? "" : "danger"), onclick: toggleCam }, call.camOn ? "📹 Camera off" : "📷 Camera on") : null,
       el("button", { class: "btn " + (call.screenOn ? "primary" : ""), onclick: toggleScreen }, call.screenOn ? "🛑 Stop sharing" : "🖥️ Share screen"),
+      el("button", { class: "btn", onclick: addToCallDialog }, "➕ Add"),
       el("button", { class: "btn danger", onclick: () => callHangup() }, "📞 Hang up"),
     ))));
 }
