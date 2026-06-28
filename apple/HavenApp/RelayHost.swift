@@ -331,14 +331,16 @@ enum RelayClients {
     /// A connected client for a relay, honoring per-relay backoff. nil if in backoff or unreachable.
     static func client(_ nodeHex: String) async -> RelayClient? {
         if let c = cache[nodeHex] { return c }
-        // Never back off our OWN hosted relay — it's local and always worth retrying. A transient
-        // failure during relay startup shouldn't lock it out for up to 5 minutes (the backoff cap),
-        // which left the relay-hosting device unable to land its own events.
-        let isOwn = RelayHost.shared.serving && !RelayHost.shared.nodeId.isEmpty && nodeHex == RelayHost.shared.nodeId
-        guard isOwn || RelayHealth.shared.available(nodeHex) else { return nil }   // skip relays in backoff
+        // NEVER connect to our OWN hosted relay node. A node dialing itself sends iroh's path discovery
+        // into a tight loop (open_path_on_all_conns / normalize_network_path), exploding memory by tens
+        // of GB in minutes — THE runaway leak. We already ARE this relay; we never need a client to it.
+        if RelayHost.shared.serving, !RelayHost.shared.nodeId.isEmpty, nodeHex == RelayHost.shared.nodeId {
+            return nil
+        }
+        guard RelayHealth.shared.available(nodeHex) else { return nil }   // skip relays in backoff
         guard let seed = AccountStore.storedSeed() else { return nil }
         guard let c = try? await RelayClient.connect(seed: seed, relayNodeHex: nodeHex) else {
-            if !isOwn { RelayHealth.shared.recordFailure(nodeHex) }
+            RelayHealth.shared.recordFailure(nodeHex)
             return nil
         }
         RelayHealth.shared.recordSuccess(nodeHex)

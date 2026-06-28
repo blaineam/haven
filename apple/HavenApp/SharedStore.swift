@@ -142,6 +142,10 @@ enum SharedStore {
             // a relay in backoff is skipped. Success on ANY relay means it's safely in a mailbox.
             var landed = false
             for node in nodes {
+                // Our OWN hosted relay: we ARE this mailbox, so count it as landed WITHOUT a self-
+                // connection (which blows up iroh's path machinery). Don't let our own posts pile up in
+                // the pending queue waiting to "upload" to ourselves.
+                if RelayHost.shared.serving, node == RelayHost.shared.nodeId { landed = true; continue }
                 guard let c = await RelayClients.client(node) else { continue }
                 if await c.has(key: key) { RelayHealth.shared.recordSuccess(node); landed = true; continue }
                 do { try await c.put(key: key, data: env); RelayHealth.shared.recordSuccess(node); landed = true }
