@@ -25,6 +25,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -40,7 +41,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.filled.Key
+import androidx.compose.material.icons.filled.Smartphone
+import com.blaineam.haven.core.DeviceCredentialStore
+import com.blaineam.haven.core.DeviceRosterManager
 import com.blaineam.haven.core.HavenNet
+import com.blaineam.haven.core.RosterDevice
 import com.blaineam.haven.core.ProfileStore
 import com.blaineam.haven.core.StorageStore
 import com.blaineam.haven.core.startOver
@@ -332,6 +338,9 @@ fun SettingsScreen(onBack: () -> Unit) {
                     modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { showRestore = true }.padding(vertical = 8.dp))
             }
 
+            Spacer(Modifier.height(16.dp))
+            AuthorizedDevicesCard()
+
             Spacer(Modifier.height(24.dp))
             Text("Start over (new identity)", color = Color(0xFFF87171), fontWeight = FontWeight.Medium,
                 fontSize = 15.sp, modifier = Modifier.clip(RoundedCornerShape(8.dp))
@@ -506,5 +515,91 @@ private fun SettingSwitch(label: String, checked: Boolean, onChange: (Boolean) -
         androidx.compose.material3.Switch(checked = checked, onCheckedChange = onChange,
             colors = androidx.compose.material3.SwitchDefaults.colors(
                 checkedThumbColor = Color.White, checkedTrackColor = HavenTheme.pink))
+    }
+}
+
+/** iOS-parity "Authorized devices": this device's role + the signed roster, with revoke / enable /
+ *  step-down / request-enrollment. The credential crypto lives in the shared core. */
+@Composable
+private fun AuthorizedDevicesCard() {
+    val devices = DeviceRosterManager.devices
+    var enabled by remember { mutableStateOf(DeviceRosterManager.isEnabled()) }
+    val authorized by DeviceCredentialStore.authorized
+    var revokeTarget by remember { mutableStateOf<RosterDevice?>(null) }
+    LaunchedEffect(Unit) { DeviceCredentialStore.refresh() }
+
+    Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
+        Text("Authorized devices", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+        Spacer(Modifier.height(4.dp))
+        val role = when {
+            enabled -> "This is your primary device" to "It holds your master key and authorizes or revokes your other devices."
+            authorized -> "This is a linked device" to "It acts on behalf of your primary device, which can revoke it at any time."
+            else -> "This device isn’t linked yet" to "Make it your primary, or link it to the device that already is."
+        }
+        Text(role.first, color = HavenTheme.pink, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+        Text(role.second, color = HavenTheme.textSecondary, fontSize = 12.sp)
+        Spacer(Modifier.height(10.dp))
+
+        if (devices.isEmpty()) {
+            Text("No devices linked yet.", color = HavenTheme.textSecondary, fontSize = 13.sp)
+        } else {
+            devices.forEach { d ->
+                Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        if (d.isPrimary) Icons.Filled.Key else Icons.Filled.Smartphone, null,
+                        tint = if (d.isPrimary) HavenTheme.pink else HavenTheme.textSecondary, modifier = Modifier.size(20.dp),
+                    )
+                    Spacer(Modifier.size(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(d.name, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+                        Text(
+                            if (d.isPrimary) "Master key" else if (d.isThisDevice) "This device" else "Linked device",
+                            color = HavenTheme.textSecondary, fontSize = 11.sp,
+                        )
+                    }
+                    if (!d.isPrimary) {
+                        Text(
+                            "Revoke", color = Color(0xFFF87171), fontSize = 13.sp,
+                            modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { revokeTarget = d }.padding(6.dp),
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+        if (!enabled) {
+            Text(
+                "Make this my primary device", color = HavenTheme.pink, fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                modifier = Modifier.clip(RoundedCornerShape(8.dp))
+                    .clickable { HavenNet.enableDeviceRoster(); enabled = DeviceRosterManager.isEnabled() }.padding(vertical = 8.dp),
+            )
+            Text(
+                if (authorized) "Re-sync from my primary device" else "Make this a secure linked device",
+                color = HavenTheme.pink, fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { HavenNet.requestDeviceEnrollment() }.padding(vertical = 8.dp),
+            )
+        } else {
+            Text(
+                "This isn’t my primary device", color = Color(0xFFF87171), fontSize = 14.sp, fontWeight = FontWeight.Medium,
+                modifier = Modifier.clip(RoundedCornerShape(8.dp))
+                    .clickable { HavenNet.stepDownAsPrimary(); enabled = DeviceRosterManager.isEnabled() }.padding(vertical = 8.dp),
+            )
+        }
+    }
+
+    revokeTarget?.let { t ->
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { revokeTarget = null }, containerColor = HavenTheme.card,
+            title = { Text("Revoke “${t.name}”?", color = Color.White) },
+            text = { Text("This device will no longer receive anything posted to your circles afterward.", color = HavenTheme.textSecondary) },
+            confirmButton = {
+                Text("Revoke device", color = Color(0xFFF87171),
+                    modifier = Modifier.clickable { HavenNet.revokeDevice(t.nodeHex); revokeTarget = null }.padding(8.dp))
+            },
+            dismissButton = {
+                Text("Cancel", color = HavenTheme.textSecondary, modifier = Modifier.clickable { revokeTarget = null }.padding(8.dp))
+            },
+        )
     }
 }

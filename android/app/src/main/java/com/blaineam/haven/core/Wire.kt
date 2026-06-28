@@ -22,6 +22,8 @@ object Wire {
     const val RELAY: Int = 9
     const val RELAY_NODE: Int = 19   // circle relay/mailbox node id share
     const val PRESIGN: Int = 20      // S3 pre-signed URL pool bootstrap
+    const val DEVICE_ENROLL: Int = 24 // a device asks its primary to authorize it (multi-device, iOS-compat)
+    const val DEVICE_GRANT: Int = 25  // the primary returns a signed credential to the requesting device
     const val CALL_INVITE: Int = 10
     const val CALL_ACCEPT: Int = 11
     const val CALL_HANGUP: Int = 12

@@ -118,6 +118,9 @@ object HavenNet : InboundListener {
         Presign.init(appContext)
         CircleLock.init(appContext)
         CircleRemovals.init(appContext)
+        DeviceKeyStore.init(appContext)
+        DeviceCredentialStore.init(appContext)
+        DeviceRosterManager.init(appContext)
         SelfSyncCoordinator.init(appContext)
         restoreState()
         loadContacts()
@@ -242,6 +245,8 @@ object HavenNet : InboundListener {
             withContext(Dispatchers.Main) { internetActive.value = true }
             when (type) {
                 Wire.HELLO -> handleHello(body, viaNearby)
+                Wire.DEVICE_ENROLL -> handleEnrollmentRequest(body)
+                Wire.DEVICE_GRANT -> handleDeviceGrant(body)
                 Wire.EVENT -> handleEvent(body)
                 Wire.RELAY_NODE -> handleRelayNode(body)
                 Wire.PRESIGN -> handlePresignBootstrap(body)
@@ -462,6 +467,63 @@ object HavenNet : InboundListener {
 
     /** True if [hex] was explicitly removed from [circleId] (severance) — don't dial / show them there. */
     fun isRemovedFromCircle(circleId: String, hex: String): Boolean = CircleRemovals.contains(circleId, hex)
+
+    // ---- Multi-device roster (iOS-parity; the signed-credential crypto lives in the shared core) ----
+
+    /** Turn THIS device into the primary (master-key holder) that authorizes/revokes the others. */
+    fun enableDeviceRoster() {
+        DeviceRosterManager.enable(social, core.seed, core.bundle, nodeIdHex)
+    }
+
+    /** Ask the primary (over nearby + iroh) to authorize this device with its own revocable key. */
+    fun requestDeviceEnrollment() {
+        val out = ArrayList<Byte>()
+        Wire.lpAppend(out, DeviceKeyStore.deviceBundle())
+        Wire.lpAppend(out, DeviceKeyStore.deviceName.toByteArray(Charsets.UTF_8))
+        Wire.lpAppend(out, DeviceKeyStore.deviceNodeHex().toByteArray(Charsets.UTF_8))
+        val payload = out.toByteArray()
+        NearbyTransport.broadcast(Wire.frame(Wire.DEVICE_ENROLL, payload))
+        runCatching { sendFrame(Wire.DEVICE_ENROLL, payload, nodeIdHex) }   // also the iroh path to my own devices
+    }
+
+    /** Revoke a linked device (primary only) — it can decrypt nothing posted afterward. */
+    fun revokeDevice(nodeHex: String) {
+        DeviceRosterManager.revoke(nodeHex, social, core.seed)
+    }
+
+    /** Step this device down from being the primary (e.g. the wrong device claimed the role). */
+    fun stepDownAsPrimary() {
+        DeviceRosterManager.stepDown()
+    }
+
+    /** I hold the master seed → authorize the requesting device: issue its credential, add it to my
+     *  signed roster, send the grant back, and push my state so it backfills. */
+    private fun handleEnrollmentRequest(payload: ByteArray) {
+        val r = Wire.Reader(payload)
+        val bundle = r.lp() ?: return
+        val name = r.lp()?.toString(Charsets.UTF_8) ?: "Device"
+        val hex = r.lp()?.toString(Charsets.UTF_8) ?: return
+        if (hex.isEmpty() || hex == DeviceKeyStore.deviceNodeHex()) return   // not my own device's request
+        DeviceRosterManager.enable(social, core.seed, core.bundle, nodeIdHex)
+        val cred = DeviceRosterManager.addLinkedDevice(bundle, hex, name, social, core.seed) ?: return
+        val out = ArrayList<Byte>()
+        Wire.lpAppend(out, hex.toByteArray(Charsets.UTF_8))
+        Wire.lpAppend(out, cred)
+        val grant = out.toByteArray()
+        NearbyTransport.broadcast(Wire.frame(Wire.DEVICE_GRANT, grant))
+        runCatching { sendFrame(Wire.DEVICE_GRANT, grant, nodeIdHex) }
+        scope.launch { runCatching { SelfSyncCoordinator.sync(social) } }   // push my profile + posts
+    }
+
+    /** I'm the requesting device → store the credential the primary issued for my key. */
+    private fun handleDeviceGrant(payload: ByteArray) {
+        val r = Wire.Reader(payload)
+        val hex = r.lp()?.toString(Charsets.UTF_8) ?: return
+        val cred = r.lp() ?: return
+        if (hex != DeviceKeyStore.deviceNodeHex()) return   // not for me
+        DeviceCredentialStore.save(cred)
+        scope.launch(Dispatchers.Main) { feedVersion.value++ }
+    }
 
     /** The members of a circle, with resolved display names — for the roster/management UI. */
     fun membersOf(circleId: String): List<Contact> =

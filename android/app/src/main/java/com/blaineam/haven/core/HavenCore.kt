@@ -26,6 +26,7 @@ class HavenCore private constructor(
     val account: Account = loadOrCreate()
 
     val seed: ByteArray get() = account.secretSeed()
+    val bundle: ByteArray get() = account.publicBundle()
     val nodeIdHex: String get() = account.nodeIdHex()
     val verificationHex: String get() = account.verificationHex()
 

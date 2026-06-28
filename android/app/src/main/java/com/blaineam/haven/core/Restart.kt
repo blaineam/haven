@@ -21,6 +21,9 @@ fun startOver(context: Context) {
     runCatching { CircleRemovals.clear() }
     runCatching { Presign.reset() }
     runCatching { SelfSyncCoordinator.reset() }
+    runCatching { DeviceKeyStore.clear() }
+    runCatching { DeviceCredentialStore.clear() }
+    runCatching { DeviceRosterManager.clear() }
     restartApp(context)
 }
 
