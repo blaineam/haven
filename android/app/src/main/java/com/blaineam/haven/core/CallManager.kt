@@ -119,6 +119,25 @@ object CallManager {
         startMesh()
     }
 
+    /** Add people to the IN-PROGRESS call: invite the newcomers and re-broadcast the updated roster so
+     *  everyone (old + new) meshes together. No-op for anyone already in or not in a call. */
+    fun addToCall(hexes: List<String>) {
+        if (!(inCall.value || connecting.value)) return
+        val fresh = hexes.filter { it != myHex && !roster.contains(it) }
+        if (fresh.isEmpty()) return
+        roster.addAll(fresh)
+        refreshParticipants()
+        // Frame 21 with the NEW roster — to the newcomers (so they ring/join) AND existing members (so
+        // they learn the newcomer and open a peer to them; handleGroupInvite fills the mesh in).
+        val frame = CallWire.groupInvite(myHex, sessionId, peerName.value, rosterCsv())
+        invitees().forEach { HavenNet.sendCallFrame(CallWire.GROUP_INVITE, frame, it) }
+        if (mediaStarted) fresh.forEach { connectPeerIfNeeded(it) }
+    }
+
+    /** Contacts still addable to the current call (not already in it, not blocked). */
+    fun addableContacts(): List<Contact> =
+        HavenNet.contacts.filter { !roster.contains(it.idHex) && !HavenNet.blocked.contains(it.idHex) }
+
     fun accept() {
         ringing.value = false
         inCall.value = true

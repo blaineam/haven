@@ -13,6 +13,9 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items as lazyItems
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
@@ -34,7 +37,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import com.blaineam.haven.core.Contact
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -161,7 +168,9 @@ private fun InCall() {
     val participants = CallManager.participants
     val remote = CallManager.remoteVideo
     val sharing by CallManager.screenShare
+    var showAddPeople by remember { mutableStateOf(false) }
     val context = androidx.compose.ui.platform.LocalContext.current
+    if (showAddPeople) AddToCallPicker(onDismiss = { showAddPeople = false })
     // System MediaProjection consent → start the screen capture on approval.
     val projectionLauncher = androidx.activity.compose.rememberLauncherForActivityResult(
         androidx.activity.result.contract.ActivityResultContracts.StartActivityForResult()) { result ->
@@ -234,6 +243,8 @@ private fun InCall() {
             RoundButton(if (cameraOn) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
                 if (cameraOn) HavenTheme.card else Color.White, "Camera") { CallManager.toggleCamera() }
             RoundButton(Icons.Filled.Cameraswitch, HavenTheme.card, "Flip") { CallManager.switchCamera() }
+            if (CallManager.addableContacts().isNotEmpty())
+                RoundButton(Icons.Filled.PersonAdd, HavenTheme.card, "Add people") { showAddPeople = true }
             RoundButton(if (sharing) Icons.Filled.StopScreenShare else Icons.Filled.ScreenShare,
                 if (sharing) Color.White else HavenTheme.card, "Share screen") {
                 if (sharing) CallManager.stopScreenShare()
@@ -246,6 +257,38 @@ private fun InCall() {
             RoundButton(Icons.Filled.CallEnd, Color(0xFFEF4444), "End") { CallManager.hangup() }
         }
     }
+}
+
+/** Pick a contact to add to the in-progress call. */
+@Composable
+private fun AddToCallPicker(onDismiss: () -> Unit) {
+    val candidates = remember { CallManager.addableContacts() }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = HavenTheme.card,
+        title = { Text("Add to call", color = Color.White) },
+        text = {
+            LazyColumn(Modifier.heightIn(max = 320.dp)) {
+                lazyItems(candidates, key = { it.idHex }) { c: Contact ->
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                            .clickable { CallManager.addToCall(listOf(c.idHex)); onDismiss() }
+                            .padding(vertical = 8.dp, horizontal = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        HavenAvatar(idOrShort = c.idHex, name = c.name, size = 34.dp)
+                        Spacer(Modifier.size(10.dp))
+                        Text(c.name, color = Color.White, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                        Icon(Icons.Filled.PersonAdd, null, tint = HavenTheme.pink)
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = {
+            Text("Done", color = HavenTheme.pink, modifier = Modifier.clickable { onDismiss() }.padding(8.dp))
+        },
+    )
 }
 
 /** One participant's tile — matches iOS: camera fills, or the brand sunset gradient + their profile
