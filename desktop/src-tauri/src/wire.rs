@@ -27,6 +27,8 @@ pub const ICE: u8 = 18;
 pub const RELAY_NODE: u8 = 19;
 pub const PRESIGN: u8 = 20;
 pub const GROUP_INVITE: u8 = 21;
+pub const DEVICE_ENROLL: u8 = 24; // a device asks its primary to authorize it (multi-device, iOS-compat)
+pub const DEVICE_GRANT: u8 = 25; // the primary returns a signed credential to the requesting device
 
 /// Prepend the one-byte frame type.
 pub fn frame(t: u8, payload: &[u8]) -> Vec<u8> {

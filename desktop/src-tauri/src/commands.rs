@@ -339,6 +339,41 @@ pub fn set_video_sound(engine: Eng, on: bool) {
     engine.set_video_sound(on);
 }
 
+// ---- multi-device roster ----------------------------------------------------------------
+
+#[derive(serde::Serialize)]
+pub struct DeviceRosterDto {
+    pub enabled: bool,
+    pub this_device_authorized: bool,
+    pub devices: Vec<crate::roster::RosterDeviceDto>,
+}
+
+#[tauri::command]
+pub fn device_roster(engine: Eng) -> DeviceRosterDto {
+    let (enabled, this_device_authorized, devices) = engine.device_roster_dto();
+    DeviceRosterDto { enabled, this_device_authorized, devices }
+}
+
+#[tauri::command]
+pub fn enable_device_roster(engine: Eng) {
+    engine.enable_device_roster();
+}
+
+#[tauri::command]
+pub fn request_device_enrollment(engine: Eng) {
+    engine.request_device_enrollment();
+}
+
+#[tauri::command]
+pub fn revoke_device(engine: Eng, node_hex: String) {
+    engine.revoke_device(node_hex);
+}
+
+#[tauri::command]
+pub fn step_down_as_primary(engine: Eng) {
+    engine.step_down_as_primary();
+}
+
 #[tauri::command]
 pub fn messages(engine: Eng, circle_id: String) -> Vec<FeedItemDto> {
     engine.messages(&circle_id).into_iter().map(|it| feed_item_dto(&engine, it)).collect()

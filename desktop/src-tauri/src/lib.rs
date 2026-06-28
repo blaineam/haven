@@ -7,6 +7,7 @@ mod commands;
 mod engine;
 mod localmedia;
 mod relayhealth;
+mod roster;
 mod scheduled;
 mod secret;
 mod selfsync;
@@ -213,6 +214,11 @@ pub fn run() {
             commands::sync_status,
             commands::video_sound_on,
             commands::set_video_sound,
+            commands::device_roster,
+            commands::enable_device_roster,
+            commands::request_device_enrollment,
+            commands::revoke_device,
+            commands::step_down_as_primary,
             commands::messages,
             commands::send_dm,
             commands::connect_by_link,

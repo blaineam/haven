@@ -74,6 +74,7 @@ pub struct Engine {
     prefs: StdMutex<Prefs>,
     dyn_state: StdMutex<DynState>,
     scheduled: StdMutex<crate::scheduled::ScheduledStore>,
+    roster: StdMutex<crate::roster::DeviceRoster>,
     sched_counter: std::sync::atomic::AtomicU64,
     relay_clients: TokioMutex<HashMap<String, Arc<RelayClient>>>,
     /// Per-relay backoff health, keyed by node hex — drives graceful fallback.
@@ -101,6 +102,7 @@ impl Engine {
         let prefs = Prefs::load(&paths);
         let media = LocalMedia::new(paths.media_dir());
         let scheduled = crate::scheduled::ScheduledStore::load(&paths.scheduled_file());
+        let roster = crate::roster::DeviceRoster::load(&paths);
         Ok(Arc::new(Self {
             seed,
             social,
@@ -112,6 +114,7 @@ impl Engine {
             prefs: StdMutex::new(prefs),
             dyn_state: StdMutex::new(DynState::default()),
             scheduled: StdMutex::new(scheduled),
+            roster: StdMutex::new(roster),
             sched_counter: std::sync::atomic::AtomicU64::new(0),
             relay_clients: TokioMutex::new(HashMap::new()),
             relay_health: StdMutex::new(HashMap::new()),
@@ -437,6 +440,113 @@ impl Engine {
         let mut p = self.prefs.lock().unwrap();
         p.video_sound_on = on;
         let _ = p.save(&self.paths);
+    }
+
+    // ---- Multi-device roster (iOS/Android parity; the signed-credential crypto is in the shared core) ----
+
+    fn account_bundle(&self) -> Vec<u8> {
+        haven_ffi::Account::from_seed(self.seed.to_vec()).map(|a| a.public_bundle()).unwrap_or_default()
+    }
+
+    /// Sign + push the current roster to the engine, then persist.
+    fn push_roster(self: &Arc<Self>) {
+        let now = now_ms() / 1000;
+        let signed = self.roster.lock().unwrap().resign(&self.seed, now);
+        if let Some((list, creds)) = signed {
+            self.social.set_my_device_roster(list, creds);
+        }
+        let _ = self.roster.lock().unwrap().save(&self.paths);
+    }
+
+    /// Turn THIS device into the primary (master-key holder) that authorizes/revokes the others.
+    pub fn enable_device_roster(self: &Arc<Self>) {
+        let bundle = self.account_bundle();
+        let hex = self.node_id_hex();
+        self.roster.lock().unwrap().enable(&bundle, &hex);
+        self.push_roster();
+        self.emit_changed();
+    }
+
+    /// Revoke a linked device — it can decrypt nothing posted afterward.
+    pub fn revoke_device(self: &Arc<Self>, node_hex: String) {
+        if !self.roster.lock().unwrap().revoke(&node_hex) {
+            return;
+        }
+        self.push_roster();
+        self.emit_changed();
+    }
+
+    /// Step this device down from being the primary (e.g. the wrong device claimed the role).
+    pub fn step_down_as_primary(self: &Arc<Self>) {
+        {
+            let mut r = self.roster.lock().unwrap();
+            r.step_down();
+            let _ = r.save(&self.paths);
+        }
+        self.emit_changed();
+    }
+
+    /// Ask the primary (over iroh, to my own node id) to authorize this device with its own key.
+    pub fn request_device_enrollment(self: &Arc<Self>) {
+        let (bundle, name, hex) = {
+            let r = self.roster.lock().unwrap();
+            (r.device_bundle(), crate::roster::DeviceRoster::device_name(), r.device_node_hex())
+        };
+        let mut payload = Vec::new();
+        wire::lp_append(&mut payload, &bundle);
+        wire::lp_append(&mut payload, name.as_bytes());
+        wire::lp_append(&mut payload, hex.as_bytes());
+        let me = self.node_id_hex();
+        self.send_frame(wire::DEVICE_ENROLL, &payload, &me);
+    }
+
+    /// I hold the master seed → authorize the requesting device: issue its credential, add it to my
+    /// signed roster, and send the grant back.
+    fn handle_enrollment_request(self: &Arc<Self>, payload: &[u8]) {
+        let mut r = wire::Reader::new(payload);
+        let Some(bundle) = r.lp() else { return };
+        let name = r.lp().map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_else(|| "Device".into());
+        let Some(hex_b) = r.lp() else { return };
+        let hex = String::from_utf8_lossy(&hex_b).into_owned();
+        let my_dev = self.roster.lock().unwrap().device_node_hex();
+        if hex.is_empty() || hex == my_dev {
+            return; // not my own device's request
+        }
+        let account_bundle = self.account_bundle();
+        let account_hex = self.node_id_hex();
+        let now = now_ms() / 1000;
+        let cred = {
+            let mut rr = self.roster.lock().unwrap();
+            rr.enable(&account_bundle, &account_hex);
+            rr.add_linked_device(&bundle, &hex, &name, &self.seed, now)
+        };
+        let Some(cred) = cred else { return };
+        self.push_roster();
+        let mut grant = Vec::new();
+        wire::lp_append(&mut grant, hex.as_bytes());
+        wire::lp_append(&mut grant, &cred);
+        let me = self.node_id_hex();
+        self.send_frame(wire::DEVICE_GRANT, &grant, &me);
+    }
+
+    /// I'm the requesting device → store the credential the primary issued for my key.
+    fn handle_device_grant(self: &Arc<Self>, payload: &[u8]) {
+        let mut r = wire::Reader::new(payload);
+        let Some(hex_b) = r.lp() else { return };
+        let hex = String::from_utf8_lossy(&hex_b).into_owned();
+        let Some(cred) = r.lp() else { return };
+        let mut rr = self.roster.lock().unwrap();
+        if hex != rr.device_node_hex() {
+            return; // not for me
+        }
+        rr.credential = Some(cred);
+        let _ = rr.save(&self.paths);
+    }
+
+    /// (isEnabled, thisDeviceAuthorized, devices) for the Authorized-Devices UI.
+    pub fn device_roster_dto(&self) -> (bool, bool, Vec<crate::roster::RosterDeviceDto>) {
+        let r = self.roster.lock().unwrap();
+        (r.is_enabled(), r.is_authorized(), r.devices(&self.node_id_hex()))
     }
 
     // ---- circles ------------------------------------------------------------------------
@@ -899,6 +1009,8 @@ impl Engine {
                 wire::MEDIA_CHUNK => me.handle_media_chunk(&body),
                 wire::CALL_INVITE | wire::GROUP_INVITE | wire::CALL_ACCEPT | wire::CALL_HANGUP
                 | wire::SDP_OFFER | wire::SDP_ANSWER | wire::ICE => me.handle_call(t, &body),
+                wire::DEVICE_ENROLL => me.handle_enrollment_request(&body),
+                wire::DEVICE_GRANT => me.handle_device_grant(&body),
                 _ => log::debug!("ignoring frame type {t} (not yet handled)"),
             }
             me.emit_changed();
@@ -1813,6 +1925,12 @@ impl Engine {
         // Clear the self-sync base too, so adopting a new identity doesn't diff an empty engine against
         // a stale base and tombstone the account (the data-loss bug).
         store::remove_if_exists(&self.paths.selfsync_state_file());
+        {
+            let mut r = self.roster.lock().unwrap();
+            *r = crate::roster::DeviceRoster::load(&self.paths);
+            r.step_down();
+            let _ = r.save(&self.paths);
+        }
         store::delete_s3_secret();
         let _ = store::delete_seed();
         self.emit_changed();

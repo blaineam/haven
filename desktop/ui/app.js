@@ -929,6 +929,7 @@ async function renderYou() {
   const root = $("#view-you");
   const p = await invoke("get_profile");
   const blocked = await invoke("blocked");
+  const roster = await invoke("device_roster").catch(() => ({ enabled: false, this_device_authorized: false, devices: [] }));
   const name = el("input", { value: p.name || "", placeholder: "Display name" });
   const emoji = el("input", { value: p.emoji || "", placeholder: "Emoji (optional)", maxlength: 4, style: "width:90px" });
   const bio = el("textarea", { placeholder: "One-line bio (optional)" }); bio.value = p.bio || "";
@@ -986,7 +987,34 @@ async function renderYou() {
       el("button", { class: "btn small danger", onclick: async () => { await invoke("cancel_scheduled", { id: s.id }); renderYou(); } }, "Cancel")));
   }
 
-  root.replaceChildren(el("div", { class: "view-head" }, el("h1", {}, "You")), profileCard, idCard, schedCard, security, blockedCard, danger);
+  // ---- Authorized devices (revocable multi-device roster — parity with iOS/Android) ----
+  const roleTitle = roster.enabled ? "This is your primary device"
+    : roster.this_device_authorized ? "This is a linked device" : "This device isn’t linked yet";
+  const roleSub = roster.enabled ? "It holds your master key and authorizes or revokes your other devices."
+    : roster.this_device_authorized ? "It acts on behalf of your primary device, which can revoke it at any time."
+    : "Make it your primary, or link it to the device that already is.";
+  const devicesCard = el("div", { class: "card col" },
+    el("h3", {}, "Authorized devices"),
+    el("div", {}, el("strong", {}, roleTitle)),
+    el("div", { class: "muted small" }, roleSub));
+  if (!roster.devices.length) devicesCard.append(el("div", { class: "muted small" }, "No devices linked yet."));
+  for (const d of roster.devices) {
+    devicesCard.append(el("div", { class: "list-item" },
+      el("div", {}, d.is_primary ? "🔑" : "💻"),
+      el("div", { style: "flex:1" }, el("div", { class: "name" }, d.name),
+        el("div", { class: "muted small" }, d.is_primary ? "Master key" : d.is_this_device ? "This device" : "Linked device")),
+      d.is_primary ? null : el("button", { class: "btn small danger", onclick: async () => {
+        if (confirm(`Revoke “${d.name}”? It will no longer receive anything posted afterward.`)) { await invoke("revoke_device", { nodeHex: d.node_hex }); renderYou(); }
+      } }, "Revoke")));
+  }
+  devicesCard.append(el("div", { class: "row", style: "margin-top:6px" },
+    roster.enabled
+      ? el("button", { class: "btn small danger", onclick: async () => { if (confirm("Stop this device acting as the primary?")) { await invoke("step_down_as_primary"); renderYou(); } } }, "This isn’t my primary")
+      : el("button", { class: "btn small", onclick: async () => { await invoke("enable_device_roster"); renderYou(); toast("This is now your primary device"); } }, "Make this my primary"),
+    roster.enabled ? null : el("button", { class: "btn small ghost", onclick: async () => { await invoke("request_device_enrollment"); toast("Asked your primary device to authorize this one"); } },
+      roster.this_device_authorized ? "Re-sync from my primary" : "Make this a linked device")));
+
+  root.replaceChildren(el("div", { class: "view-head" }, el("h1", {}, "You")), profileCard, idCard, devicesCard, schedCard, security, blockedCard, danger);
 }
 
 const line = (label, ok) => el("div", { class: "row" }, el("span", { style: "flex:1" }, label), el("span", { class: ok ? "ok-text" : "warn-text" }, ok ? "✓ pass" : "✗ fail"));
