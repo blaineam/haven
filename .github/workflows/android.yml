@@ -129,6 +129,13 @@ jobs:
           find app/build/outputs/bundle -name '*.aab' -exec cp {} ../out/ \;
           ls -la ../out
 
+      - name: Attach AAB to the GitHub Release (always — so it's downloadable for a manual Play upload)
+        if: startsWith(github.ref, 'refs/tags/v') && steps.keystore.outputs.have_keystore == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/*.aab
+          fail_on_unmatched_files: false
+
       - name: Check Play credentials
         id: play
         if: startsWith(github.ref, 'refs/tags/v')
@@ -144,6 +151,10 @@ jobs:
 
       - name: Publish AAB to Google Play (internal track)
         if: steps.play.outputs.submit == 'true'
+        # Non-fatal: the APK + AAB are already published to the GitHub Release above. A Play-side gate
+        # (e.g. the one-time "advertising ID" App Content declaration not yet set) shouldn't red-X the
+        # whole release — surface it, but let the release stand.
+        continue-on-error: true
         uses: r0adkll/upload-google-play@v1
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
