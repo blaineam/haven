@@ -119,7 +119,10 @@ private fun MainScaffold() {
                     HavenNet.isForeground = true; HavenNet.syncWithContacts(); HavenNet.requestMissingMedia()
                     com.blaineam.haven.core.ScheduledStore.fireDue()   // post anything now due
                 }
-                Lifecycle.Event.ON_PAUSE -> HavenNet.isForeground = false
+                Lifecycle.Event.ON_PAUSE -> {
+                    HavenNet.isForeground = false
+                    MusicPlayer.stop()   // don't leave a 30s song preview playing after leaving the app
+                }
                 else -> {}
             }
         }

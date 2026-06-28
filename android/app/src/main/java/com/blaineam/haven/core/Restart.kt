@@ -14,6 +14,13 @@ fun startOver(context: Context) {
     runCatching { ProfileStore.get(context).reset() }
     runCatching { HavenNet.reset() }
     runCatching { LocalMedia.clear() }
+    // Persistent side stores the engine/profile reset didn't cover — clear them too so nothing from the
+    // old identity survives the wipe (in-memory state is gone via the hard process restart below).
+    runCatching { AvatarStore.clear() }
+    runCatching { CircleLock.reset() }
+    runCatching { CircleRemovals.clear() }
+    runCatching { Presign.reset() }
+    runCatching { SelfSyncCoordinator.reset() }
     restartApp(context)
 }
 
