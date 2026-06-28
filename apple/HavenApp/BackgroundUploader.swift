@@ -33,6 +33,12 @@ final class BackgroundUploader {
     /// the post sync-status light: pending = "syncing", empty = "in the relay").
     func hasPending(circleId: String) -> Bool { queue.contains { $0.circleId == circleId } }
 
+    /// Is an upload flush ACTIVELY running right now? The sync-status light shows "Syncing…" off this
+    /// (a transient, real upload) rather than off `hasPending` (a queue that may be stuck/unreachable and
+    /// would otherwise pin the badge to yellow forever — the post already went directly to online members,
+    /// and the relay copy is best-effort + retried silently).
+    var isFlushing: Bool { flushing }
+
     /// Queue an authored event for mailbox upload and kick off a flush.
     func enqueue(circleId: String, env: Data) {
         queue.append(Pending(circleId: circleId, env: env))

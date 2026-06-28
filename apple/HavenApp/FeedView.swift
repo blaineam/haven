@@ -556,16 +556,24 @@ final class FeedStore: ObservableObject {
     /// Delivery status for a circle, for the composer's status light. green = a relay holds your content
     /// (or, with no relay, a nearby member has it); yellow = still syncing; red = only on this device.
     func syncStatus(circleId: String) -> PostSyncStatus {
-        if !RelayMailboxStore.shared.relays(forCircle: circleId).isEmpty {
-            // A relay holds posts for offline members. Yellow ONLY while an upload to it is genuinely
-            // in flight (transient); otherwise green.
-            return BackgroundUploader.shared.hasPending(circleId: circleId) ? .pending : .synced
+        let relays = RelayMailboxStore.shared.relays(forCircle: circleId)
+        // If THIS device HOSTS a relay serving this circle, the mailbox is literally on this machine —
+        // you're the relay, so you're synced. (Don't sit on "Syncing…" trying to client-connect to your
+        // own in-process relay, which is exactly why the relay-hosting Mac showed perpetual yellow.)
+        if RelayHost.shared.serving, !RelayHost.shared.nodeId.isEmpty, relays.contains(RelayHost.shared.nodeId) {
+            return .synced
+        }
+        if !relays.isEmpty {
+            // A relay holds posts for offline members. Show yellow ONLY while a flush is ACTIVELY running
+            // (a real, transient upload) — NOT whenever the queue is non-empty. A stuck/unreachable item
+            // retries silently in the background; it must not pin the badge to "Syncing…" forever (the
+            // post already went directly to any online members; the relay copy is best-effort).
+            return BackgroundUploader.shared.isFlushing ? .pending : .synced
         }
         if nearby?.hasConnectedPeers == true { return .synced }   // delivered directly to ≥1 nearby member
         // No relay + no nearby peer. Without a relay there's no "uploading" state to resolve — posts go
         // best-effort directly to whoever's reachable over iroh. So online = done-what-we-can (green, no
-        // nag); only genuinely OFFLINE is the device-only warning. (Was `.pending` here, which pinned a
-        // relay-less node — the common P2P case — to a permanent yellow "Syncing…".)
+        // nag); only genuinely OFFLINE is the device-only warning.
         return online ? .synced : .stuck
     }
 

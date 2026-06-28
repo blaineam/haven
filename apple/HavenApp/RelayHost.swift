@@ -331,10 +331,14 @@ enum RelayClients {
     /// A connected client for a relay, honoring per-relay backoff. nil if in backoff or unreachable.
     static func client(_ nodeHex: String) async -> RelayClient? {
         if let c = cache[nodeHex] { return c }
-        guard RelayHealth.shared.available(nodeHex) else { return nil }   // skip relays in backoff
+        // Never back off our OWN hosted relay — it's local and always worth retrying. A transient
+        // failure during relay startup shouldn't lock it out for up to 5 minutes (the backoff cap),
+        // which left the relay-hosting device unable to land its own events.
+        let isOwn = RelayHost.shared.serving && !RelayHost.shared.nodeId.isEmpty && nodeHex == RelayHost.shared.nodeId
+        guard isOwn || RelayHealth.shared.available(nodeHex) else { return nil }   // skip relays in backoff
         guard let seed = AccountStore.storedSeed() else { return nil }
         guard let c = try? await RelayClient.connect(seed: seed, relayNodeHex: nodeHex) else {
-            RelayHealth.shared.recordFailure(nodeHex)
+            if !isOwn { RelayHealth.shared.recordFailure(nodeHex) }
             return nil
         }
         RelayHealth.shared.recordSuccess(nodeHex)
