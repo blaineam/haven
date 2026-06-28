@@ -2698,9 +2698,27 @@ struct PostCard: View {
         }
     }
 
+    // Show only the most-reacted few chips so a post with many distinct emoji can't flood the row and
+    // break the layout; the rest collapse into a "+N" chip that opens the full who-reacted sheet. A chip
+    // the user owns is always kept visible (so they can untap it), even if it's not in the top counts.
+    private static let maxReactionChips = 4
+    private var visibleReactions: [ReactionFfi] { Self.cappedReactions(item.reactions, cap: Self.maxReactionChips) }
+    private var hiddenReactionCount: Int { max(0, item.reactions.count - visibleReactions.count) }
+
+    /// The most-reacted `cap` chips, always keeping the user's own (so they can untap it) — sorted by
+    /// count descending. Used to bound both the post- and comment-level reaction rows.
+    static func cappedReactions(_ reactions: [ReactionFfi], cap: Int) -> [ReactionFfi] {
+        var shown = Array(reactions.sorted { $0.count > $1.count }.prefix(cap))
+        if let mine = reactions.first(where: { $0.mine }), !shown.contains(where: { $0.emoji == mine.emoji }) {
+            if shown.count >= cap { shown.removeLast() }
+            shown.append(mine)
+        }
+        return shown
+    }
+
     private var reactionsRow: some View {
         HStack(spacing: 8) {
-            ForEach(item.reactions, id: \.emoji) { r in
+            ForEach(visibleReactions, id: \.emoji) { r in
                 // Tap a chip to toggle your own reaction; press-and-hold to see who reacted.
                 Text("\(r.emoji) \(r.count)")
                     .font(.caption.weight(.medium))
@@ -2712,7 +2730,16 @@ struct PostCard: View {
                     .onLongPressGesture(minimumDuration: 0.3) { showReactionDetail = true }
                     .transition(.scale.combined(with: .opacity))
             }
-            Spacer()
+            if hiddenReactionCount > 0 {
+                Text("+\(hiddenReactionCount)")
+                    .font(.caption.weight(.medium))
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(Color(.secondarySystemFill), in: Capsule())
+                    .contentShape(Capsule())
+                    .onTapGesture { showReactionDetail = true }
+                    .transition(.scale.combined(with: .opacity))
+            }
+            Spacer(minLength: 8)
             ForEach(EmojiStore.shared.frequent(4), id: \.self) { e in
                 Button(e) { react(e) }.font(.body).buttonStyle(PressableStyle())
             }
@@ -2803,8 +2830,11 @@ struct PostCard: View {
     /// post-level row) plus a small react button that opens the emoji picker. The core
     /// `react`/`unreact` work on ANY event id, so a comment id is targeted exactly like a post.
     @ViewBuilder private func commentReactionsRow(_ c: FeedCommentFfi) -> some View {
+        // Cap the chips (most-reacted first, always keep mine) so a comment can't flood its row.
+        let visible = Self.cappedReactions(c.reactions, cap: 5)
+        let hidden = max(0, c.reactions.count - visible.count)
         HStack(spacing: 4) {
-            ForEach(c.reactions, id: \.emoji) { r in
+            ForEach(visible, id: \.emoji) { r in
                 Text("\(r.emoji)\(r.count > 1 ? " \(r.count)" : "")")
                     .font(.caption2).padding(.horizontal, 6).padding(.vertical, 2)
                     .background(r.mine ? AnyShapeStyle(HavenTheme.brandHorizontal.opacity(0.22)) : AnyShapeStyle(Color(.tertiarySystemFill)), in: Capsule())
@@ -2814,6 +2844,10 @@ struct PostCard: View {
                         if r.mine { feed.unreact(c.id, r.emoji) }
                         else { EmojiStore.shared.record(r.emoji); feed.react(c.id, r.emoji) }
                     }
+            }
+            if hidden > 0 {
+                Text("+\(hidden)").font(.caption2).padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Color(.tertiarySystemFill), in: Capsule()).foregroundStyle(.secondary)
             }
             Button { commentReactTarget = CommentReactTarget(id: c.id) } label: {
                 Image(systemName: "face.smiling").font(.caption2).foregroundStyle(.secondary)
