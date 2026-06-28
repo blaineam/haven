@@ -663,8 +663,31 @@ async function renderMessages() {
     cl.append(el("div", { class: "list-item" }, el("div", { class: "avatar" }, initials(c.name)), el("div", { style: "flex:1" }, c.name),
       el("button", { class: "btn small", onclick: async () => { const id = await invoke("start_dm", { contactIdHex: c.id_hex, contactName: c.name }); state.activeDm = { id, name: c.name }; renderMessages(); } }, "Message")));
   }
-  root.replaceChildren(el("div", { class: "view-head" }, el("h1", {}, "Messages")), list,
+  root.replaceChildren(
+    el("div", { class: "view-head" }, el("h1", {}, "Messages"),
+      contacts.length >= 2 ? el("button", { class: "btn small ghost", style: "margin-left:auto", onclick: () => groupMessageDialog(contacts) }, "New group") : null),
+    list,
     contacts.length ? el("h3", { class: "muted" }, "Start a chat") : null, cl);
+}
+
+/** Multi-select contacts to start a GROUP DM (2+ people). */
+function groupMessageDialog(contacts) {
+  const picked = new Set();
+  const startBtn = el("button", { class: "btn", disabled: true, onclick: async () => {
+    const members = contacts.filter((c) => picked.has(c.id_hex)).map((c) => [c.id_hex, c.name]);
+    const id = await invoke("start_group_dm", { members });
+    $("#modal-root").replaceChildren();
+    state.activeDm = { id, name: members.map((m) => m[1]).join(", ") };
+    switchView("messages"); renderMessages();
+  } }, "Pick 2+");
+  const sync = () => { startBtn.disabled = picked.size < 2; startBtn.textContent = picked.size >= 2 ? `Start (${picked.size})` : "Pick 2+"; };
+  const rows = contacts.map((c) => el("label", { class: "list-item", style: "cursor:pointer" },
+    el("input", { type: "checkbox", onchange: (e) => { e.target.checked ? picked.add(c.id_hex) : picked.delete(c.id_hex); sync(); } }),
+    el("div", { class: "avatar", style: "width:30px;height:30px;font-size:12px" }, initials(c.name)),
+    el("div", { style: "flex:1" }, c.name)));
+  modal(el("div", {}, el("h2", {}, "New group message"),
+    el("div", { class: "col", style: "max-height:360px;overflow:auto" }, ...rows),
+    el("div", { class: "row", style: "margin-top:10px" }, startBtn)));
 }
 
 async function renderThread(root, dm) {

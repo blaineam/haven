@@ -209,6 +209,7 @@ pub fn run() {
             commands::unsend_post,
             commands::dm_threads,
             commands::start_dm,
+            commands::start_group_dm,
             commands::messages,
             commands::send_dm,
             commands::connect_by_link,

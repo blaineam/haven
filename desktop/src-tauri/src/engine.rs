@@ -572,8 +572,18 @@ impl Engine {
     }
 
     fn dm_allows(circle_id: &str, node_hex: &str) -> bool {
+        // 2+ members so group DMs are admitted too; the sender must be one of the encoded members.
         let parts: Vec<&str> = circle_id.trim_start_matches("dm:").split('-').collect();
-        parts.len() == 2 && parts.contains(&node_hex)
+        parts.len() >= 2 && parts.contains(&node_hex)
+    }
+
+    /// Deterministic GROUP-DM circle id — sorted node ids of every member (me + others).
+    pub fn group_dm_circle_id(&self, other_hexes: &[String]) -> String {
+        let mut all: Vec<String> = other_hexes.iter().map(|h| h.to_lowercase()).collect();
+        all.push(self.node_id_hex());
+        all.sort();
+        all.dedup();
+        format!("dm:{}", all.join("-"))
     }
 
     pub fn start_dm(self: &Arc<Self>, contact_id_hex: String, contact_name: String) -> String {
@@ -582,6 +592,25 @@ impl Engine {
         let _ = self.social.add_existing_to_circle(id.clone(), contact_id_hex.clone());
         self.persist();
         self.send_hello(&id, &contact_id_hex);
+        id
+    }
+
+    /// Open (or create) a GROUP DM with 2+ contacts (each `(id_hex, name)`); returns the dm circle id.
+    pub fn start_group_dm(self: &Arc<Self>, members: Vec<(String, String)>) -> String {
+        if members.len() == 1 {
+            return self.start_dm(members[0].0.clone(), members[0].1.clone());
+        }
+        let hexes: Vec<String> = members.iter().map(|(h, _)| h.clone()).collect();
+        let id = self.group_dm_circle_id(&hexes);
+        let title = members.iter().map(|(_, n)| n.clone()).collect::<Vec<_>>().join(", ");
+        self.social.create_circle(id.clone(), title);
+        for (hex, _) in &members {
+            let _ = self.social.add_existing_to_circle(id.clone(), hex.clone());
+        }
+        self.persist();
+        for (hex, _) in &members {
+            self.send_hello(&id, hex);
+        }
         id
     }
 

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -23,8 +24,12 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.AddPhotoAlternate
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.GroupAdd
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.Videocam
@@ -38,6 +43,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -81,19 +87,67 @@ fun MessagesScreen() {
 
     val thread = openThread
     if (thread == null) {
-        ThreadList(onOpen = { c -> openThread = HavenNet.startDm(c) to c })
+        ThreadList(
+            onOpen = { c -> openThread = HavenNet.startDm(c) to c },
+            onOpenGroup = { cid, title -> openThread = cid to Contact("", title, "") },
+        )
     } else {
         DmThread(circleId = thread.first, partner = thread.second, onBack = { openThread = null })
     }
 }
 
 @Composable
-private fun ThreadList(onOpen: (Contact) -> Unit) {
+private fun ThreadList(onOpen: (Contact) -> Unit, onOpenGroup: (String, String) -> Unit) {
     val contacts = HavenNet.contacts
+    val version by HavenNet.feedVersion
+    val groups = remember(version) { HavenNet.groupDmThreads() }
+    var showGroupPicker by remember { mutableStateOf(false) }
+    if (showGroupPicker) {
+        GroupMessagePicker(
+            onDismiss = { showGroupPicker = false },
+            onStart = { picks ->
+                showGroupPicker = false
+                val cid = HavenNet.startGroupDM(picks)
+                onOpenGroup(cid, picks.joinToString(", ") { it.name })
+            },
+        )
+    }
     HavenBackground {
         Column(Modifier.fillMaxSize()) {
-            BrandText("Messages", fontSize = 26,
-                modifier = Modifier.padding(start = 20.dp, top = 16.dp, bottom = 8.dp).align(Alignment.Start))
+            Row(
+                Modifier.fillMaxWidth().padding(start = 20.dp, top = 16.dp, bottom = 8.dp, end = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BrandText("Messages", fontSize = 26)
+                Spacer(Modifier.weight(1f))
+                if (contacts.size >= 2) {
+                    Box(Modifier.clip(CircleShape).clickable { showGroupPicker = true }.padding(6.dp)) {
+                        Icon(Icons.Filled.GroupAdd, "New group message", tint = HavenTheme.pink)
+                    }
+                }
+            }
+            if (groups.isNotEmpty()) {
+                LazyColumn(
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.padding(bottom = 8.dp),
+                ) {
+                    items(groups, key = { it.first }) { (cid, title) ->
+                        Row(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp))
+                                .clickable { onOpenGroup(cid, title) }.havenCard().padding(14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(Modifier.size(40.dp).clip(CircleShape).background(HavenTheme.card),
+                                contentAlignment = Alignment.Center) {
+                                Icon(Icons.Filled.Group, null, tint = HavenTheme.pink, modifier = Modifier.size(22.dp))
+                            }
+                            Spacer(Modifier.size(12.dp))
+                            Text(title, color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+                        }
+                    }
+                }
+            }
             if (contacts.isEmpty()) {
                 Column(
                     Modifier.fillMaxSize().padding(32.dp),
@@ -125,6 +179,53 @@ private fun ThreadList(onOpen: (Contact) -> Unit) {
             }
         }
     }
+}
+
+/** Multi-select contacts to start a GROUP DM (2+ people). */
+@Composable
+private fun GroupMessagePicker(onDismiss: () -> Unit, onStart: (List<Contact>) -> Unit) {
+    val contacts = HavenNet.contacts
+    val picked = remember { mutableStateListOf<String>() }
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = HavenTheme.card,
+        title = { Text("New group message", color = Color.White) },
+        text = {
+            LazyColumn(Modifier.heightIn(max = 360.dp)) {
+                items(contacts, key = { it.idHex }) { c ->
+                    val on = picked.contains(c.idHex)
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                            .clickable { if (on) picked.remove(c.idHex) else picked.add(c.idHex) }
+                            .padding(vertical = 8.dp, horizontal = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        HavenAvatar(idOrShort = c.idHex, name = c.name, size = 34.dp)
+                        Spacer(Modifier.size(10.dp))
+                        Text(c.name, color = Color.White, fontSize = 15.sp, modifier = Modifier.weight(1f))
+                        Icon(
+                            if (on) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
+                            null, tint = if (on) HavenTheme.pink else HavenTheme.textSecondary,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            val ready = picked.size >= 2
+            Text(
+                if (ready) "Start (${picked.size})" else "Pick 2+",
+                color = if (ready) HavenTheme.pink else HavenTheme.textSecondary,
+                modifier = Modifier.clickable(enabled = ready) {
+                    onStart(contacts.filter { picked.contains(it.idHex) })
+                }.padding(8.dp),
+            )
+        },
+        dismissButton = {
+            Text("Cancel", color = HavenTheme.textSecondary,
+                modifier = Modifier.clickable { onDismiss() }.padding(8.dp))
+        },
+    )
 }
 
 @Composable
@@ -169,7 +270,10 @@ fun DmThread(circleId: String, partner: Contact, onBack: () -> Unit) {
                 androidx.compose.foundation.layout.Spacer(Modifier.weight(1f))
                 val startCall = rememberCallStarter()
                 Box(Modifier.size(40.dp).clip(CircleShape).clickable {
-                    startCall(listOf(partner.idHex), partner.name)
+                    // Ring every member of the thread (the whole group for a group DM; just the one
+                    // partner for a 1:1). Removed/blocked members are excluded by the call layer.
+                    val ring = HavenNet.dmMemberHexes(circleId).filter { it != HavenNet.nodeIdHex.lowercase() }
+                    startCall(if (ring.isNotEmpty()) ring else listOf(partner.idHex), partner.name)
                 }, contentAlignment = Alignment.Center) {
                     Icon(Icons.Filled.Videocam, "Video call", tint = HavenTheme.pink)
                 }

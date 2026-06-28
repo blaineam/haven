@@ -313,8 +313,9 @@ object HavenNet : InboundListener {
     }
 
     private fun dmAllows(circleId: String, nodeHex: String): Boolean {
+        // 2+ members so group DMs are admitted too; the sender must be one of the encoded members.
         val parts = circleId.removePrefix("dm:").split("-")
-        return parts.size == 2 && parts.contains(nodeHex)
+        return parts.size >= 2 && parts.contains(nodeHex)
     }
 
     /** Open (or create) a DM with a known contact; returns the dm circle id. */
@@ -324,6 +325,42 @@ object HavenNet : InboundListener {
         runCatching { social.addExistingToCircle(id, contact.idHex) }
         persist()
         sendHello(id, contact.idHex)
+        return id
+    }
+
+    /** Deterministic GROUP-DM circle id — sorted full node ids of every member (me + others), so the
+     *  same set of people always maps to the same thread on every device. */
+    fun groupDMCircleId(otherHexes: List<String>): String {
+        val all = (otherHexes + nodeIdHex).map { it.lowercase() }.distinct().sorted()
+        return "dm:" + all.joinToString("-")
+    }
+
+    /** The member node ids encoded in a dm: circle id (includes me). */
+    fun dmMemberHexes(circleId: String): List<String> =
+        circleId.removePrefix("dm:").split("-").filter { it.length == 64 }
+
+    /** A friendly title for a dm thread: the OTHER members' display names, joined. */
+    fun dmPartnerName(circleId: String): String {
+        val others = dmMemberHexes(circleId).filter { it != nodeIdHex.lowercase() }
+        if (others.isEmpty()) return "You"
+        return others.joinToString(", ") { hex -> displayName(hex.take(8)) }
+    }
+
+    /** Existing GROUP-DM threads (dm: circles with 3+ members) as (circleId, title) for the thread list. */
+    fun groupDmThreads(): List<Pair<String, String>> =
+        runCatching { social.circles() }.getOrDefault(emptyList())
+            .filter { it.id.startsWith("dm:") && dmMemberHexes(it.id).size > 2 }
+            .map { it.id to dmPartnerName(it.id) }
+
+    /** Open (or create) a GROUP DM with 2+ contacts; returns the dm circle id. */
+    fun startGroupDM(contacts: List<Contact>): String {
+        if (contacts.size == 1) return startDm(contacts[0])
+        val id = groupDMCircleId(contacts.map { it.idHex })
+        val title = contacts.joinToString(", ") { it.name }
+        runCatching { social.createCircle(id, title) }
+        for (c in contacts) runCatching { social.addExistingToCircle(id, c.idHex) }
+        persist()
+        for (c in contacts) sendHello(id, c.idHex)
         return id
     }
 

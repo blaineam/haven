@@ -315,6 +315,12 @@ pub fn start_dm(engine: Eng, contact_id_hex: String, contact_name: String) -> St
     engine.start_dm(contact_id_hex, contact_name)
 }
 
+/// Start a GROUP DM. `members` is a list of `[id_hex, name]` pairs (2+).
+#[tauri::command]
+pub fn start_group_dm(engine: Eng, members: Vec<(String, String)>) -> String {
+    engine.start_group_dm(members)
+}
+
 #[tauri::command]
 pub fn messages(engine: Eng, circle_id: String) -> Vec<FeedItemDto> {
     engine.messages(&circle_id).into_iter().map(|it| feed_item_dto(&engine, it)).collect()
