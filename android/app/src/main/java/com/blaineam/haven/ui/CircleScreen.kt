@@ -288,6 +288,7 @@ fun CircleScreen(onAddFriend: () -> Unit) {
                     if (draft.isNotBlank() || pendingMedia.isNotEmpty()) showSchedule = true
                 }, contentAlignment = Alignment.Center) { Icon(Icons.Filled.Schedule, "Schedule send", tint = HavenTheme.pink) }
                 Spacer(Modifier.weight(1f))
+                SyncStatusBadge(active)
                 Box {
                     Row(Modifier.clip(CircleShape)
                         .background(if (disappearSecs != null) HavenTheme.pink.copy(alpha = 0.2f) else Color.Transparent)
@@ -772,6 +773,32 @@ private fun ConnectionDot() {
         Text(if (started) (if (online || relay) "Connected" else "Online") else "Connecting",
             color = HavenTheme.textSecondary, fontSize = 11.sp)
         if (relay) Text("· Relay", color = Color(0xFF34D399), fontSize = 11.sp)
+    }
+}
+
+/** A small green/yellow/red dot by the composer: can this circle's posts actually reach others right
+ *  now? Green = a relay holds them or a member's nearby; yellow = mesh searching; red = device-only.
+ *  Inline (no added height — addresses the "indicator makes the prompt too tall" feedback). */
+@Composable
+private fun SyncStatusBadge(circleId: String) {
+    var status by remember(circleId) { mutableStateOf(HavenNet.syncStatus(circleId)) }
+    LaunchedEffect(circleId) {
+        while (true) {
+            status = HavenNet.syncStatus(circleId)
+            kotlinx.coroutines.delay(2500)
+        }
+    }
+    val (color, label) = when (status) {
+        HavenNet.SyncStatus.SYNCED -> Color(0xFF22C55E) to null
+        HavenNet.SyncStatus.SYNCING -> Color(0xFFF59E0B) to "Syncing"
+        HavenNet.SyncStatus.LOCAL -> Color(0xFFEF4444) to "Device only"
+    }
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(horizontal = 6.dp)) {
+        Box(Modifier.size(8.dp).clip(CircleShape).background(color))
+        if (label != null) {
+            Spacer(Modifier.size(5.dp))
+            Text(label, color = HavenTheme.textSecondary, fontSize = 11.sp)
+        }
     }
 }
 

@@ -30,6 +30,9 @@ object NearbyTransport {
     private var client: ConnectionsClient? = null
     private var ctx: Context? = null
     private val endpoints = mutableSetOf<String>()
+
+    /** True if at least one nearby peer is currently connected (a post would reach them immediately). */
+    fun hasConnectedPeers(): Boolean = endpoints.isNotEmpty()
     var active = false; private set
 
     /** Outbound bridge: HavenNet calls this to flood a frame to all nearby peers. */

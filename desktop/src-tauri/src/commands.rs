@@ -321,6 +321,13 @@ pub fn start_group_dm(engine: Eng, members: Vec<(String, String)>) -> String {
     engine.start_group_dm(members)
 }
 
+/// Composer reachability light: "synced" | "local".
+#[tauri::command]
+pub fn sync_status(engine: Eng, circle_id: String) -> String {
+    let cid = if circle_id.is_empty() { DEFAULT_CIRCLE.to_string() } else { circle_id };
+    engine.sync_status(&cid)
+}
+
 #[tauri::command]
 pub fn messages(engine: Eng, circle_id: String) -> Vec<FeedItemDto> {
     engine.messages(&circle_id).into_iter().map(|it| feed_item_dto(&engine, it)).collect()

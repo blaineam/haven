@@ -1232,6 +1232,19 @@ object HavenNet : InboundListener {
     /** The relay node hexes that hold a given circle's mailbox (iOS RelayMailboxStore.relays(forCircle:)). */
     fun relaysForCircle(circleId: String): List<String> = relaysFor(circleId)
 
+    /** How reachable a circle's posts are right now, for the composer's green/yellow/red light. */
+    enum class SyncStatus { SYNCED, SYNCING, LOCAL }
+
+    /** SYNCED = a relay holds it for offline members, or a nearby member is connected right now.
+     *  SYNCING = the nearby mesh is up but no peer is connected yet. LOCAL = device-only (no relay,
+     *  no mesh) — the post won't leave this device until one comes online. */
+    fun syncStatus(circleId: String): SyncStatus = when {
+        NearbyTransport.hasConnectedPeers() -> SyncStatus.SYNCED
+        relaysForCircle(circleId).isNotEmpty() -> SyncStatus.SYNCED
+        NearbyTransport.active -> SyncStatus.SYNCING
+        else -> SyncStatus.LOCAL
+    }
+
     /** Add a relay node to a circle's redundant set + persist (additive, never replaces). Used by self-sync. */
     fun selfSyncAddRelay(circleId: String, nodeHex: String) {
         val hex = nodeHex.trim().lowercase()

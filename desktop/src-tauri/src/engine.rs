@@ -409,6 +409,20 @@ impl Engine {
         self.prefs.lock().unwrap().host_on_launch
     }
 
+    /// Composer reachability light for a circle: "synced" = a relay/bucket holds posts for offline
+    /// members (this circle has a relay, or a global relay/bucket/self-host is configured); "local" =
+    /// device-only, nothing will leave this machine until a transport is configured. (Desktop has no
+    /// local proximity mesh, so there's no mesh-based "syncing" state.)
+    pub fn sync_status(&self, circle_id: &str) -> String {
+        let prefs = self.prefs.lock().unwrap();
+        let circle_relay = prefs.relays.get(circle_id).map(|v| !v.is_empty()).unwrap_or(false);
+        let any_transport = circle_relay
+            || prefs.s3.is_some()
+            || prefs.host_on_launch
+            || prefs.relays.values().any(|v| !v.is_empty());
+        if any_transport { "synced".into() } else { "local".into() }
+    }
+
     pub fn set_host_on_launch(self: &Arc<Self>, on: bool) {
         let mut p = self.prefs.lock().unwrap();
         p.host_on_launch = on;

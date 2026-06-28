@@ -215,6 +215,18 @@ function buildComposer(onPost, placeholder = "Share something with your circleâ€
       : null);
   };
   const fileInput = el("input", { type: "file", accept: "image/*,video/*", style: "display:none", onchange: (e) => handleFiles(e.target.files, drawPreviews) });
+  // Reachability light: can this circle's posts actually reach offline members right now?
+  const syncDot = el("span", { title: "Reachability", style: "width:9px;height:9px;border-radius:50%;display:inline-block;align-self:center;margin-right:4px;background:#22C55E" });
+  const syncLabel = el("span", { class: "muted small", style: "align-self:center;margin-right:6px" }, "");
+  const refreshSync = async () => {
+    const s = await invoke("sync_status", { circleId }).catch(() => "synced");
+    if (s === "local") { syncDot.style.background = "#EF4444"; syncLabel.textContent = "Device only"; }
+    else if (s === "syncing") { syncDot.style.background = "#F59E0B"; syncLabel.textContent = "Syncing"; }
+    else { syncDot.style.background = "#22C55E"; syncLabel.textContent = ""; }
+  };
+  if (state.syncTimer) clearInterval(state.syncTimer);   // only one composer at a time â€” no leak across re-renders
+  refreshSync();
+  state.syncTimer = setInterval(refreshSync, 2500);
   const card = el("div", { class: "card col" },
     ta,
     previews,
@@ -226,6 +238,7 @@ function buildComposer(onPost, placeholder = "Share something with your circleâ€
       el("button", { class: "btn small ghost", onclick: () => musicDialog((m) => { music = m; drawMusic(); }) }, "ðŸŽµ Music"),
       muteBtn,
       el("div", { class: "spacer", style: "flex:1" }),
+      syncDot, syncLabel,
       opts.onSchedule ? el("button", { class: "btn small ghost", title: "Send later", onclick: () => {
         const body = ta.value.trim();
         if (!body && !state.attachments.length && !music) { toast("Write something first"); return; }

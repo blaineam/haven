@@ -210,6 +210,7 @@ pub fn run() {
             commands::dm_threads,
             commands::start_dm,
             commands::start_group_dm,
+            commands::sync_status,
             commands::messages,
             commands::send_dm,
             commands::connect_by_link,
