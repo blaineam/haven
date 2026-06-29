@@ -1269,9 +1269,14 @@ impl Engine {
                 return Some(c.clone());
             }
         }
-        // NEVER connect to our OWN hosted relay node. A node dialing itself sends iroh's path discovery
-        // into a tight loop (open_path_on_all_conns), exploding memory by tens of GB. We ARE this relay;
-        // we never need a client to it. (Same root cause + fix as iOS/macOS.)
+        // NEVER dial our OWN account node id. Relays now share the account node id, and same-account
+        // sibling devices share it too — so dialing it is a self-dial, which sends iroh's path discovery
+        // into a tight loop (open_path_on_all_conns), exploding memory by tens of GB — THE runaway leak.
+        // We never need a client to ourselves. (Was guarded ONLY while hosting, so a non-hosting device —
+        // or a second device — still self-dialed.) Same root cause + fix as iOS/macOS.
+        if self.social.my_node_hex().eq_ignore_ascii_case(node_hex) {
+            return None;
+        }
         if let Some(h) = self.relay_host.lock().unwrap().as_ref() {
             if h.node_id_hex() == node_hex {
                 return None;

@@ -367,9 +367,14 @@ enum RelayClients {
     /// A connected client for a relay, honoring per-relay backoff. nil if in backoff or unreachable.
     static func client(_ nodeHex: String) async -> RelayClient? {
         if let c = cache[nodeHex] { return c }
-        // NEVER connect to our OWN hosted relay node. A node dialing itself sends iroh's path discovery
-        // into a tight loop (open_path_on_all_conns / normalize_network_path), exploding memory by tens
-        // of GB in minutes — THE runaway leak. We already ARE this relay; we never need a client to it.
+        // NEVER dial our OWN account node id. Relays now share the account node id (one shared endpoint),
+        // and same-account SIBLING devices share that id too — so dialing it is a self-dial, which sends
+        // iroh's path discovery into a tight loop (open_path_on_all_conns / normalize_network_path),
+        // exploding memory by tens of GB — THE runaway leak. We never need a client to ourselves: our own
+        // events go straight to the local mailbox, and own-device sync rides the nearby mesh. (This used to
+        // be guarded ONLY while hosting, so a non-hosting device — or a second device — still self-dialed.)
+        let mine = FeedStore.shared.myNodeHex.lowercased()
+        if !mine.isEmpty, nodeHex.lowercased() == mine { return nil }
         if RelayHost.shared.serving, !RelayHost.shared.nodeId.isEmpty, nodeHex == RelayHost.shared.nodeId {
             return nil
         }

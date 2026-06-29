@@ -892,9 +892,13 @@ object HavenNet : InboundListener {
 
     private suspend fun relayClientFor(nodeHex: String): RelayClient? = relayMutex.withLock {
         relayClients[nodeHex]?.let { return it }
-        // NEVER connect to our OWN hosted relay node. A node dialing itself sends iroh's path discovery
-        // into a tight loop (open_path_on_all_conns), exploding memory by tens of GB. We ARE this relay;
-        // we never need a client to it. (Same root cause + fix as iOS/macOS.)
+        // NEVER dial our OWN account node id. Relays now share the account node id, and same-account
+        // sibling devices share it too — so dialing it is a self-dial, which sends iroh's path discovery
+        // into a tight loop (open_path_on_all_conns), exploding memory by tens of GB — THE runaway leak.
+        // We never need a client to ourselves. (Was guarded ONLY while hosting, so a non-hosting device —
+        // or a second device — still self-dialed.) Same root cause + fix as iOS/macOS.
+        val mine = runCatching { node?.nodeIdHex() ?: social.myNodeHex() }.getOrNull()?.trim()?.lowercase()
+        if (!mine.isNullOrEmpty() && nodeHex.trim().lowercase() == mine) return null
         if (runCatching { relayHost?.nodeIdHex() }.getOrNull() == nodeHex && nodeHex.isNotEmpty()) return null
         // Skip a relay that's in its backoff window — try the others instead.
         if (!relayAvailable(nodeHex)) return null
