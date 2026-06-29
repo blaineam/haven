@@ -36,19 +36,25 @@ struct MediaPicker: UIViewControllerRepresentable {
             // selection exactly once.
             guard !finished else { return }
             finished = true
+            let providers = results.map(\.itemProvider)
+            // Dismiss the picker IMMEDIATELY — never block dismissal on loading. A selected VIDEO makes
+            // loadFileRepresentation copy the whole asset (hundreds of MB → many seconds); doing that
+            // BEFORE dismissing left the picker frozen on screen with no way to interact or close
+            // ("can't select a video or dismiss"). The refs attach to the post as they finish loading.
+            parent.dismiss()
+            guard !providers.isEmpty else { return }   // Cancel / empty selection: just close.
             // Process ONE item at a time. Loading a big batch (e.g. 17 high-res photos) concurrently
             // decoded them all into memory at once and OOM-crashed (the post itself had already been
-            // queued, so it still went through on relaunch). Serial keeps a single decoded frame
-            // alive at a time, in the user's selection order.
-            let providers = results.map(\.itemProvider)
-            Task { @MainActor [weak self] in
-                guard let self else { return }
+            // queued, so it still went through on relaunch). Serial keeps a single decoded frame alive
+            // at a time, in the user's selection order. `parent`/`onPicked` are value/closure captures,
+            // so this Task outlives the now-dismissed picker + coordinator.
+            let onPicked = parent.onPicked
+            Task { @MainActor in
                 var refs: [String] = []
                 for provider in providers {
                     if let ref = await Coordinator.loadRef(from: provider) { refs.append(ref) }
                 }
-                self.parent.onPicked(refs)
-                self.parent.dismiss()
+                if !refs.isEmpty { onPicked(refs) }
             }
         }
 
@@ -126,8 +132,11 @@ struct MediaPicker: NSViewControllerRepresentable {
             guard !finished else { return }
             finished = true
             let providers = results.map(\.itemProvider)
-            Task { @MainActor [weak self] in
-                guard let self else { return }
+            // Dismiss immediately — don't block closing the picker on a big video file copy (see iOS note).
+            parent.dismiss()
+            guard !providers.isEmpty else { return }
+            let onPicked = parent.onPicked
+            Task { @MainActor in
                 var refs: [String] = []
                 for provider in providers {
                     if provider.hasItemConformingToTypeIdentifier(UTType.movie.identifier) {
@@ -148,8 +157,7 @@ struct MediaPicker: NSViewControllerRepresentable {
                         if let img { refs.append(MediaStore.shared.addImage(img)) }
                     }
                 }
-                self.parent.onPicked(refs)
-                self.parent.dismiss()
+                if !refs.isEmpty { onPicked(refs) }
             }
         }
     }
