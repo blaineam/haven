@@ -798,20 +798,24 @@ object HavenNet : InboundListener {
     private var relayHost: uniffi.haven_ffi.RelayServerHandle? = null
     val hosting = mutableStateOf(false)
 
-    /** Start serving the circle's mailbox from this device + adopt it for every circle. */
+    /** Start serving the circle's mailbox from this device + adopt it for every circle. The relay now
+     *  ATTACHES to the messaging node's endpoint (one iroh node, two ALPNs) — running a second in-process
+     *  iroh node made iroh churn paths unboundedly (the tens-of-GB leak). Relay id == account node id. */
     fun startHosting() {
         if (relayHost != null) return
+        val n = node ?: run {
+            // Node not up yet — retry shortly; the relay can't exist without the node to attach to.
+            scope.launch(Dispatchers.Main) { delay(1000); startHosting() }
+            return
+        }
         scope.launch {
-            // A stable relay-specific seed, distinct from the messaging identity (per the core's contract).
-            val relaySeed = MessageDigest.getInstance("SHA-256")
-                .digest(core.seed + "haven-relay".toByteArray())
             val dir = File(appContext.filesDir, "relay").apply { mkdirs() }.absolutePath
-            val h = runCatching { uniffi.haven_ffi.RelayServerHandle.start(relaySeed, dir) }
-                .getOrElse { Log.e(TAG, "relay host start failed", it); return@launch }
+            val h = runCatching { uniffi.haven_ffi.RelayServerHandle.attach(n, dir) }
+                .getOrElse { Log.e(TAG, "relay host attach failed", it); return@launch }
             relayHost = h
             withContext(Dispatchers.Main) { hosting.value = true }
-            val nodeHex = h.nodeIdHex()
-            Log.i(TAG, "hosting circle relay: ${nodeHex.take(8)}")
+            val nodeHex = h.nodeIdHex()   // == the account node id now
+            Log.i(TAG, "hosting circle relay (shared endpoint): ${nodeHex.take(8)}")
             authorizeMembership()   // lock the mailbox to circle members before announcing it
             adoptRelay(nodeHex)     // use it + tell contacts via frame 19
         }
@@ -918,7 +922,14 @@ object HavenNet : InboundListener {
         // Mirror to EVERY configured Haven relay (redundancy). Content-addressed keys make
         // re-puts idempotent, and a relay in backoff is skipped — graceful fallback.
         val key = mailboxKey(circleId, env)
+        val hostedHex = runCatching { relayHost?.nodeIdHex() }.getOrNull()
         for (nodeHex in relaysFor(circleId)) {
+            // Our OWN hosted relay: store directly into the local mailbox (no iroh self-dial).
+            if (hostedHex != null && nodeHex == hostedHex) {
+                runCatching { relayHost?.localPut(key, env) }
+                withContext(Dispatchers.Main) { relayActive.value = true }
+                continue
+            }
             val client = relayClientFor(nodeHex) ?: continue
             runCatching { client.put(key, env) }
                 .onSuccess {
