@@ -208,6 +208,60 @@ impl DeviceList {
         }
     }
 
+    /// UNION merge for multi-master accounts: when several devices each hold the account signing key
+    /// (e.g. they all restored the same account from iCloud) and each self-registers its own device id,
+    /// a plain higher-version-wins replace ([`adopt_if_newer`]) lets two devices clobber each other's
+    /// registration. Instead take a **2P-set union**: union the `devices` and `revoked` sets, drop
+    /// anything revoked, and (only if that changes our membership) bump past both versions and RE-SIGN
+    /// with the account key. Any holder of the account identity produces the same merged set, so all
+    /// replicas converge; revocations stick because `revoked` only grows and always beats `devices`.
+    /// Returns `None` when the merge wouldn't change our membership (no needless re-sign / rotation storm).
+    /// Both inputs must already be `verify()`-ed by the caller.
+    pub fn merge(&self, other: &DeviceList, account: &Identity, updated_at: u64) -> Option<DeviceList> {
+        if other.account_id != self.account_id {
+            return None;
+        }
+        let mut revoked = self.revoked.clone();
+        for r in &other.revoked {
+            if !revoked.contains(r) {
+                revoked.push(*r);
+            }
+        }
+        let mut devices: Vec<[u8; 32]> = Vec::new();
+        for d in self.devices.iter().chain(other.devices.iter()) {
+            if !revoked.contains(d) && !devices.contains(d) {
+                devices.push(*d);
+            }
+        }
+        devices.sort_unstable();
+        revoked.sort_unstable();
+        // No membership change → don't churn a new signed version (idempotent convergence).
+        let mut cur_dev = self.devices.clone();
+        cur_dev.sort_unstable();
+        let mut cur_rev = self.revoked.clone();
+        cur_rev.sort_unstable();
+        if devices == cur_dev && revoked == cur_rev {
+            return None;
+        }
+        let version = self.version.max(other.version) + 1;
+        Some(DeviceList::signed(account, version, updated_at, devices, revoked))
+    }
+
+    /// Add this device's own id to the roster (self-registration on launch) and re-sign. Returns `None`
+    /// if `device_id` is already present (and not revoked) — no needless version bump.
+    pub fn with_self_added(&self, device_id: [u8; 32], account: &Identity, updated_at: u64) -> Option<DeviceList> {
+        if self.devices.contains(&device_id) && !self.revoked.contains(&device_id) {
+            return None;
+        }
+        let mut devices = self.devices.clone();
+        if !devices.contains(&device_id) {
+            devices.push(device_id);
+        }
+        // Re-adding a previously-revoked device id is an explicit re-authorization: clear its tombstone.
+        let revoked: Vec<[u8; 32]> = self.revoked.iter().copied().filter(|r| r != &device_id).collect();
+        Some(DeviceList::signed(account, self.version + 1, updated_at, devices, revoked))
+    }
+
     /// Wire encoding: `account_id(32) ‖ version(8) ‖ updated_at(8) ‖ n_dev(4) ‖ dev*32 ‖
     /// n_rev(4) ‖ rev*32 ‖ sig`.
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -394,6 +448,37 @@ mod tests {
         assert_eq!(cred.device_name, back.device_name);
         assert_eq!(cred.created_at, back.created_at);
         back.verify(&account.public()).expect("decoded credential still verifies");
+    }
+
+    #[test]
+    fn merge_unions_self_registrations_from_two_devices() {
+        let account = id(1);
+        let dev_a = id(2).public().node_id_bytes();
+        let dev_b = id(3).public().node_id_bytes();
+        // Two iCloud-restored devices each self-register their own id off a common empty base.
+        let base = DeviceList::signed(&account, 0, 0, vec![], vec![]);
+        let a = base.with_self_added(dev_a, &account, 1).expect("a adds itself");
+        let b = base.with_self_added(dev_b, &account, 1).expect("b adds itself");
+        // A merges B's roster → union has BOTH devices (neither clobbers the other).
+        let merged = a.merge(&b, &account, 2).expect("union changes membership");
+        assert!(merged.is_authorized(&dev_a) && merged.is_authorized(&dev_b));
+        merged.verify(&account.public()).expect("merged roster is validly account-signed");
+        // Converged: merging the same rosters again is a no-op (no rotation storm).
+        assert!(merged.merge(&a, &account, 3).is_none());
+        assert!(merged.merge(&b, &account, 3).is_none());
+    }
+
+    #[test]
+    fn merge_keeps_revocations_sticky() {
+        let account = id(1);
+        let dev_x = id(2).public().node_id_bytes();
+        // One replica revoked X; another (stale) still lists X as active.
+        let revoked_list = DeviceList::signed(&account, 5, 0, vec![], vec![dev_x]);
+        let stale_active = DeviceList::signed(&account, 4, 0, vec![dev_x], vec![]);
+        // The stale replica merging the revocation must DROP X, never resurrect it.
+        let merged = stale_active.merge(&revoked_list, &account, 6).expect("stale picks up revocation");
+        assert!(!merged.is_authorized(&dev_x));
+        assert!(merged.revoked.contains(&dev_x) && !merged.devices.contains(&dev_x));
     }
 
     #[test]
