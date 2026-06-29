@@ -18,7 +18,6 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use haven_ffi::Account;
-use sha2::{Digest, Sha256};
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::Manager;
@@ -278,24 +277,17 @@ pub fn run_headless() {
     rt.block_on(async {
         let (seed, paths) = ensure_active_identity().expect("load or create identity");
 
-        // Stable relay-specific seed, distinct from the messaging identity (per the core's contract).
-        let mut hasher = Sha256::new();
-        hasher.update(seed);
-        hasher.update(b"haven-relay");
-        let relay_seed: [u8; 32] = hasher.finalize().into();
-
         let dir = paths.relay_dir();
         std::fs::create_dir_all(&dir).ok();
-        let handle = haven_ffi::RelayServerHandle::start(relay_seed.to_vec(), dir.to_string_lossy().to_string())
-            .await
-            .expect("start relay");
-        let node_hex = handle.node_id_hex();
 
         // Build + start the engine for the active identity: this brings up the messaging node,
         // the 15s mailbox poll, and the scheduled-message dispatcher (which also flushes anything
         // overdue on launch). No AppHandle → notifications/UI events are simply no-ops.
         let engine = Engine::new(paths.clone(), seed).expect("build engine");
         engine.start().await;
+        // Attach the relay to the engine's messaging node (ONE iroh node, two ALPNs) — a separate relay
+        // node in the same process is what made iroh churn paths unboundedly (the tens-of-GB leak).
+        let node_hex = engine.start_hosting().await.expect("attach relay host");
 
         let prefs = store::Prefs::load(&paths);
         let members: Vec<String> = prefs.contacts.iter().map(|c| c.id_hex.clone()).collect();
@@ -311,6 +303,6 @@ pub fn run_headless() {
 
         let _ = tokio::signal::ctrl_c().await;
         println!("\nStopping.");
-        drop(handle);
+        drop(engine); // stops the relay (attached to the engine's node) + the messaging node
     });
 }

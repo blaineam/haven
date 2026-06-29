@@ -1128,16 +1128,15 @@ impl Engine {
                 return Ok(h.node_id_hex());
             }
         }
-        // A stable relay-specific seed, distinct from the messaging identity.
-        let mut hasher = Sha256::new();
-        hasher.update(self.seed);
-        hasher.update(b"haven-relay");
-        let relay_seed: [u8; 32] = hasher.finalize().into();
+        // Attach the relay to the EXISTING messaging node's endpoint (one iroh node, two ALPNs) — a
+        // second in-process iroh node made iroh churn paths unboundedly (the tens-of-GB leak). The relay
+        // id is therefore the account node id.
+        let Some(node) = self.node.lock().unwrap().clone() else {
+            return Err(anyhow::anyhow!("relay host: messaging node not started yet"));
+        };
         let dir = self.paths.relay_dir();
         std::fs::create_dir_all(&dir).ok();
-        let handle = RelayServerHandle::start(relay_seed.to_vec(), dir.to_string_lossy().to_string())
-            .await
-            .map_err(|e| anyhow::anyhow!("relay host start: {e}"))?;
+        let handle = RelayServerHandle::attach(node, dir.to_string_lossy().to_string());
         let node_hex = handle.node_id_hex();
         *self.relay_host.lock().unwrap() = Some(handle);
         self.dyn_state.lock().unwrap().hosting = true;
@@ -1320,7 +1319,16 @@ impl Engine {
         let key = Self::mailbox_key(circle_id, env);
         // 1) Mirror to EVERY configured Haven relay (redundancy). Content-addressed keys make
         //    re-puts idempotent, and a relay in backoff is skipped — graceful fallback.
+        let hosted = self.relay_host.lock().unwrap().as_ref().map(|h| h.node_id_hex());
         for node_hex in self.relays_for(circle_id) {
+            // Our OWN hosted relay: store directly into the local mailbox (no iroh self-dial).
+            if hosted.as_deref() == Some(node_hex.as_str()) {
+                if let Some(h) = self.relay_host.lock().unwrap().as_ref() {
+                    h.local_put(key.clone(), env.to_vec());
+                    self.dyn_state.lock().unwrap().relay_active = true;
+                }
+                continue;
+            }
             if let Some(client) = self.relay_client_for(&node_hex).await {
                 match client.put(key.clone(), env.to_vec()).await {
                     Ok(()) => {
