@@ -25,6 +25,18 @@ use crate::wire;
 
 pub const DEFAULT_CIRCLE: &str = "default";
 
+/// One configured relay's full state for the Relays hub UI (active + inactive).
+#[derive(Clone)]
+pub struct RelayDetail {
+    pub node_hex: String,
+    pub name: String,
+    pub active: bool,
+    pub is_s3: bool,
+    pub is_default: bool,
+    pub hosted: bool,
+    pub reachable: bool,
+}
+
 /// Someone who said hello but we haven't approved yet.
 #[derive(Clone)]
 pub struct PendingRequest {
@@ -297,6 +309,7 @@ impl Engine {
             }
         }
         self.fire_due_scheduled(); // flush anything overdue from while the app was closed
+        self.purge_stale_relays().await; // erase relays inactive AND unseen > 7 days (config else survives)
         self.start_mailbox_loop();
     }
 
@@ -330,6 +343,7 @@ impl Engine {
                 if due {
                     me.backfill_media_to_relays().await;
                 }
+                me.purge_stale_relays().await; // GC relays inactive + unseen > 7 days (config else survives)
             }
         });
     }
@@ -339,8 +353,10 @@ impl Engine {
     async fn mesh_sync(self: &Arc<Self>) {
         let Some(host) = self.relay_host.lock().unwrap().clone() else { return };
         let my_hex = host.node_id_hex();
-        let peers: std::collections::BTreeSet<String> =
-            self.prefs.lock().unwrap().relays.values().flatten().cloned().collect();
+        let peers: std::collections::BTreeSet<String> = {
+            let p = self.prefs.lock().unwrap();
+            p.relays.values().flatten().filter(|h| p.relay_is_active(h)).cloned().collect()
+        };
         for peer in peers {
             if peer == my_hex || !self.relay_available(&peer) {
                 continue;
@@ -444,10 +460,10 @@ impl Engine {
     pub fn sync_status(&self, circle_id: &str) -> String {
         let any_transport = {
             let prefs = self.prefs.lock().unwrap();
-            prefs.relays.get(circle_id).map(|v| !v.is_empty()).unwrap_or(false)
+            !prefs.active_relays_for(circle_id).is_empty()
                 || prefs.s3.is_some()
                 || prefs.host_on_launch
-                || prefs.relays.values().any(|v| !v.is_empty())
+                || prefs.relays.values().flatten().any(|h| prefs.relay_is_active(h))
         };
         if any_transport {
             return "synced".into();
@@ -1122,18 +1138,30 @@ impl Engine {
             return;
         }
         {
-            // A contact advertised their circle relay → ADD it to our redundant set for this
-            // circle, so members automatically pool relays (more redundancy, no manual setup).
+            // A contact (often your OWN other device) RE-ANNOUNCED their circle relay. Previously a relay
+            // the user had deactivated/forgot stayed in `suppressed_relays` and was permanently ignored here
+            // — so deleting your PC's relay on your phone meant it never came back even when the PC
+            // re-announced it. Now a deliberate re-announce REACTIVATES the existing inactive entry (clears
+            // suppression + active=true) rather than being dropped. Mirrors the iOS handleRelayNode fix.
             let mut p = self.prefs.lock().unwrap();
-            if p.suppressed_relays.contains(&node_hex) {
-                return; // user forgot it — don't auto-resurrect
+            let was_suppressed_or_inactive =
+                p.suppressed_relays.contains(&node_hex) || !p.relay_is_active(&node_hex);
+            if was_suppressed_or_inactive {
+                p.suppressed_relays.retain(|h| h != &node_hex);
+                p.ensure_relay_entry(&node_hex, None, node_hex.starts_with("s3:"), true);
+            } else {
+                p.ensure_relay_entry(&node_hex, None, node_hex.starts_with("s3:"), false);
             }
             let list = p.relays.entry(circle_id.clone()).or_default();
-            if list.contains(&node_hex) {
-                return;
+            if !list.contains(&node_hex) {
+                list.push(node_hex.clone());
             }
-            list.push(node_hex.clone());
             let _ = p.save(&self.paths);
+            // Clear any stale backoff so a just-reactivated relay is retried immediately.
+            if was_suppressed_or_inactive {
+                drop(p);
+                self.relay_health.lock().unwrap().remove(&node_hex);
+            }
         }
         self.backfill_mailbox(&circle_id).await;
         self.poll_mailbox().await;
@@ -1142,7 +1170,14 @@ impl Engine {
     pub fn relay_status(&self) -> (bool, bool, bool, bool, bool) {
         let st = self.dyn_state.lock().unwrap();
         let prefs = self.prefs.lock().unwrap();
-        let has_relay = prefs.relays.values().any(|v| !v.is_empty()) || prefs.s3.is_some();
+        // Only ACTIVE relays count — a fully-deactivated set means "no relay" even though configs linger.
+        let has_relay = prefs
+            .relays
+            .values()
+            .flatten()
+            .any(|h| prefs.relay_is_active(h))
+            || (!prefs.default_relay.is_empty() && prefs.relay_is_active(&prefs.default_relay))
+            || prefs.s3.is_some();
         (st.hosting, has_relay, st.relay_active, st.internet_active, st.started)
     }
 
@@ -1268,9 +1303,11 @@ impl Engine {
             return;
         }
         {
-            // Explicit adoption overrides a prior Forget.
+            // Explicit adoption overrides a prior Forget AND reactivates the entry — re-adding a
+            // previously-deactivated relay always works. Mirrors iOS `add(circleId:nodeHex:)`.
             let mut p = self.prefs.lock().unwrap();
             p.suppressed_relays.retain(|h| h != &hex);
+            p.ensure_relay_entry(&hex, None, false, true);
             let _ = p.save(&self.paths);
         }
         for c in self.social.circles() {
@@ -1293,15 +1330,29 @@ impl Engine {
         self.poll_mailbox().await;
     }
 
-    /// Drop a relay from every circle (and forget its cached connection + health).
+    /// Normalize a relay hex: lower/trim a Haven node id, but leave a synthetic `s3:<bucket>` id as-is.
+    fn norm_relay_hex(node_hex: &str) -> String {
+        if node_hex.starts_with("s3:") {
+            node_hex.to_string()
+        } else {
+            node_hex.trim().to_lowercase()
+        }
+    }
+
+    /// DEACTIVATE a relay across EVERY circle (the old "forget" entry point, now non-destructive):
+    /// flip active=false, KEEP its name + circle associations, suppress auto-relearn while inactive, and
+    /// drop its cached connection + health. The config survives so it can be reactivated later.
+    /// `relays_for` already filters inactive entries out, so it stops being dialed/served immediately.
+    /// Mirrors iOS `forget(nodeHex:)`.
     pub async fn forget_relay(self: &Arc<Self>, node_hex: String) {
-        let hex = node_hex.trim().to_lowercase();
+        let hex = Self::norm_relay_hex(&node_hex);
         {
             let mut p = self.prefs.lock().unwrap();
-            for list in p.relays.values_mut() {
-                list.retain(|h| h != &hex);
+            let is_s3 = hex.starts_with("s3:");
+            p.ensure_relay_entry(&hex, None, is_s3, false);
+            if let Some(e) = p.relay_entries.get_mut(&hex) {
+                e.active = false;
             }
-            // Tombstone so frame-19 announce / self-sync can't resurrect it.
             if !p.suppressed_relays.contains(&hex) {
                 p.suppressed_relays.push(hex.clone());
             }
@@ -1312,28 +1363,190 @@ impl Engine {
         self.emit_changed();
     }
 
-    /// (node_hex, reachable, is_hosted_by_us) for every distinct adopted relay — for the UI.
-    pub fn relays_detail(&self) -> Vec<(String, bool, bool)> {
-        let now = now_ms();
-        let hosted = self.relay_host.lock().unwrap().as_ref().map(|h| h.node_id_hex());
-        let mut seen = std::collections::BTreeSet::new();
-        let prefs = self.prefs.lock().unwrap();
-        let health = self.relay_health.lock().unwrap();
-        let mut out = vec![];
-        for list in prefs.relays.values() {
-            for hex in list {
-                if seen.insert(hex.clone()) {
-                    let reachable = health.get(hex).map(|h| h.available(now)).unwrap_or(true);
-                    out.push((hex.clone(), reachable, hosted.as_deref() == Some(hex.as_str())));
+    /// Reactivate a deactivated relay: flip active=true and clear its suppression + backoff so it's
+    /// dialed again. Mirrors iOS `reactivate`.
+    pub async fn reactivate_relay(self: &Arc<Self>, node_hex: String) {
+        let hex = Self::norm_relay_hex(&node_hex);
+        {
+            let mut p = self.prefs.lock().unwrap();
+            p.suppressed_relays.retain(|h| h != &hex);
+            p.ensure_relay_entry(&hex, None, hex.starts_with("s3:"), true);
+            let _ = p.save(&self.paths);
+        }
+        self.relay_health.lock().unwrap().remove(&hex);
+        self.emit_changed();
+    }
+
+    /// Rename a relay (user-facing label only). Mirrors iOS `rename`.
+    pub fn rename_relay(self: &Arc<Self>, node_hex: String, name: String) {
+        let hex = Self::norm_relay_hex(&node_hex);
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let mut p = self.prefs.lock().unwrap();
+        if let Some(e) = p.relay_entries.get_mut(&hex) {
+            e.name = trimmed.to_string();
+            let _ = p.save(&self.paths);
+            drop(p);
+            self.emit_changed();
+        }
+    }
+
+    /// Pick the all-circles default relay (every present + future circle inherits it). Empty = unset.
+    /// Mirrors iOS `setDefault`.
+    pub fn set_default_relay(self: &Arc<Self>, node_hex: String) {
+        let mut p = self.prefs.lock().unwrap();
+        if node_hex.is_empty() {
+            p.default_relay.clear();
+        } else {
+            let hex = Self::norm_relay_hex(&node_hex);
+            p.ensure_relay_entry(&hex, None, hex.starts_with("s3:"), true);
+            p.default_relay = hex;
+        }
+        let _ = p.save(&self.paths);
+        drop(p);
+        self.emit_changed();
+    }
+
+    /// ERASE a relay for good — removes its associations across every circle, its entry, the default, and
+    /// its caches. Used by "Delete now" + purge_stale. Mirrors iOS `eraseNow`.
+    pub async fn erase_relay(self: &Arc<Self>, node_hex: String) {
+        let hex = Self::norm_relay_hex(&node_hex);
+        {
+            let mut p = self.prefs.lock().unwrap();
+            for list in p.relays.values_mut() {
+                list.retain(|h| h != &hex);
+            }
+            p.relays.retain(|_, v| !v.is_empty());
+            if p.default_relay == hex {
+                p.default_relay.clear();
+            }
+            p.relay_entries.remove(&hex);
+            if !p.suppressed_relays.contains(&hex) {
+                p.suppressed_relays.push(hex.clone());
+            }
+            let _ = p.save(&self.paths);
+        }
+        self.relay_clients.lock().await.remove(&hex);
+        self.relay_health.lock().unwrap().remove(&hex);
+        self.emit_changed();
+    }
+
+    /// ERASE only relays that are BOTH inactive AND unseen for > 7 days. An ACTIVE relay that's merely
+    /// unreachable is never purged. Called on launch + on the sync timer. Mirrors iOS `purgeStale`.
+    pub async fn purge_stale_relays(self: &Arc<Self>) {
+        let dead = self.prefs.lock().unwrap().stale_relay_hexes();
+        for hex in dead {
+            self.erase_relay(hex).await;
+        }
+    }
+
+    /// Add or remove a single relay's ASSOCIATION with exactly one circle (the per-circle override).
+    /// Mirrors iOS `setCircleRelay`.
+    pub async fn set_circle_relay(self: &Arc<Self>, node_hex: String, circle_id: String, on: bool) {
+        let hex = Self::norm_relay_hex(&node_hex);
+        {
+            let mut p = self.prefs.lock().unwrap();
+            if on {
+                p.suppressed_relays.retain(|h| h != &hex);
+                p.ensure_relay_entry(&hex, None, hex.starts_with("s3:"), true);
+                let list = p.relays.entry(circle_id.clone()).or_default();
+                if !list.contains(&hex) {
+                    list.push(hex.clone());
+                }
+            } else if let Some(list) = p.relays.get_mut(&circle_id) {
+                list.retain(|h| h != &hex);
+                if list.is_empty() {
+                    p.relays.remove(&circle_id);
                 }
             }
+            let _ = p.save(&self.paths);
         }
+        if on {
+            self.backfill_mailbox(&circle_id).await;
+        }
+        self.poll_mailbox().await;
+        self.emit_changed();
+    }
+
+    /// Add an S3 bucket as a (store-and-forward) relay: validate + persist its creds (secret → keychain
+    /// via the existing s3_configure path), record an `s3:<bucket>` RelayEntry so it shows in the Relays
+    /// list, associate it with every circle, and optionally make it the default. Returns its synthetic id.
+    /// Mirrors iOS `addS3Relay`.
+    pub async fn add_s3_relay(
+        self: &Arc<Self>,
+        pub_cfg: store::S3Public,
+        secret_key: String,
+        name: String,
+        set_default: bool,
+    ) -> Result<String> {
+        let bucket = pub_cfg.bucket.clone();
+        let hex = format!("s3:{bucket}");
+        // s3_configure validates connectivity, stores the secret in the keychain, and sets prefs.s3.
+        self.s3_configure(pub_cfg, secret_key).await?;
+        {
+            let mut p = self.prefs.lock().unwrap();
+            let label = if name.trim().is_empty() { format!("S3 · {bucket}") } else { name.trim().to_string() };
+            p.ensure_relay_entry(&hex, Some(&label), true, true);
+            for c in self.social.circles() {
+                let list = p.relays.entry(c.id).or_default();
+                if !list.contains(&hex) {
+                    list.push(hex.clone());
+                }
+            }
+            if set_default {
+                p.default_relay = hex.clone();
+            }
+            let _ = p.save(&self.paths);
+        }
+        for c in self.social.circles() {
+            self.backfill_mailbox(&c.id).await;
+        }
+        self.poll_mailbox().await;
+        self.emit_changed();
+        Ok(hex)
+    }
+
+    /// Full per-relay detail (active + inactive) for the Relays hub. One row per configured RelayEntry,
+    /// sorted active-first then by name. Mirrors iOS `allEntries`.
+    pub fn relays_detail(&self) -> Vec<RelayDetail> {
+        let now = now_ms();
+        let hosted = self.relay_host.lock().unwrap().as_ref().map(|h| h.node_id_hex());
+        let prefs = self.prefs.lock().unwrap();
+        let health = self.relay_health.lock().unwrap();
+        let mut out: Vec<RelayDetail> = prefs
+            .relay_entries
+            .values()
+            .map(|e| RelayDetail {
+                node_hex: e.hex.clone(),
+                name: e.name.clone(),
+                active: e.active,
+                is_s3: e.is_s3,
+                is_default: prefs.default_relay == e.hex,
+                hosted: hosted.as_deref() == Some(e.hex.as_str()),
+                reachable: health.get(&e.hex).map(|h| h.available(now)).unwrap_or(true),
+            })
+            .collect();
+        out.sort_by(|a, b| match (a.active, b.active) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        });
         out
     }
 
-    /// The redundant relay set for a circle (mirrored writes, fallback reads).
-    fn relays_for(&self, circle_id: &str) -> Vec<String> {
+    /// The set of relay hexes explicitly associated with a circle (INCLUDING inactive) — for the
+    /// per-circle override toggles. Mirrors iOS `explicitRelays(forCircle:)`.
+    pub fn circle_relay_hexes(&self, circle_id: &str) -> Vec<String> {
         self.prefs.lock().unwrap().relays.get(circle_id).cloned().unwrap_or_default()
+    }
+
+    /// The redundant ACTIVE relay set for a circle (mirrored writes, fallback reads). Deactivated relays
+    /// are filtered out so they aren't dialed/served, but their config survives. Includes the all-circles
+    /// default. Mirrors iOS `relays(forCircle:)`.
+    fn relays_for(&self, circle_id: &str) -> Vec<String> {
+        self.prefs.lock().unwrap().active_relays_for(circle_id)
     }
 
     fn relay_available(&self, node_hex: &str) -> bool {
@@ -1343,6 +1556,13 @@ impl Engine {
 
     fn mark_relay_ok(&self, node_hex: &str) {
         self.relay_health.lock().unwrap().entry(node_hex.to_string()).or_default().record_success();
+        // Stamp the relay's last-seen so purge_stale never reaps a relay that's actually working, and
+        // an inactive relay's stale-clock only counts time since it last succeeded. Mirrors iOS markSeen.
+        let mut p = self.prefs.lock().unwrap();
+        if p.relay_entries.contains_key(node_hex) {
+            p.relay_mark_seen(node_hex);
+            let _ = p.save(&self.paths);
+        }
     }
 
     fn mark_relay_fail(&self, node_hex: &str) {
@@ -1351,6 +1571,11 @@ impl Engine {
     }
 
     async fn relay_client_for(self: &Arc<Self>, node_hex: &str) -> Option<Arc<RelayClient>> {
+        // An `s3:<bucket>` relay is a store-and-forward bucket, NOT a dialable iroh node — it's served
+        // by the separate `s3_client()` path in upload_event/backfill. Never try to iroh-dial it.
+        if node_hex.starts_with("s3:") {
+            return None;
+        }
         {
             let clients = self.relay_clients.lock().await;
             if let Some(c) = clients.get(node_hex) {
@@ -2055,7 +2280,13 @@ impl Engine {
         let mut out: Vec<SelfSyncTransport> = vec![];
         let relays: std::collections::BTreeSet<String> = {
             let prefs = self.prefs.lock().unwrap();
-            prefs.relays.values().flatten().cloned().collect()
+            prefs
+                .relays
+                .values()
+                .flatten()
+                .filter(|h| prefs.relay_is_active(h) && !h.starts_with("s3:"))
+                .cloned()
+                .collect()
         };
         for node_hex in relays {
             out.push(SelfSyncTransport::Relay(node_hex));

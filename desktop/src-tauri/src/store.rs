@@ -91,6 +91,37 @@ pub struct Contact {
     pub verify_hex: String,
 }
 
+/// One configured relay's metadata (deactivate-not-erase model — mirrors iOS `RelayEntry`).
+///
+/// `hex` is the iroh node id (64-hex) for a Haven relay, or a synthetic `s3:<bucket>` id for an
+/// S3 bucket relay, so the same `relays` association map can address both kinds. The *associations*
+/// (which circle uses which relay) still live in `Prefs::relays`; this record layers the per-relay
+/// metadata (name / active / last-seen / isS3) on top. "Removing" a relay flips `active=false`
+/// (keeping its config) instead of erasing it; only `purge_stale` truly deletes — and only entries
+/// that are BOTH inactive AND unseen for > 7 days.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RelayEntry {
+    pub hex: String,
+    pub name: String,
+    pub active: bool,
+    #[serde(default)]
+    pub last_seen_ms: u64,
+    #[serde(default)]
+    pub is_s3: bool,
+}
+
+/// Erase an inactive+unseen relay entry after this long (7 days), matching iOS `staleAfterMs`.
+pub const RELAY_STALE_AFTER_MS: u64 = 7 * 24 * 3600 * 1000;
+
+/// Default short display name for a relay hex (Haven node or `s3:` synthetic id).
+pub fn relay_short_name(hex: &str) -> String {
+    if let Some(bucket) = hex.strip_prefix("s3:") {
+        format!("S3 · {}", &bucket[..bucket.len().min(16)])
+    } else {
+        format!("Relay · {}…", &hex[..hex.len().min(8)])
+    }
+}
+
 /// Non-secret config for a BYO S3/R2/B2 bucket (the secret key lives in the keychain).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct S3Public {
@@ -123,10 +154,21 @@ pub struct Prefs {
     /// (redundancy) and read from all of them (graceful fallback if one is down).
     #[serde(default)]
     pub relays: std::collections::HashMap<String, Vec<String>>,
-    /// Relays the user explicitly FORGOT — auto-learn (frame-19 announce / self-sync) must not
-    /// resurrect them, or Forget is a visible no-op. Cleared on explicit re-adoption. Mirrors iOS/Android.
+    /// Relays the user explicitly FORGOT/deactivated — auto-learn (frame-19 announce / self-sync) must
+    /// not resurrect a user-forgotten relay while it's inactive, or Forget is a visible no-op. A deliberate
+    /// re-announce DOES reactivate it (handle_relay_node clears the suppression + active=true). Cleared on
+    /// explicit re-adoption / reactivation. Mirrors iOS/Android.
     #[serde(default)]
     pub suppressed_relays: Vec<String>,
+    /// Per-relay metadata (name / active / last-seen / isS3), keyed by hex. The config survives a
+    /// deactivation here so a relay can be turned back on without re-pasting anything. Mirrors iOS
+    /// `RelayMailboxStore.entries` (UserDefaults key `haven.relay.entries`).
+    #[serde(default)]
+    pub relay_entries: std::collections::HashMap<String, RelayEntry>,
+    /// The all-circles DEFAULT relay hex (every present + future circle inherits it). Empty = none.
+    /// Mirrors iOS `haven.relay.default`.
+    #[serde(default)]
+    pub default_relay: String,
     /// Retention window in seconds for the viewer's own auto-prune (None = keep all).
     #[serde(default)]
     pub retention_secs: Option<u64>,
@@ -155,7 +197,108 @@ impl Prefs {
                 list.push(hex);
             }
         }
+        // Migrate every relay referenced by `relays` / `default_relay` into a RelayEntry (deactivate-not-
+        // erase model). Pre-existing relays become active=true with last_seen=now so their stale-clock
+        // starts now. Idempotent: only fills gaps. Mirrors iOS `migrateEntries`.
+        prefs.migrate_relay_entries();
         prefs
+    }
+
+    fn now_ms() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0)
+    }
+
+    /// Ensure every relay referenced by `relays` / the default has a RelayEntry record.
+    pub fn migrate_relay_entries(&mut self) {
+        let now = Self::now_ms();
+        let mut known: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        for list in self.relays.values() {
+            for h in list {
+                known.insert(h.clone());
+            }
+        }
+        if !self.default_relay.is_empty() {
+            known.insert(self.default_relay.clone());
+        }
+        for hex in known {
+            if !self.relay_entries.contains_key(&hex) {
+                let is_s3 = hex.starts_with("s3:");
+                self.relay_entries.insert(
+                    hex.clone(),
+                    RelayEntry { name: relay_short_name(&hex), active: true, last_seen_ms: now, is_s3, hex },
+                );
+            }
+        }
+    }
+
+    /// True when this relay has no entry (freshly announced) OR has an active entry. An unknown hex is
+    /// treated as active so nothing breaks before its entry lands. Mirrors iOS `isActive`.
+    pub fn relay_is_active(&self, hex: &str) -> bool {
+        self.relay_entries.get(hex).map(|e| e.active).unwrap_or(true)
+    }
+
+    /// Create-or-update a RelayEntry. `activate` flips it on; last_seen is stamped on first creation so a
+    /// freshly-added relay's stale-clock starts now. Mirrors iOS `ensureEntry`.
+    pub fn ensure_relay_entry(&mut self, hex: &str, name: Option<&str>, is_s3: bool, activate: bool) {
+        let now = Self::now_ms();
+        match self.relay_entries.get_mut(hex) {
+            Some(e) => {
+                if let Some(n) = name {
+                    if !n.is_empty() {
+                        e.name = n.to_string();
+                    }
+                }
+                if activate {
+                    e.active = true;
+                }
+            }
+            None => {
+                self.relay_entries.insert(
+                    hex.to_string(),
+                    RelayEntry {
+                        hex: hex.to_string(),
+                        name: name.filter(|n| !n.is_empty()).map(|n| n.to_string()).unwrap_or_else(|| relay_short_name(hex)),
+                        active: true,
+                        last_seen_ms: now,
+                        is_s3,
+                    },
+                );
+            }
+        }
+    }
+
+    /// Stamp a relay as just-seen (a successful op). Mirrors iOS `markSeen`.
+    pub fn relay_mark_seen(&mut self, hex: &str) {
+        if let Some(e) = self.relay_entries.get_mut(hex) {
+            e.last_seen_ms = Self::now_ms();
+        }
+    }
+
+    /// Every distinct ACTIVE relay configured for a circle: its own list + the all-circles default
+    /// (deduped, inactive filtered out). Mirrors iOS `relays(forCircle:)`.
+    pub fn active_relays_for(&self, circle_id: &str) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .relays
+            .get(circle_id)
+            .map(|v| v.iter().filter(|h| self.relay_is_active(h)).cloned().collect())
+            .unwrap_or_default();
+        if !self.default_relay.is_empty() && self.relay_is_active(&self.default_relay) && !out.contains(&self.default_relay) {
+            out.push(self.default_relay.clone());
+        }
+        out
+    }
+
+    /// Entries that are BOTH inactive AND unseen for > 7 days — to be erased. Mirrors iOS `purgeStale`.
+    pub fn stale_relay_hexes(&self) -> Vec<String> {
+        let now = Self::now_ms();
+        self.relay_entries
+            .values()
+            .filter(|e| !e.active && now.saturating_sub(e.last_seen_ms) > RELAY_STALE_AFTER_MS)
+            .map(|e| e.hex.clone())
+            .collect()
     }
     pub fn save(&self, paths: &Paths) -> Result<()> {
         let bytes = serde_json::to_vec_pretty(self)?;

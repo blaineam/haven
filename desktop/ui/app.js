@@ -644,12 +644,33 @@ async function manageCircleDialog(circle) {
         catch (err) { toast("Couldn't remove: " + err); }
       } }, "Remove")));
   }
+  // Per-circle relay override: pick which CONFIGURED relays this circle uses, beyond the all-circles
+  // default. No inline relay configuration here — that lives under Relays (the ⚙ → "Manage relays" link).
+  const allRelays = (await invoke("relays").catch(() => [])).filter((r) => r.active);
+  const explicit = new Set(await invoke("circle_relays", { circleId: circle.id }).catch(() => []));
+  const relaySection = el("div", { class: "col" });
+  if (!allRelays.length) {
+    relaySection.append(el("div", { class: "muted small" }, "No relays configured yet."));
+  } else {
+    for (const r of allRelays) {
+      const on = explicit.has(r.node_hex) || r.is_default;
+      const chk = el("input", { type: "checkbox", style: "width:auto" }); chk.checked = on; chk.disabled = r.is_default;
+      chk.onchange = async () => { try { await invoke("set_circle_relay", { nodeHex: r.node_hex, circleId: circle.id, on: chk.checked }); toast("Updated"); } catch (e) { toast("" + e); chk.checked = !chk.checked; } };
+      relaySection.append(el("label", { class: "row", style: "gap:8px;align-items:center" }, chk,
+        el("span", { style: "flex:1" }, r.name + (r.is_default ? " — default (all circles)" : "") + (r.is_s3 ? " · S3" : ""))));
+    }
+  }
+  relaySection.append(el("button", { class: "btn small ghost", style: "align-self:flex-start", onclick: () => { $("#modal-root").replaceChildren(); switchView("relay"); } }, "Manage relays →"));
+
   modal(el("div", {},
     el("h2", {}, "Manage circle"),
     el("div", { class: "col" },
       el("label", { class: "muted small" }, "Name"),
       el("div", { class: "row" }, nameInp,
         el("button", { class: "btn", onclick: async () => { const n = nameInp.value.trim(); if (n && n !== circle.name) { await invoke("rename_circle", { id: circle.id, name: n }); toast("Renamed"); $("#modal-root").replaceChildren(); renderFeed(); } } }, "Rename")),
+      el("label", { class: "muted small", style: "margin-top:6px" }, "Relays for this circle"),
+      el("div", { class: "muted small" }, "Choose which configured relays this circle uses, overriding the default. The default relay (if set) always applies — change it under Relays."),
+      relaySection,
       el("label", { class: "muted small", style: "margin-top:6px" }, "Members"),
       memberList,
       isDefault ? null : el("button", { class: "btn danger", style: "margin-top:6px", onclick: async () => {
@@ -897,38 +918,64 @@ async function renderRelay() {
   const adoptInput = el("input", { placeholder: "Paste a relay node id (64 hex)…" });
   const hostCard = el("div", { class: "card col" },
     el("h3", {}, "Host the relay on this PC"),
-    el("div", { class: "muted small" }, "Your circle's mailbox runs here so posts and media reach friends even when you're both offline. The relay never sees your content — everything is end-to-end sealed."),
+    el("div", { class: "muted small" }, "Your circle's relay runs here so posts and media reach friends even when you're both offline. The relay never sees your content — everything is end-to-end sealed."),
     s.hosting
       ? el("div", { class: "col" },
           el("div", { class: "ok-text" }, "● Relaying"),
           s.relay_link ? el("div", { class: "row" }, el("div", { class: "mono", style: "flex:1" }, s.relay_link), el("button", { class: "btn small", onclick: () => { navigator.clipboard.writeText(s.relay_link); toast("Relay id copied"); } }, "Copy")) : null,
-          el("div", { class: "muted small" }, "Share this id with your circle so they adopt the same mailbox."),
+          el("div", { class: "muted small" }, "Share this id with your circle so they adopt the same relay."),
           el("button", { class: "btn danger small", onclick: async () => { await invoke("stop_hosting"); renderRelay(); } }, "Stop hosting"),
         )
       : el("button", { class: "btn primary", onclick: async () => { try { await invoke("start_hosting"); toast("Relay started"); } catch (e) { toast("" + e); } renderRelay(); } }, "Start hosting"),
   );
+  // Configured relays (active + inactive). "Remove" DEACTIVATES (config survives); "Delete" erases.
   const relayList = await invoke("relays").catch(() => []);
   const adoptCard = el("div", { class: "card col" },
-    el("h3", {}, `Relays (${relayList.length})`),
-    el("div", { class: "muted small" }, "Add more than one for redundancy — posts and media are mirrored to every relay, and if one goes down Haven quietly uses the others. Paste a relay node id a friend (or a standalone " + esc("haven-relay") + ") shared."),
+    el("h3", {}, `Configured relays (${relayList.length})`),
+    el("div", { class: "muted small" }, "Add more than one for redundancy — posts and media are mirrored to every relay, and if one goes down Haven quietly uses the others. The default relay (★) is inherited by every circle that hasn't picked its own. Removing a relay DEACTIVATES it (its name + circle settings survive so you can turn it back on); an inactive relay unseen for a week is cleaned up automatically."),
   );
   for (const r of relayList) {
-    adoptCard.append(el("div", { class: "list-item" },
-      el("span", { class: "dot " + (r.reachable ? "on" : ""), title: r.reachable ? "reachable" : "in backoff (unreachable)" }),
-      el("div", { class: "mono small", style: "flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis" }, r.node_hex.slice(0, 20) + "…"),
-      r.hosted ? el("span", { class: "tag" }, "this PC") : null,
-      el("span", { class: "muted small" }, r.reachable ? "online" : "retrying…"),
-      el("button", { class: "btn small danger", onclick: async () => { await invoke("forget_relay", { nodeHex: r.node_hex }); toast("Relay removed"); renderRelay(); } }, "Remove"),
+    const dotCls = !r.active ? "" : (r.reachable ? "on" : "");
+    const statusTxt = !r.active ? "deactivated — config kept"
+      : (r.is_s3 ? "S3 · store-and-forward" : (r.hosted ? "this PC" : (r.reachable ? "reachable" : "retrying…")));
+    const actions = el("div", { class: "row", style: "gap:6px;flex-wrap:wrap" });
+    if (r.active) {
+      actions.append(el("button", { class: "btn small", title: "Stop using this relay (keeps config)", onclick: async () => { await invoke("forget_relay", { nodeHex: r.node_hex }); toast("Relay deactivated"); renderRelay(); } }, "Deactivate"));
+    } else {
+      actions.append(el("button", { class: "btn small primary", onclick: async () => { await invoke("reactivate_relay", { nodeHex: r.node_hex }); toast("Relay reactivated"); renderRelay(); } }, "Reactivate"));
+    }
+    actions.append(r.is_default
+      ? el("button", { class: "btn small ghost", title: "Stop being the all-circles default", onclick: async () => { await invoke("set_default_relay", { nodeHex: "" }); renderRelay(); } }, "Unset default")
+      : el("button", { class: "btn small ghost", title: "Use for every circle by default", onclick: async () => { await invoke("set_default_relay", { nodeHex: r.node_hex }); toast("Default relay set"); renderRelay(); } }, "Make default"));
+    actions.append(el("button", { class: "btn small ghost", onclick: async () => {
+      const n = prompt("Relay name", r.name); if (n && n.trim()) { await invoke("rename_relay", { nodeHex: r.node_hex, name: n.trim() }); renderRelay(); }
+    } }, "Rename"));
+    actions.append(el("button", { class: "btn small danger", title: "Erase config for good", onclick: async () => { await invoke("erase_relay", { nodeHex: r.node_hex }); toast("Relay deleted"); renderRelay(); } }, "Delete"));
+    adoptCard.append(el("div", { class: "list-item col", style: "align-items:stretch;gap:6px" },
+      el("div", { class: "row", style: "gap:8px;align-items:center" },
+        el("span", { class: "dot " + dotCls, title: statusTxt }),
+        el("div", { style: "flex:1;min-width:0" },
+          el("div", { class: "row", style: "gap:6px;align-items:center" },
+            el("span", { style: "font-weight:600;overflow:hidden;text-overflow:ellipsis" }, r.name),
+            r.is_default ? el("span", { class: "tag", title: "Default for all circles" }, "★ default") : null,
+            r.is_s3 ? el("span", { class: "tag" }, "S3") : null,
+            r.hosted ? el("span", { class: "tag" }, "this PC") : null,
+          ),
+          el("div", { class: "mono small muted", style: "overflow:hidden;text-overflow:ellipsis" }, r.is_s3 ? r.node_hex : r.node_hex.slice(0, 20) + "…"),
+          el("div", { class: "muted small" }, statusTxt),
+        ),
+      ),
+      actions,
     ));
   }
-  if (!relayList.length) adoptCard.append(el("div", { class: "muted small" }, "No relays yet — host one above or adopt a friend's."));
-  adoptCard.append(el("div", { class: "row" }, adoptInput, el("button", { class: "btn primary", onclick: async () => { if (adoptInput.value.trim().length === 64) { await invoke("adopt_relay", { nodeHex: adoptInput.value.trim() }); toast("Relay added"); adoptInput.value = ""; renderRelay(); } else toast("That's not a 64-hex node id"); } }, "Add relay")));
+  if (!relayList.length) adoptCard.append(el("div", { class: "muted small" }, "No relays yet — host one above, adopt a friend's, or add an S3 bucket below."));
+  adoptCard.append(el("div", { class: "row" }, adoptInput, el("button", { class: "btn primary", onclick: async () => { if (adoptInput.value.trim().length === 64) { await invoke("adopt_relay", { nodeHex: adoptInput.value.trim() }); toast("Relay added"); adoptInput.value = ""; renderRelay(); } else toast("That's not a 64-hex node id"); } }, "Add Haven relay")));
   const au = await invoke("autostart_status").catch(() => ({ login_item: false, host_on_launch: false }));
   const loginChk = el("input", { type: "checkbox", style: "width:auto" }); loginChk.checked = au.login_item;
   const hostChk = el("input", { type: "checkbox", style: "width:auto" }); hostChk.checked = au.host_on_launch;
   const alwaysOn = el("div", { class: "card col" },
     el("h3", {}, "Always-on relay (survives reboot)"),
-    el("div", { class: "muted small" }, "Have Haven start automatically when you log in and keep hosting your circle's mailbox — so this PC stays a relay across reboots, no terminal needed."),
+    el("div", { class: "muted small" }, "Have Haven start automatically when you log in and keep hosting your circle's relay — so this PC stays a relay across reboots, no terminal needed."),
     el("label", { class: "row", style: "gap:8px" }, loginChk, el("span", {}, "Start Haven when I log in")),
     el("label", { class: "row", style: "gap:8px" }, hostChk, el("span", {}, "Host the relay automatically on launch")),
     el("button", { class: "btn primary", style: "align-self:flex-start", onclick: async () => { try { await invoke("set_autostart", { loginItem: loginChk.checked, hostOnLaunch: hostChk.checked }); toast("Saved"); renderRelay(); } catch (e) { toast("" + e); } } }, "Save"),
@@ -939,6 +986,7 @@ async function renderRelay() {
   );
   const s3 = await invoke("s3_status");
   const f = {
+    name: el("input", { value: s3.configured ? ("S3 · " + s3.bucket) : "", placeholder: "Name (optional)" }),
     endpoint: el("input", { value: s3.endpoint || "", placeholder: "Endpoint, e.g. https://s3.us-east-1.amazonaws.com" }),
     region: el("input", { value: s3.region || "us-east-1", placeholder: "Region", style: "max-width:160px" }),
     bucket: el("input", { value: s3.bucket || "", placeholder: "Bucket name" }),
@@ -946,18 +994,22 @@ async function renderRelay() {
     secret: el("input", { type: "password", placeholder: s3.configured ? "•••••• (stored in your keychain)" : "Secret access key" }),
     prefix: el("input", { value: s3.prefix || "", placeholder: "Key prefix (optional)" }),
   };
+  const s3default = el("input", { type: "checkbox", style: "width:auto" }); s3default.checked = true;
   const s3card = el("div", { class: "card col" },
-    el("h3", {}, "Bring your own bucket (S3 / R2 / B2)"),
-    el("div", { class: "muted small" }, "Park E2E-sealed blobs in your own bucket so offline members can fetch them — the provider never sees plaintext. Works with AWS S3, Cloudflare R2, Backblaze B2, MinIO. " + (s3.configured ? "✓ Configured: " + s3.bucket : "Not configured.")),
-    f.endpoint, el("div", { class: "row" }, f.region, f.bucket), f.access, f.secret, f.prefix,
+    el("h3", {}, "Add an S3 bucket as a relay (S3 / R2 / B2)"),
+    el("div", { class: "muted small" }, "Bring your own bucket as a store-and-forward relay. " + (s3.configured ? "✓ Configured: " + s3.bucket : "Not configured.")),
+    el("div", { class: "muted small", style: "border-left:3px solid var(--warn,#e0a020);padding-left:8px" },
+      "⚠︎ Store-and-forward only: an S3 bucket holds sealed posts & media for offline delivery — it is NOT a live P2P relay (no realtime fan-out). The provider never sees plaintext; your secret stays in this device's keychain, never on any server. Works with AWS S3, Cloudflare R2, Backblaze B2, MinIO."),
+    f.name, f.endpoint, el("div", { class: "row" }, f.region, f.bucket), f.access, f.secret, f.prefix,
+    el("label", { class: "row", style: "gap:8px" }, s3default, el("span", {}, "Make the default for all circles")),
     el("div", { class: "row" },
       el("button", { class: "btn primary", onclick: async () => {
         try {
-          await invoke("s3_configure", { endpoint: f.endpoint.value.trim(), region: f.region.value.trim(), bucket: f.bucket.value.trim(), accessKey: f.access.value.trim(), secretKey: f.secret.value, prefix: f.prefix.value.trim() });
-          toast("Bucket connected"); renderRelay();
+          await invoke("add_s3_relay", { endpoint: f.endpoint.value.trim(), region: f.region.value.trim(), bucket: f.bucket.value.trim(), accessKey: f.access.value.trim(), secretKey: f.secret.value, prefix: f.prefix.value.trim(), name: f.name.value.trim(), setDefault: s3default.checked });
+          toast("S3 relay added"); renderRelay();
         } catch (e) { toast("" + e); }
-      } }, s3.configured ? "Update" : "Connect bucket"),
-      s3.configured ? el("button", { class: "btn danger small", onclick: async () => { await invoke("s3_clear"); toast("Bucket removed"); renderRelay(); } }, "Remove") : null,
+      } }, s3.configured ? "Update bucket" : "Add S3 relay"),
+      s3.configured ? el("button", { class: "btn danger small", onclick: async () => { await invoke("erase_relay", { nodeHex: "s3:" + s3.bucket }); await invoke("s3_clear"); toast("S3 relay removed"); renderRelay(); } }, "Remove") : null,
     ),
   );
   root.replaceChildren(el("div", { class: "view-head" }, el("h1", {}, "Relay")), hostCard, alwaysOn, adoptCard, s3card, headless);

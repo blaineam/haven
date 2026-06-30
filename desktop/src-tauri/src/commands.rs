@@ -490,24 +490,93 @@ pub async fn adopt_relay(engine: Eng<'_>, node_hex: String) -> R<()> {
 #[derive(Serialize)]
 pub struct RelayDto {
     pub node_hex: String,
+    pub name: String,
+    pub active: bool,
+    pub is_s3: bool,
+    pub is_default: bool,
     pub reachable: bool,
     pub hosted: bool,
 }
 
-/// Every adopted relay + its reachability (for the redundancy UI).
+/// Every configured relay (active + inactive) with its metadata + reachability — for the Relays hub.
 #[tauri::command]
 pub fn relays(engine: Eng) -> Vec<RelayDto> {
     engine
         .relays_detail()
         .into_iter()
-        .map(|(node_hex, reachable, hosted)| RelayDto { node_hex, reachable, hosted })
+        .map(|d| RelayDto {
+            node_hex: d.node_hex,
+            name: d.name,
+            active: d.active,
+            is_s3: d.is_s3,
+            is_default: d.is_default,
+            reachable: d.reachable,
+            hosted: d.hosted,
+        })
         .collect()
 }
 
+/// DEACTIVATE a relay (config survives) — the user-facing "remove". Mirrors iOS `forget`.
 #[tauri::command]
 pub async fn forget_relay(engine: Eng<'_>, node_hex: String) -> R<()> {
     engine.forget_relay(node_hex).await;
     Ok(())
+}
+
+/// Reactivate a deactivated relay.
+#[tauri::command]
+pub async fn reactivate_relay(engine: Eng<'_>, node_hex: String) -> R<()> {
+    engine.reactivate_relay(node_hex).await;
+    Ok(())
+}
+
+/// Rename a relay (user-facing label only).
+#[tauri::command]
+pub fn rename_relay(engine: Eng, node_hex: String, name: String) {
+    engine.rename_relay(node_hex, name);
+}
+
+/// Set (or clear, with an empty string) the all-circles default relay.
+#[tauri::command]
+pub fn set_default_relay(engine: Eng, node_hex: String) {
+    engine.set_default_relay(node_hex);
+}
+
+/// ERASE a relay for good ("Delete now"), removing its config + every association.
+#[tauri::command]
+pub async fn erase_relay(engine: Eng<'_>, node_hex: String) -> R<()> {
+    engine.erase_relay(node_hex).await;
+    Ok(())
+}
+
+/// Toggle a single relay's association with ONE circle (the per-circle override).
+#[tauri::command]
+pub async fn set_circle_relay(engine: Eng<'_>, node_hex: String, circle_id: String, on: bool) -> R<()> {
+    engine.set_circle_relay(node_hex, circle_id, on).await;
+    Ok(())
+}
+
+/// The relay hexes explicitly associated with a circle (INCLUDING inactive) — for the override toggles.
+#[tauri::command]
+pub fn circle_relays(engine: Eng, circle_id: String) -> Vec<String> {
+    engine.circle_relay_hexes(&circle_id)
+}
+
+/// Add an S3 bucket as a store-and-forward relay (secret → keychain). Returns its synthetic `s3:` id.
+#[tauri::command]
+pub async fn add_s3_relay(
+    engine: Eng<'_>,
+    endpoint: String,
+    region: String,
+    bucket: String,
+    access_key: String,
+    secret_key: String,
+    prefix: String,
+    name: String,
+    set_default: bool,
+) -> R<String> {
+    let pub_cfg = crate::store::S3Public { endpoint, region, bucket, access_key, prefix };
+    engine.add_s3_relay(pub_cfg, secret_key, name, set_default).await.map_err(|e| e.to_string())
 }
 
 // ---- media -------------------------------------------------------------------------------
