@@ -1961,6 +1961,9 @@ struct SyncDetailView: View {
         .font(.callout.monospacedDigit())
         .padding(16)
         .frame(minWidth: 240, alignment: .leading)
+        // On iPhone a popover adapts to a sheet — pin it to a small detent so it's a compact card, not full-screen.
+        .presentationDetents([.height(280)])
+        .presentationDragIndicator(.visible)
     }
 }
 
