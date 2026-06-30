@@ -117,10 +117,10 @@ struct StorageSettingsView: View {
                             }
                         }
                         if relayAdopted {
-                            Label("Connected — used as the mailbox", systemImage: "checkmark.circle.fill")
+                            Label("Connected — used as the relay", systemImage: "checkmark.circle.fill")
                                 .font(.caption).foregroundStyle(.green)
                         }
-                    } header: { Text("Use another circle's mailbox") }
+                    } header: { Text("Use another circle's relay") }
                     footer: { Text("Point this circle at a relay you already connected for a different circle.") }
                 }
 
@@ -137,7 +137,7 @@ struct StorageSettingsView: View {
                         Button(role: .destructive) { SharedMailboxStore.shared.clear() } label: {
                             Text("Stop using this relay")
                         }
-                    } header: { Text("Active mailbox") }
+                    } header: { Text("Active relay") }
                     footer: { Text("Your circle shares this bucket so posts arrive even when people are offline. Only sealed, unreadable blobs are stored there.") }
                 }
 
@@ -243,7 +243,7 @@ struct CircleMailboxSection: View {
     var body: some View {
         Section {
             Toggle(isOn: Binding(get: { relay.enabled }, set: { relay.setEnabled($0) })) {
-                Label("Be this circle's mailbox", systemImage: "externaldrive.connected.to.line.below.fill")
+                Label("Be this circle's relay", systemImage: "externaldrive.connected.to.line.below.fill")
             }
             .tint(HavenTheme.pink)
             if relay.serving && !relay.nodeId.isEmpty {
@@ -253,9 +253,9 @@ struct CircleMailboxSection: View {
                 Label("Starting…", systemImage: "clock").font(.caption).foregroundStyle(.secondary)
             }
         } header: {
-            Text("Mailbox")
+            Text("Relay")
         } footer: {
-            Text("Where this circle's sealed posts & media live so they reach people who were offline. Leave a device on as the mailbox (easy), or point at an external relay / your own S3 bucket under Advanced.")
+            Text("Where this circle's sealed posts & media live so they reach people who were offline. Leave a device on as the relay (easy), or point at an external relay / your own S3 bucket under Advanced.")
                 .fixedSize(horizontal: false, vertical: true)
         }
         RelayPoolSection(circleId: circleId)
@@ -316,7 +316,7 @@ struct AdvancedStorageView: View {
                     }
                     .disabled(relayNodeInput.trimmingCharacters(in: .whitespacesAndNewlines).count != 64)
                     if relayAdopted {
-                        Label("Connected — used as the mailbox", systemImage: "checkmark.circle.fill")
+                        Label("Connected — used as the relay", systemImage: "checkmark.circle.fill")
                             .font(.caption).foregroundStyle(.green)
                     }
                 } header: { Text("Connect an external relay") }
@@ -365,7 +365,7 @@ struct AdvancedStorageView: View {
                 }
                 .tint(HavenTheme.pink)
             } header: { Text("Volunteer as tribute") }
-            footer: { Text("Your bucket becomes the circle's shared mailbox: every post is stored sealed and re-served to anyone who's missing it — so messages and memories arrive even when the sender is offline and you're never online at the same time. Tap “Share as my circle's relay” to send these credentials (sealed, only your circle can open them) so everyone uses the same bucket — rent one from any S3 provider, no server to run. Heads up: members you share with can read (still sealed) and write to the bucket, so only share with a circle you trust, and rotate the key if someone leaves.") }
+            footer: { Text("Your bucket becomes the circle's shared relay: every post is stored sealed and re-served to anyone who's missing it — so messages and memories arrive even when the sender is offline and you're never online at the same time. Tap “Share as my circle's relay” to send these credentials (sealed, only your circle can open them) so everyone uses the same bucket — rent one from any S3 provider, no server to run. Heads up: members you share with can read (still sealed) and write to the bucket, so only share with a circle you trust, and rotate the key if someone leaves.") }
         }
     }
 }
@@ -426,5 +426,213 @@ enum Keychain {
             SecItemDelete(base(key, dataProtection: false) as CFDictionary)
         }
         return String(data: d, encoding: .utf8)
+    }
+}
+
+// MARK: - Relays (global) — the "You ▸ Settings ▸ Relays" hub
+//
+// One place to manage EVERY configured relay (active + deactivated), add unlimited new ones (a Haven
+// relay node, or an S3 bucket as store-and-forward), and pick the default every future unconfigured
+// circle inherits. Removing a relay DEACTIVATES it (the config survives) so it can come back; "Delete
+// now" erases it for good. Mirrors the deactivate-not-erase model in RelayMailboxStore.
+
+struct RelaysView: View {
+    @ObservedObject private var store = RelayMailboxStore.shared
+    @ObservedObject private var health = RelayHealth.shared
+    @ObservedObject private var relay = RelayHost.shared
+    @State private var showAdd = false
+    @State private var renaming: RelayEntry?
+    @State private var renameText = ""
+
+    private var entries: [RelayEntry] { store.allEntries() }
+
+    var body: some View {
+        ZStack {
+            HavenBackground()
+            Form {
+                // This-device relay toggle: the zero-setup path that makes this device a relay.
+                Section {
+                    Toggle(isOn: Binding(get: { relay.enabled }, set: { relay.setEnabled($0) })) {
+                        Label("Be a relay on this device", systemImage: "externaldrive.connected.to.line.below.fill")
+                    }
+                    .tint(HavenTheme.pink)
+                    if relay.serving && !relay.nodeId.isEmpty {
+                        Label("Relaying · \(String(relay.nodeId.prefix(8)))…", systemImage: "checkmark.circle.fill")
+                            .font(.caption).foregroundStyle(.green)
+                    } else if relay.enabled {
+                        Label("Starting…", systemImage: "clock").font(.caption).foregroundStyle(.secondary)
+                    }
+                } header: { Text("This device") }
+                footer: { Text("Turn this device into an always-available relay — sealed (unreadable) posts and media live here and re-serve to your circles when someone's been offline. A Mac left running is ideal; on iPhone it serves while Haven is open.") }
+
+                if entries.isEmpty {
+                    Section { Text("No relays configured yet. Add one below, or flip the toggle above to use this device.").font(.caption).foregroundStyle(.secondary) }
+                } else {
+                    Section {
+                        ForEach(entries) { e in relayRow(e) }
+                    } header: { Text("Configured relays · \(entries.count)") }
+                    footer: { Text("The default relay (★) is inherited by every circle that hasn't picked its own. Removing a relay DEACTIVATES it — its name and circle settings survive so you can turn it back on later. An inactive relay unseen for a week is cleaned up automatically.") }
+                }
+
+                Section {
+                    Button { showAdd = true } label: {
+                        Label("Add relay", systemImage: "plus.circle.fill").foregroundStyle(HavenTheme.pink)
+                    }
+                } footer: { Text("Add a Haven relay by node id, or bring your own S3 bucket as a store-and-forward relay.") }
+            }
+            .scrollContentBackground(.hidden)
+        }
+        .havenSettingsForm()
+        .navigationTitle("Relays")
+        .havenInlineNavTitle()
+        .sheet(isPresented: $showAdd) { AddRelaySheet() }
+        .alert("Rename relay", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("Name", text: $renameText)
+            Button("Save") { if let e = renaming { store.rename(e.hex, to: renameText) }; renaming = nil }
+            Button("Cancel", role: .cancel) { renaming = nil }
+        }
+    }
+
+    @ViewBuilder private func relayRow(_ e: RelayEntry) -> some View {
+        let isDefault = store.defaultNodeHex == e.hex
+        let isSelf = relay.serving && e.hex == relay.nodeId
+        let reachable = health.available(e.hex)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 10) {
+                Image(systemName: e.isS3 ? "externaldrive.fill"
+                          : (e.active ? (reachable ? "circle.fill" : "exclamationmark.triangle.fill") : "pause.circle.fill"))
+                    .font(.caption2)
+                    .foregroundStyle(!e.active ? Color.secondary : (e.isS3 ? Color.blue : (reachable ? Color.green : Color.orange)))
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(spacing: 6) {
+                        Text(e.name).font(.subheadline.weight(.medium))
+                        if isDefault { Image(systemName: "star.fill").font(.caption2).foregroundStyle(HavenTheme.pink) }
+                    }
+                    Text(statusLine(e, isSelf: isSelf, reachable: reachable))
+                        .font(.caption2).foregroundStyle(.secondary)
+                    Text(e.isS3 ? e.hex : "\(e.hex.prefix(16))…")
+                        .font(.system(.caption2, design: .monospaced)).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            HStack(spacing: 8) {
+                if e.active {
+                    Button { store.forget(nodeHex: e.hex) } label: { Label("Deactivate", systemImage: "pause") }
+                } else {
+                    Button { store.reactivate(e.hex) } label: { Label("Reactivate", systemImage: "play.fill") }
+                        .tint(.green)
+                }
+                if !isDefault {
+                    Button { store.setDefault(e.hex) } label: { Label("Default", systemImage: "star") }
+                } else {
+                    Button { store.setDefault(nil) } label: { Label("Unset default", systemImage: "star.slash") }
+                }
+                Button { renaming = e; renameText = e.name } label: { Label("Rename", systemImage: "pencil") }
+                Button(role: .destructive) { store.eraseNow(e.hex) } label: { Label("Delete", systemImage: "trash") }
+            }
+            .font(.caption).buttonStyle(.borderless).labelStyle(.iconOnly)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func statusLine(_ e: RelayEntry, isSelf: Bool, reachable: Bool) -> String {
+        if !e.active { return "Deactivated — config kept" }
+        if e.isS3 { return "S3 bucket · store-and-forward" }
+        if isSelf { return "This device · \(reachable ? "reachable" : "backing off")" }
+        return reachable ? "Reachable" : "Unreachable — retrying"
+    }
+}
+
+/// "Add relay" sheet: a Haven relay (paste a node id / link) OR an S3 bucket (with a store-and-forward
+/// disclaimer). The S3 secret goes to the Keychain via SharedMailboxStore — never UserDefaults.
+struct AddRelaySheet: View {
+    @Environment(\.dismiss) private var dismiss
+    enum Kind: String, CaseIterable { case haven = "Haven relay", s3 = "S3 bucket" }
+    @State private var kind: Kind = .haven
+    @State private var name = ""
+    @State private var nodeInput = ""
+    @State private var makeDefault = true
+    // S3 fields
+    @State private var endpoint = ""
+    @State private var region = "us-east-1"
+    @State private var bucket = ""
+    @State private var accessKey = ""
+    @State private var secret = ""
+
+    private var havenValid: Bool {
+        let id = nodeInput.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return id.count == 64 && id.allSatisfy { $0.isHexDigit }
+    }
+    private var s3Valid: Bool { !endpoint.isEmpty && !bucket.isEmpty && !accessKey.isEmpty && !secret.isEmpty }
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                HavenBackground()
+                Form {
+                    Picker("Type", selection: $kind) {
+                        ForEach(Kind.allCases, id: \.self) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+
+                    Section {
+                        TextField("Name (optional)", text: $name)
+                        Toggle("Make the default for all circles", isOn: $makeDefault).tint(HavenTheme.pink)
+                    }
+
+                    if kind == .haven {
+                        Section {
+                            TextField("Relay node id (64 hex)", text: $nodeInput)
+                                .autocorrectionDisabled().havenAutocap(.never)
+                                .font(.system(.footnote, design: .monospaced))
+                        } header: { Text("Haven relay") }
+                        footer: { Text("Paste the node id printed by a `haven-relay` daemon (`haven-relay id`), or another device that's acting as a relay. Connects over iroh — a live P2P relay.") }
+                    } else {
+                        Section {
+                            TextField("Endpoint (e.g. s3.amazonaws.com)", text: $endpoint).autocorrectionDisabled().havenAutocap(.never)
+                            TextField("Region", text: $region).autocorrectionDisabled().havenAutocap(.never)
+                            TextField("Bucket", text: $bucket).autocorrectionDisabled().havenAutocap(.never)
+                            TextField("Access key id", text: $accessKey).autocorrectionDisabled().havenAutocap(.never)
+                            SecureField("Secret access key", text: $secret)
+                        } header: { Text("S3 bucket") }
+                        footer: {
+                            HStack(alignment: .top, spacing: 6) {
+                                Image(systemName: "info.circle.fill").foregroundStyle(.orange)
+                                Text("Store-and-forward only: an S3 bucket holds sealed posts & media for offline delivery (mailbox/backup) — it is **not** a live P2P relay (no realtime fan-out). Your secret stays in this device's Keychain, never on any server.")
+                            }.font(.caption)
+                        }
+                    }
+                }
+                .scrollContentBackground(.hidden)
+            }
+            .havenSettingsForm()
+            .navigationTitle("Add relay")
+            .havenInlineNavTitle()
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Add") { add() }
+                        .disabled(kind == .haven ? !havenValid : !s3Valid)
+                }
+            }
+        }
+    }
+
+    private func add() {
+        let circles = FeedStore.shared.circles.map(\.id)
+        if kind == .haven {
+            let id = nodeInput.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            FeedStore.shared.adoptRelayNode(id, circleIds: circles, setDefault: makeDefault)
+            if !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                RelayMailboxStore.shared.rename(id, to: name)
+            }
+        } else {
+            let cfg = S3Config(endpoint: endpoint, region: region.isEmpty ? "us-east-1" : region,
+                               bucket: bucket, accessKey: accessKey, secret: secret)
+            let label = name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "S3 · \(bucket)" : name
+            FeedStore.shared.addS3Relay(cfg, name: label, circleIds: circles, setDefault: makeDefault)
+        }
+        dismiss()
     }
 }

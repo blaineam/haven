@@ -282,8 +282,12 @@ struct CircleSettingsView: View {
                         .fixedSize(horizontal: false, vertical: true)   // wrap fully; don't truncate on macOS
                 }
 
-                // Mailbox controls inline (the toggle + relay pool) — no longer buried under a sub-link.
+                // Relay controls inline (the toggle + relay pool) — no longer buried under a sub-link.
                 CircleMailboxSection(circleId: circleId)
+
+                // Per-circle relay OVERRIDE: pick which configured relays THIS circle uses, beyond the
+                // global default (which every circle inherits unless it overrides here).
+                CircleRelayOverrideSection(circleId: circleId)
 
                 if !isDefault {
                     Section {
@@ -302,5 +306,48 @@ struct CircleSettingsView: View {
         .havenInlineNavTitle()
         .onAppear { name = store.circles.first { $0.id == circleId }?.name ?? "" }
         .onDisappear { store.renameCircle(circleId, to: name) }   // persist a rename made without hitting return
+    }
+}
+
+/// Per-circle relay OVERRIDE: toggle which of your configured relays THIS circle uses. The all-circles
+/// default still applies on top (shown but not toggleable here — manage it under Settings ▸ Relays).
+/// Wired to RelayMailboxStore's per-circle associations (`relaysByCircle`).
+struct CircleRelayOverrideSection: View {
+    let circleId: String
+    @ObservedObject private var store = RelayMailboxStore.shared
+
+    private var configured: [RelayEntry] { store.allEntries().filter { $0.active } }
+    private var explicit: Set<String> { Set(store.explicitRelays(forCircle: circleId)) }
+
+    var body: some View {
+        if configured.isEmpty {
+            EmptyView()
+        } else {
+            Section {
+                ForEach(configured) { e in
+                    let isDefault = store.defaultNodeHex == e.hex
+                    Toggle(isOn: Binding(
+                        get: { explicit.contains(e.hex) || isDefault },
+                        set: { FeedStore.shared.setCircleRelay(e.hex, circleId: circleId, on: $0) }
+                    )) {
+                        HStack(spacing: 6) {
+                            Image(systemName: e.isS3 ? "externaldrive.fill" : "antenna.radiowaves.left.and.right")
+                                .foregroundStyle(.secondary)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(e.name).font(.subheadline)
+                                if isDefault { Text("Default — inherited by every circle").font(.caption2).foregroundStyle(.secondary) }
+                            }
+                        }
+                    }
+                    .tint(HavenTheme.pink)
+                    .disabled(isDefault)   // the default is always on; manage it under Settings ▸ Relays
+                }
+            } header: {
+                Text("Relays for this circle")
+            } footer: {
+                Text("Choose which configured relays this circle uses, overriding the default. Posts are mirrored to every relay turned on here and read from any that's reachable. The default relay (if set) always applies — change it under Settings ▸ Relays.")
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
     }
 }

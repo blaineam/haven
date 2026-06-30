@@ -126,6 +126,7 @@ final class RelayHost: ObservableObject {
                 let pulled = await handle.syncFrom(peerNodeHex: peer)
                 if pulled > 0 {
                     RelayHealth.shared.recordSuccess(peer)
+                    RelayMailboxStore.shared.markSeen(peer)
                     FeedStore.shared.markRelay(true)
                     // New blobs landed on our store → ingest anything we hadn't seen.
                     FeedStore.shared.pollMailboxNow()
@@ -198,21 +199,47 @@ final class RelayHost: ObservableObject {
 ///
 /// Mirrors the desktop `prefs.relays: HashMap<String, Vec<String>>`. The legacy single-relay map
 /// (`haven.relay.byCircle` as `[String: String]`) is migrated into the list form on first load.
+///
+/// DEACTIVATE-NOT-ERASE: "removing" a relay no longer wipes its circle associations — it flips the
+/// relay's `RelayEntry.active` to false (and suppresses it so auto-learn doesn't resurface it while
+/// it's deactivated). The config (name, which circles use it, whether it's an S3 bucket) survives, so
+/// a relay can be reactivated later without re-pasting anything. Only `purgeStale` truly erases — and
+/// only entries that are BOTH inactive AND unseen for > 7 days. An ACTIVE-but-unreachable relay is
+/// never purged. The `relaysByCircle` map stays the source of truth for *associations*; `entries`
+/// adds the per-relay metadata (name / active / lastSeen / isS3) layered on top.
+
+/// One configured relay: a Haven relay node (isS3=false) or an S3 bucket transport (isS3=true).
+/// `hex` is the node id for a Haven relay, or a synthetic "s3:<bucket>" id for an S3 entry (so the
+/// same map can address both kinds — SharedStore already treats them as interchangeable transports).
+struct RelayEntry: Codable, Identifiable, Equatable {
+    var hex: String
+    var name: String
+    var active: Bool
+    var lastSeenMs: UInt64
+    var isS3: Bool
+    var id: String { hex }
+}
+
 @MainActor
 final class RelayMailboxStore: ObservableObject {
     static let shared = RelayMailboxStore()
     /// circleId -> ordered list of relay node hexes (mirrored writes, fallback reads).
     @Published private(set) var relaysByCircle: [String: [String]]
+    /// Per-relay metadata records, keyed by hex. The config survives deactivation here.
+    @Published private(set) var entries: [String: RelayEntry] = [:]
     private let key = "haven.relay.relaysByCircle"
     private let legacyKey = "haven.relay.byCircle"   // old single-relay-per-circle map
     private let defaultKey = "haven.relay.default"
     private let suppressedKey = "haven.relay.suppressed"
-    /// Relays the user explicitly FORGOT. Auto-learn paths (frame-19 announce, SelfSync, bootstrap)
-    /// must NOT resurrect these, or forgetting a relay looks like a no-op — the peer/your other device
-    /// re-announces it within seconds and it pops right back. Cleared when the relay is adopted again
-    /// EXPLICITLY (user pasting a link / tapping Connect). This is what makes Forget actually stick, and
-    /// lets stale relays (e.g. a device's pre-upgrade relay id) be cleared for good.
+    private let entriesKey = "haven.relay.entries"
+    static let staleAfterMs: UInt64 = 7 * 24 * 3600 * 1000   // erase inactive+unseen entries after 7 days
+    /// Relays the user explicitly FORGOT/deactivated. Auto-learn paths (frame-19 announce, SelfSync,
+    /// bootstrap) must NOT resurrect a *user-forgotten* relay while it's inactive — but a deliberate
+    /// re-announce DOES reactivate it (handleRelayNode clears the suppression + flips active=true), so
+    /// your own re-announced relay can come back. Cleared on explicit adoption / reactivation.
     private var suppressed: Set<String>
+
+    private func nowMs() -> UInt64 { UInt64(Date().timeIntervalSince1970 * 1000) }
 
     private init() {
         let d = UserDefaults.standard
@@ -229,7 +256,41 @@ final class RelayMailboxStore: ObservableObject {
         relaysByCircle = loaded
         suppressed = Set((d.array(forKey: suppressedKey) as? [String]) ?? [])
         if !loaded.isEmpty { d.set(loaded, forKey: key) }
+        // Load persisted entries, then migrate any relay that only exists in relaysByCircle/default
+        // into a RelayEntry (active=true, short-hex name, lastSeen=now so the clock starts now).
+        if let data = d.data(forKey: entriesKey),
+           let decoded = try? JSONDecoder().decode([String: RelayEntry].self, from: data) {
+            entries = decoded
+        }
+        migrateEntries()
     }
+
+    /// Ensure every relay referenced by relaysByCircle / the default has a RelayEntry record.
+    private func migrateEntries() {
+        var changed = false
+        var known = Set<String>()
+        for list in relaysByCircle.values { for h in list { known.insert(h) } }
+        if let def = UserDefaults.standard.string(forKey: defaultKey), !def.isEmpty { known.insert(def) }
+        for hex in known where entries[hex] == nil {
+            entries[hex] = RelayEntry(hex: hex, name: Self.shortName(hex), active: true,
+                                      lastSeenMs: nowMs(), isS3: hex.hasPrefix("s3:"))
+            changed = true
+        }
+        if changed { persistEntries() }
+    }
+
+    static func shortName(_ hex: String) -> String {
+        if hex.hasPrefix("s3:") { return "S3 · " + String(hex.dropFirst(3).prefix(16)) }
+        return "Relay · " + String(hex.prefix(8)) + "…"
+    }
+
+    private func persistEntries() {
+        if let data = try? JSONEncoder().encode(entries) { UserDefaults.standard.set(data, forKey: entriesKey) }
+    }
+
+    /// True when this relay has a config record and is currently active. Unknown hexes (never recorded,
+    /// e.g. a freshly-announced relay before its entry lands) are treated as active so nothing breaks.
+    func isActive(_ hex: String) -> Bool { entries[hex]?.active ?? true }
 
     /// A relay applied to "all circles (and future ones)": any circle inherits it. nil = none.
     var defaultNodeHex: String? {
@@ -237,77 +298,160 @@ final class RelayMailboxStore: ObservableObject {
         set { UserDefaults.standard.set(newValue, forKey: defaultKey); objectWillChange.send() }
     }
 
-    /// Every relay configured for a circle: its own list plus the all-circles default (deduped).
+    /// Every ACTIVE relay configured for a circle: its own list plus the all-circles default (deduped).
+    /// Deactivated relays are filtered out so they aren't dialed/served, but their config survives.
     func relays(forCircle circleId: String) -> [String] {
-        var out = relaysByCircle[circleId] ?? []
-        if let def = defaultNodeHex, !def.isEmpty, !out.contains(def) { out.append(def) }
+        var out = (relaysByCircle[circleId] ?? []).filter { isActive($0) }
+        if let def = defaultNodeHex, !def.isEmpty, isActive(def), !out.contains(def) { out.append(def) }
         return out
     }
-    /// The relays set explicitly for this circle (no default fallback) — for the settings UI.
+    /// The relays explicitly associated with this circle (no default fallback, INCLUDING inactive) —
+    /// for the settings UI, which shows active + inactive with toggles.
     func explicitRelays(forCircle circleId: String) -> [String] { relaysByCircle[circleId] ?? [] }
+    /// The ACTIVE relays explicitly associated with this circle (no default fallback).
+    func activeExplicitRelays(forCircle circleId: String) -> [String] {
+        (relaysByCircle[circleId] ?? []).filter { isActive($0) }
+    }
 
-    /// First relay for a circle — back-compat convenience (some callers only need "is there one").
+    /// First active relay for a circle — back-compat convenience (some callers only need "is there one").
     func nodeId(forCircle circleId: String) -> String? { relays(forCircle: circleId).first }
 
     /// ADD a relay to a circle (append, don't replace) — mirrors desktop `adopt_relay`. This is the
-    /// EXPLICIT path (user adopts / hosts), so it also CLEARS any forgotten-tombstone for the relay —
-    /// re-adding a previously-forgotten relay always works. Auto-learn callers must gate on `isForgotten`
-    /// BEFORE calling this, so a forgotten relay isn't silently resurrected (that's what makes Forget stick).
-    func add(circleId: String, nodeHex: String) {
-        let hex = nodeHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard hex.count == 64 else { return }
+    /// EXPLICIT path (user adopts / hosts), so it CLEARS any suppression AND reactivates the entry —
+    /// re-adding a previously-deactivated relay always works.
+    func add(circleId: String, nodeHex: String, name: String? = nil, isS3: Bool = false) {
+        let hex = isS3 ? nodeHex : nodeHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard isS3 ? hex.hasPrefix("s3:") : hex.count == 64 else { return }
         unforget(hex)
+        ensureEntry(hex, name: name, isS3: isS3, activate: true)
         var list = relaysByCircle[circleId] ?? []
-        guard !list.contains(hex) else { return }
-        list.append(hex)
-        relaysByCircle[circleId] = list
-        UserDefaults.standard.set(relaysByCircle, forKey: key)
+        if !list.contains(hex) {
+            list.append(hex)
+            relaysByCircle[circleId] = list
+            UserDefaults.standard.set(relaysByCircle, forKey: key)
+        }
     }
 
-    /// Whether the user has FORGOTTEN this relay — auto-learn (frame-19 announce / SelfSync / bootstrap)
-    /// checks this and skips, so Forget isn't undone within seconds by a re-announce.
+    /// Create-or-update the RelayEntry for a hex. `activate` flips it on; lastSeen is stamped now on
+    /// first creation so a freshly-added relay's stale-clock starts now (not 1970).
+    func ensureEntry(_ hex: String, name: String? = nil, isS3: Bool = false, activate: Bool = false) {
+        if var e = entries[hex] {
+            if let name, !name.isEmpty { e.name = name }
+            if activate { e.active = true }
+            entries[hex] = e
+        } else {
+            entries[hex] = RelayEntry(hex: hex, name: name ?? Self.shortName(hex),
+                                      active: activate ? true : true, lastSeenMs: nowMs(), isS3: isS3)
+        }
+        persistEntries()
+    }
+
+    /// Stamp a relay as just-seen (a successful op). Cheap; persisted so "last seen" survives a restart.
+    func markSeen(_ hex: String) {
+        guard var e = entries[hex] else { return }
+        e.lastSeenMs = nowMs()
+        entries[hex] = e
+        persistEntries()
+    }
+
+    /// Rename a relay (user-facing label only).
+    func rename(_ hex: String, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard var e = entries[hex], !trimmed.isEmpty else { return }
+        e.name = trimmed
+        entries[hex] = e
+        persistEntries()
+    }
+
+    /// Pick a relay as the all-circles default (every present + future circle inherits it).
+    func setDefault(_ hex: String?) {
+        if let hex { ensureEntry(hex, activate: true) }
+        defaultNodeHex = hex
+    }
+
+    /// Whether the user has FORGOTTEN/deactivated this relay — auto-learn checks this and skips so a
+    /// just-deactivated relay isn't immediately re-added by a passive announce. (A deliberate re-announce
+    /// REACTIVATES it via handleRelayNode rather than being permanently ignored.)
     func isForgotten(_ nodeHex: String) -> Bool {
         suppressed.contains(nodeHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
     }
 
-    /// Clear a relay's FORGOTTEN tombstone (an explicit adoption overrides a prior Forget).
+    /// Clear a relay's FORGOTTEN tombstone (an explicit adoption / reactivation overrides a prior Forget).
     func unforget(_ nodeHex: String) {
-        let hex = nodeHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let hex = nodeHex.hasPrefix("s3:") ? nodeHex : nodeHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard suppressed.remove(hex) != nil else { return }
         UserDefaults.standard.set(Array(suppressed), forKey: suppressedKey)
     }
-    /// Drop a single relay from a circle.
+
+    /// Reactivate a deactivated relay: flip active=true and clear its suppression so it's dialed again.
+    func reactivate(_ hex: String) {
+        unforget(hex)
+        ensureEntry(hex, activate: true)
+        RelayHealth.shared.forget(hex)   // clear any stale backoff so it's retried immediately
+        objectWillChange.send()
+    }
+
+    /// Drop a single relay's ASSOCIATION with a circle (deactivates the entry if no circle uses it now).
     func remove(circleId: String, nodeHex: String) {
         guard var list = relaysByCircle[circleId] else { return }
         list.removeAll { $0 == nodeHex }
         if list.isEmpty { relaysByCircle[circleId] = nil } else { relaysByCircle[circleId] = list }
         UserDefaults.standard.set(relaysByCircle, forKey: key)
+        objectWillChange.send()
     }
-    /// Forget a relay across EVERY circle (mirrors desktop `forget_relay`); also clears it as the
-    /// default and drops its cached connection + health.
+
+    /// DEACTIVATE a relay across EVERY circle (mirrors the old "forget" entry point, but non-destructive):
+    /// flip active=false, keep its name + circle associations, suppress auto-relearn while inactive, and
+    /// drop its cached connection + health. The config survives so it can be reactivated later.
     func forget(nodeHex: String) {
-        let hex = nodeHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let hex = nodeHex.hasPrefix("s3:") ? nodeHex : nodeHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if var e = entries[hex] { e.active = false; entries[hex] = e }
+        else { entries[hex] = RelayEntry(hex: hex, name: Self.shortName(hex), active: false, lastSeenMs: nowMs(), isS3: hex.hasPrefix("s3:")) }
+        // Keep relaysByCircle + the default intact — only the active flag changes. (relays(forCircle:)
+        // already filters inactive entries out, so it stops being dialed/served immediately.)
+        suppressed.insert(hex)
+        persistEntries()
+        UserDefaults.standard.set(Array(suppressed), forKey: suppressedKey)
+        RelayClients.forget(hex)
+        RelayHealth.shared.forget(hex)
+        objectWillChange.send()
+    }
+
+    /// ERASE a relay for good — removes its associations across every circle, its entry, the default, and
+    /// its caches. Used by "Delete now" in the Relays screen and by purgeStale.
+    func eraseNow(_ nodeHex: String) {
+        let hex = nodeHex.hasPrefix("s3:") ? nodeHex : nodeHex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         for cid in relaysByCircle.keys {
             relaysByCircle[cid]?.removeAll { $0 == hex }
             if relaysByCircle[cid]?.isEmpty == true { relaysByCircle[cid] = nil }
         }
         if defaultNodeHex == hex { defaultNodeHex = nil }
-        // Tombstone it so the frame-19 announce / SelfSync / bootstrap auto-learn can't resurrect it
-        // (otherwise Forget is a visible no-op — it reappears within seconds).
+        entries[hex] = nil
         suppressed.insert(hex)
         UserDefaults.standard.set(relaysByCircle, forKey: key)
         UserDefaults.standard.set(Array(suppressed), forKey: suppressedKey)
+        persistEntries()
         RelayClients.forget(hex)
         RelayHealth.shared.forget(hex)
+        objectWillChange.send()
     }
-    /// Remove every relay configured for a circle.
+
+    /// ERASE only entries that are BOTH inactive AND unseen for > 7 days. An ACTIVE relay that's merely
+    /// unreachable is never purged. Called on launch + on the sync timer.
+    func purgeStale(nowMs now: UInt64? = nil) {
+        let cutoff = now ?? nowMs()
+        let dead = entries.values.filter { !$0.active && (cutoff &- $0.lastSeenMs) > Self.staleAfterMs }
+        for e in dead { eraseNow(e.hex) }
+    }
+
+    /// Remove every relay association for a circle (deactivates nothing else; entries linger for reuse).
     func clear(circleId: String) {
         relaysByCircle[circleId] = nil
         UserDefaults.standard.set(relaysByCircle, forKey: key)
     }
-    /// Circles (other than `excluding`) that have an explicit relay — for "copy another circle".
+    /// Circles (other than `excluding`) that have an explicit ACTIVE relay — for "copy another circle".
     func circlesWithRelay(excluding: String) -> [String] {
-        relaysByCircle.filter { $0.key != excluding && !$0.value.isEmpty }.map(\.key)
+        relaysByCircle.filter { $0.key != excluding && $0.value.contains(where: { isActive($0) }) }.map(\.key)
     }
     /// Seed this device's relays from a transfer/link code so a freshly-linked device has a transport
     /// to bootstrap from. Stored under a synthetic circle so `allRelays()` returns them all; the first
@@ -318,12 +462,20 @@ final class RelayMailboxStore: ObservableObject {
         if defaultNodeHex == nil, let first = hexes.first(where: { $0.count == 64 }) { defaultNodeHex = first }
     }
 
-    /// Every distinct relay across all circles — for the settings list / mesh sync.
+    /// Every distinct ACTIVE relay across all circles — for mesh sync / the active transport set.
     func allRelays() -> [String] {
         var seen: [String] = []
-        for list in relaysByCircle.values { for h in list where !seen.contains(h) { seen.append(h) } }
-        if let def = defaultNodeHex, !def.isEmpty, !seen.contains(def) { seen.append(def) }
+        for list in relaysByCircle.values { for h in list where isActive(h) && !seen.contains(h) { seen.append(h) } }
+        if let def = defaultNodeHex, !def.isEmpty, isActive(def), !seen.contains(def) { seen.append(def) }
         return seen
+    }
+
+    /// Every configured relay (active + inactive), sorted active-first then by name — for the Relays screen.
+    func allEntries() -> [RelayEntry] {
+        entries.values.sorted { a, b in
+            if a.active != b.active { return a.active && !b.active }
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        }
     }
 }
 
@@ -396,6 +548,7 @@ enum RelayClients {
             return nil
         }
         RelayHealth.shared.recordSuccess(nodeHex)
+        RelayMailboxStore.shared.markSeen(nodeHex)
         HavenLog.relay("dial relay \(nodeHex.prefix(10)) → ok")
         cache[nodeHex] = c
         return c

@@ -137,6 +137,7 @@ final class FeedStore: ObservableObject {
         bringOnline(seed: seed)
         startMailboxPolling()
         ingestPushInbox()   // drain any events delivered inline by push while we were away
+        RelayMailboxStore.shared.purgeStale()   // erase relays inactive AND unseen > 7 days (config else survives)
         RelayHost.shared.startIfEnabled()   // resume serving as the circle's relay if toggled on
         PresignStore.shared.remintAllOwned()   // refresh any S3 pre-signed pools I own
         backfillMailbox(circleIds: circles.map(\.id))   // ensure already-posted content is in the mailbox
@@ -570,6 +571,7 @@ final class FeedStore: ObservableObject {
                 // going every tick until nothing is missing, so posts never stay fragmented.
                 self?.requestMissingMedia()
                 RelayHost.shared.meshSyncTick()   // if we host a relay, pull from sibling relays
+                RelayMailboxStore.shared.purgeStale()   // GC relays that have been inactive + unseen > 7 days
             }
         }
     }
@@ -1232,6 +1234,29 @@ final class FeedStore: ObservableObject {
         RelayMailboxStore.shared.forget(nodeHex: nodeHex)
     }
 
+    /// Add an S3 bucket as a (store-and-forward) relay: persist its creds via SharedMailboxStore
+    /// (secret → Keychain), record a RelayEntry(isS3:true) so it shows in the Relays list, and
+    /// associate it with the given circles. Returns the synthetic relay id.
+    @discardableResult
+    func addS3Relay(_ cfg: S3Config, name: String, circleIds: [String], setDefault: Bool) -> String {
+        SharedMailboxStore.shared.set(cfg)
+        let hex = "s3:\(cfg.bucket)"
+        let targets = circleIds.isEmpty ? circles.map(\.id) : circleIds
+        for cid in targets { RelayMailboxStore.shared.add(circleId: cid, nodeHex: hex, name: name, isS3: true) }
+        if setDefault { RelayMailboxStore.shared.setDefault(hex) }
+        backfillMailbox(circleIds: targets)
+        Task { await BackgroundUploader.shared.flush() }
+        pollMailboxNow()
+        return hex
+    }
+
+    /// Apply a single relay (Haven or S3) to exactly one circle's override set, replacing nothing else.
+    func setCircleRelay(_ nodeHex: String, circleId: String, on: Bool) {
+        if on { RelayMailboxStore.shared.add(circleId: circleId, nodeHex: nodeHex, isS3: nodeHex.hasPrefix("s3:")) }
+        else { RelayMailboxStore.shared.remove(circleId: circleId, nodeHex: nodeHex) }
+        pollMailboxNow()
+    }
+
     /// Re-upload every post I've ALREADY authored in these circles to their mailbox. Fixes the
     /// case where you set up a relay/bucket *after* posting — those posts never reached the
     /// mailbox, so offline members couldn't get them. Idempotent (content-addressed keys).
@@ -1277,10 +1302,18 @@ final class FeedStore: ObservableObject {
         guard !circleId.isEmpty, !sealed.isEmpty,
               let data = social.openCircleMedia(circleId: circleId, sealed: sealed),
               let nodeHex = String(data: data, encoding: .utf8), nodeHex.count == 64 else { return }
-        guard !RelayMailboxStore.shared.isForgotten(nodeHex) else { return }   // user forgot it — don't auto-resurrect
+        // A contact (often your OWN other device) RE-ANNOUNCED their circle relay. Previously a relay the
+        // user had deactivated/forgot stayed in `suppressed` and was permanently ignored here — so deleting
+        // your Mac's relay on your iPhone meant it never came back even when the Mac re-announced it. Now a
+        // deliberate re-announce REACTIVATES the existing inactive entry (clears suppression + active=true)
+        // rather than being dropped, so own-device / re-announced relays can resurface.
+        let lower = nodeHex.lowercased()
+        if RelayMailboxStore.shared.isForgotten(lower) || !RelayMailboxStore.shared.isActive(lower) {
+            RelayMailboxStore.shared.reactivate(lower)
+        }
         // A contact advertised their circle relay → ADD it to our redundant set for this circle, so
         // members automatically pool relays (more redundancy, no manual setup) — desktop parity.
-        let wasNew = !RelayMailboxStore.shared.relays(forCircle: circleId).contains(nodeHex.lowercased())
+        let wasNew = !RelayMailboxStore.shared.relays(forCircle: circleId).contains(lower)
         RelayMailboxStore.shared.add(circleId: circleId, nodeHex: nodeHex)
         if wasNew {
             backfillMailbox(circleIds: [circleId])        // mirror my past posts to the new relay…

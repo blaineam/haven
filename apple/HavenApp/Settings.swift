@@ -150,8 +150,13 @@ struct SettingsView: View {
                 footer: {
                     Text("Automatically remove posts older than this from your feed. A sender can set a shorter limit on their own posts — the shorter one always wins. Per-circle override available.")
                 }
-                // Storage/relay is configured per circle (Circle ▸ Settings ▸ Storage) so each
-                // circle picks its own mailbox — there's intentionally no global Storage entry here.
+                Section {
+                    NavigationLink { RelaysView() } label: {
+                        Label("Relays", systemImage: "antenna.radiowaves.left.and.right")
+                    }
+                } footer: {
+                    Text("Manage where your circles' sealed posts & media live so they reach people who were offline. Add unlimited relays (a Haven node or your own S3 bucket), pick a default for every circle, and activate or deactivate each. Each circle can override the default in its own settings.")
+                }
                 Section {
                     NavigationLink { BlockedPeopleView() } label: {
                         Label("Blocked people", systemImage: "hand.raised.fill")

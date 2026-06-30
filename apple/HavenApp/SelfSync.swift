@@ -393,7 +393,7 @@ final class SelfSyncCoordinator {
         switch t {
         case .relay(let node):
             guard let c = await RelayClients.client(node) else { return false }
-            do { try await c.put(key: key, data: data); RelayHealth.shared.recordSuccess(node); return true }
+            do { try await c.put(key: key, data: data); RelayHealth.shared.recordSuccess(node); RelayMailboxStore.shared.markSeen(node); return true }
             catch { RelayHealth.shared.recordFailure(node); return false }
         case .s3(let c):
             do { try await c.putObject(key: key, data: data); return true } catch { return false }

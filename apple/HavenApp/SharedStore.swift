@@ -88,8 +88,8 @@ enum SharedStore {
                     _ = RelayHost.shared.localPut(key(ref), sealed); continue
                 }
                 guard let c = await RelayClients.client(node) else { continue }
-                if await c.has(key: key(ref)) { RelayHealth.shared.recordSuccess(node); continue }
-                do { try await c.put(key: key(ref), data: sealed); RelayHealth.shared.recordSuccess(node) }
+                if await c.has(key: key(ref)) { RelayHealth.shared.recordSuccess(node); RelayMailboxStore.shared.markSeen(node); continue }
+                do { try await c.put(key: key(ref), data: sealed); RelayHealth.shared.recordSuccess(node); RelayMailboxStore.shared.markSeen(node) }
                 catch { RelayHealth.shared.recordFailure(node); RelayClients.forget(node) }
             }
             return
@@ -113,7 +113,7 @@ enum SharedStore {
                     continue
                 }
                 guard let c = await RelayClients.client(node) else { continue }
-                if let s = await c.get(key: key(ref)) { RelayHealth.shared.recordSuccess(node); sealed = s; src = "dial:\(node.prefix(8))"; break outer }
+                if let s = await c.get(key: key(ref)) { RelayHealth.shared.recordSuccess(node); RelayMailboxStore.shared.markSeen(node); sealed = s; src = "dial:\(node.prefix(8))"; break outer }
             }
         }
         if sealed == nil, let s3 = mailboxClient() { sealed = try? await s3.getObject(key: key(ref)); if sealed != nil { src = "s3" } }
@@ -167,8 +167,8 @@ enum SharedStore {
                     landed = true; continue
                 }
                 guard let c = await RelayClients.client(node) else { continue }
-                if await c.has(key: key) { RelayHealth.shared.recordSuccess(node); landed = true; continue }
-                do { try await c.put(key: key, data: env); RelayHealth.shared.recordSuccess(node); landed = true }
+                if await c.has(key: key) { RelayHealth.shared.recordSuccess(node); RelayMailboxStore.shared.markSeen(node); landed = true; continue }
+                do { try await c.put(key: key, data: env); RelayHealth.shared.recordSuccess(node); RelayMailboxStore.shared.markSeen(node); landed = true }
                 catch { RelayHealth.shared.recordFailure(node); RelayClients.forget(node) }
             }
             if landed { seenMailbox.insert(key); FeedStore.shared.markRelay(true); return true }
@@ -218,6 +218,7 @@ enum SharedStore {
                     guard let c = await RelayClients.client(node) else { continue }
                     let keys = await c.list(prefix: prefix)
                     RelayHealth.shared.recordSuccess(node)
+                    RelayMailboxStore.shared.markSeen(node)
                     for key in keys where !seenMailbox.contains(key) {
                         seenMailbox.insert(key)
                         if let data = await c.get(key: key) { out.append((cid, data)) }
