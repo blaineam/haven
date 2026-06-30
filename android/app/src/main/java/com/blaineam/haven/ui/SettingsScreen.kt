@@ -66,6 +66,7 @@ fun SettingsScreen(onBack: () -> Unit) {
     var section by remember { mutableStateOf<String?>(null) }
     val sectionTitle = when (section) {
         "privacy" -> "Privacy & content"; "connection" -> "Connection & relay"
+        "relays" -> "Relays"
         "blocked" -> "Blocked people"; "diagnostics" -> "Security & diagnostics"
         "identity" -> "Identity & devices"; else -> "Settings"
     }
@@ -88,7 +89,8 @@ fun SettingsScreen(onBack: () -> Unit) {
             // ── Top-level category list (iOS-style) ──
             if (section == null) {
                 SettingsCategory("Privacy & content", "Auto-delete, save to Photos, optimize") { section = "privacy" }
-                SettingsCategory("Connection & relay", "Relay, background, nearby, storage") { section = "connection" }
+                SettingsCategory("Relays", "Where your circles' sealed posts live for offline delivery") { section = "relays" }
+                SettingsCategory("Connection & relay", "Background, nearby, storage") { section = "connection" }
                 SettingsCategory("Identity & devices", "Your id, move/restore your account, start over") { section = "identity" }
                 SettingsCategory("Security & diagnostics", "Safety words, privacy check, encryption") { section = "diagnostics" }
                 SettingsCategory("Blocked people", if (HavenNet.blocked.isEmpty()) "No one blocked" else "${HavenNet.blocked.size} blocked") { section = "blocked" }
@@ -131,86 +133,12 @@ fun SettingsScreen(onBack: () -> Unit) {
             }
             }  // end Privacy
 
-            if (section == "connection") {
-            Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
-                Text("Circle relay", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    if (HavenNet.hasRelay()) "Using a circle relay — posts deliver even when you're not both online."
-                    else "Paste a relay node id (from your Mac/iPhone or a haven-relay daemon) so posts deliver when peers are offline.",
-                    color = HavenTheme.textSecondary, fontSize = 12.sp,
-                )
-
-                // Host the relay on THIS device.
-                Spacer(Modifier.height(12.dp))
-                val hosting by HavenNet.hosting
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Run the relay on this phone", color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                        Text("This device serves the circle's mailbox so everyone stays in sync — no cloud.",
-                            color = HavenTheme.textSecondary, fontSize = 11.sp)
-                    }
-                    androidx.compose.material3.Switch(
-                        checked = hosting,
-                        onCheckedChange = { on -> if (on) HavenNet.startHosting() else HavenNet.stopHosting() },
-                        colors = androidx.compose.material3.SwitchDefaults.colors(
-                            checkedThumbColor = Color.White, checkedTrackColor = HavenTheme.pink),
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-
-                // Adopted relays, with reachability + remove. Posts mirror to ALL of these and read
-                // falls back across them, so adding several gives graceful redundancy.
-                val relaysVersion by HavenNet.relaysVersion
-                val relays = remember(relaysVersion) { HavenNet.relaysDetail() }
-                if (relays.isNotEmpty()) {
-                    Spacer(Modifier.height(8.dp))
-                    Text("Relays (${relays.size})", color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                    Spacer(Modifier.height(4.dp))
-                    relays.forEach { (hex, reachable, hosted) ->
-                        Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Box(Modifier.size(8.dp).clip(CircleShape).background(
-                                if (reachable) Color(0xFF34C759) else Color(0xFFFF9500)))
-                            Spacer(Modifier.size(8.dp))
-                            Column(Modifier.weight(1f)) {
-                                Text(hex.take(16) + "…", color = Color.White, fontSize = 13.sp)
-                                Text(
-                                    when {
-                                        hosted -> "Hosted on this phone"
-                                        reachable -> "Reachable"
-                                        else -> "Unreachable — backing off"
-                                    },
-                                    color = HavenTheme.textSecondary, fontSize = 11.sp,
-                                )
-                            }
-                            if (!hosted) {
-                                Text("Remove", color = HavenTheme.textSecondary, fontSize = 12.sp,
-                                    modifier = Modifier.clip(RoundedCornerShape(8.dp))
-                                        .clickable { HavenNet.forgetRelay(hex) }.padding(6.dp))
-                            }
-                        }
-                    }
-                }
-
-                Spacer(Modifier.height(10.dp))
-                var relayInput by remember { mutableStateOf("") }
-                androidx.compose.material3.OutlinedTextField(
-                    value = relayInput, onValueChange = { relayInput = it.trim() },
-                    label = { Text("Relay node id (64 hex)") }, singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(12.dp),
-                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = HavenTheme.pink, cursorColor = HavenTheme.pink, focusedLabelColor = HavenTheme.pink),
-                )
-                Spacer(Modifier.height(8.dp))
-                Text("Add this relay", color = if (relayInput.length == 64) HavenTheme.pink else HavenTheme.textSecondary,
-                    fontWeight = FontWeight.SemiBold,
-                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(enabled = relayInput.length == 64) {
-                        HavenNet.adoptRelay(relayInput); relayInput = ""
-                    }.padding(8.dp))
+            // ── Relays hub (Settings ▸ Relays) — manage every configured relay ──
+            if (section == "relays") {
+                RelaysHubCard(context)
             }
 
-            Spacer(Modifier.height(16.dp))
+            if (section == "connection") {
             StorageSyncCard(context)
 
             Spacer(Modifier.height(16.dp))
@@ -492,6 +420,257 @@ private fun StorageSyncCard(context: android.content.Context) {
             }
         }
     }
+}
+
+/**
+ * The Relays hub (Settings ▸ Relays): one place to manage EVERY configured relay (active + inactive),
+ * add unlimited new ones (a Haven relay node, or an S3 bucket as store-and-forward), pick the default
+ * every future unconfigured circle inherits, and deactivate / reactivate / rename / delete-now each.
+ * Removing a relay DEACTIVATES it (config survives) so it can come back; "Delete" erases it for good.
+ * Parity with iOS `RelaysView` + the deactivate-not-erase model in HavenNet.
+ */
+@Composable
+private fun RelaysHubCard(context: android.content.Context) {
+    val relaysVersion by HavenNet.relaysVersion
+    val entries = remember(relaysVersion) { HavenNet.allRelayEntries() }
+    val default = remember(relaysVersion) { HavenNet.defaultRelay() }
+    val detail = remember(relaysVersion) { HavenNet.relaysDetail().associate { it.first to (it.second to it.third) } }
+    var showAdd by remember { mutableStateOf(false) }
+    var renaming by remember { mutableStateOf<String?>(null) }
+    var renameText by remember { mutableStateOf("") }
+
+    // This-device relay (the zero-setup path that makes this phone a relay).
+    Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
+        Text("This device", color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+        Spacer(Modifier.height(4.dp))
+        Text("Turn this phone into a relay — sealed (unreadable) posts and media live here and re-serve to your circles when someone's been offline. Serves while Haven is open (or in the background if Real-time connection is on).",
+            color = HavenTheme.textSecondary, fontSize = 12.sp)
+        Spacer(Modifier.height(10.dp))
+        val hosting by HavenNet.hosting
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text("Be a relay on this phone", color = Color.White, fontSize = 14.sp, modifier = Modifier.weight(1f))
+            androidx.compose.material3.Switch(
+                checked = hosting,
+                onCheckedChange = { on -> if (on) HavenNet.startHosting() else HavenNet.stopHosting() },
+                colors = androidx.compose.material3.SwitchDefaults.colors(
+                    checkedThumbColor = Color.White, checkedTrackColor = HavenTheme.pink),
+            )
+        }
+    }
+
+    Spacer(Modifier.height(16.dp))
+
+    // Configured relays (active + inactive).
+    Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
+        Text(if (entries.isEmpty()) "Configured relays" else "Configured relays (${entries.size})",
+            color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+        Spacer(Modifier.height(4.dp))
+        Text("The default relay (★) is inherited by every circle that hasn't picked its own. Removing a relay DEACTIVATES it — its name and circle settings survive so you can turn it back on later. An inactive relay unseen for a week is cleaned up automatically.",
+            color = HavenTheme.textSecondary, fontSize = 12.sp)
+        Spacer(Modifier.height(10.dp))
+
+        if (entries.isEmpty()) {
+            Text("No relays configured yet. Add one below, or flip the toggle above to use this device.",
+                color = HavenTheme.textSecondary, fontSize = 13.sp)
+        } else {
+            entries.forEach { e ->
+                val (reachable, hosted) = detail[e.hex] ?: (true to false)
+                RelayRow(
+                    entry = e, isDefault = (default == e.hex), reachable = reachable, hosted = hosted,
+                    onDeactivate = { HavenNet.forgetRelay(e.hex) },
+                    onReactivate = { HavenNet.reactivateRelay(e.hex) },
+                    onSetDefault = { HavenNet.setDefaultRelay(if (default == e.hex) null else e.hex) },
+                    onRename = { renaming = e.hex; renameText = e.name },
+                    onDelete = { HavenNet.eraseRelayNow(e.hex) },
+                )
+            }
+        }
+    }
+
+    Spacer(Modifier.height(16.dp))
+
+    // Add relay (Haven node or S3 bucket).
+    Column(Modifier.fillMaxWidth().havenCard().padding(16.dp)) {
+        Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { showAdd = !showAdd }.padding(vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically) {
+            Text("Add relay", color = HavenTheme.pink, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, modifier = Modifier.weight(1f))
+            Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, null, tint = HavenTheme.pink)
+        }
+        if (!showAdd) {
+            Spacer(Modifier.height(4.dp))
+            Text("Add a Haven relay by node id, or bring your own S3 bucket as a store-and-forward relay.",
+                color = HavenTheme.textSecondary, fontSize = 12.sp)
+        } else {
+            Spacer(Modifier.height(10.dp))
+            AddRelayForm(context) { showAdd = false }
+        }
+    }
+
+    if (renaming != null) {
+        AlertDialog(
+            onDismissRequest = { renaming = null }, containerColor = HavenTheme.card,
+            title = { Text("Rename relay", color = Color.White) },
+            text = {
+                androidx.compose.material3.OutlinedTextField(
+                    value = renameText, onValueChange = { renameText = it }, singleLine = true,
+                    label = { Text("Name") }, modifier = Modifier.fillMaxWidth(),
+                    colors = androidx.compose.material3.OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = HavenTheme.pink, cursorColor = HavenTheme.pink, focusedLabelColor = HavenTheme.pink),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { renaming?.let { HavenNet.renameRelay(it, renameText) }; renaming = null }) {
+                    Text("Save", color = HavenTheme.pink)
+                }
+            },
+            dismissButton = { TextButton(onClick = { renaming = null }) { Text("Cancel", color = HavenTheme.textSecondary) } },
+        )
+    }
+}
+
+/** One relay row in the hub: status + labeled action buttons (deactivate/reactivate, default) + an
+ *  overflow menu (rename / delete). Properly sized tappable controls — no tiny icon-only taps. */
+@Composable
+private fun RelayRow(
+    entry: HavenNet.RelayEntry, isDefault: Boolean, reachable: Boolean, hosted: Boolean,
+    onDeactivate: () -> Unit, onReactivate: () -> Unit, onSetDefault: () -> Unit,
+    onRename: () -> Unit, onDelete: () -> Unit,
+) {
+    var menu by remember { mutableStateOf(false) }
+    val dotColor = when {
+        !entry.active -> HavenTheme.textSecondary
+        entry.isS3 -> Color(0xFF3B82F6)
+        reachable -> Color(0xFF34C759)
+        else -> Color(0xFFFF9500)
+    }
+    val status = when {
+        !entry.active -> "Deactivated — config kept"
+        entry.isS3 -> "S3 bucket · store-and-forward"
+        hosted -> "This phone · ${if (reachable) "reachable" else "starting"}"
+        reachable -> "Reachable"
+        else -> "Unreachable — retrying"
+    }
+    Column(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(9.dp).clip(CircleShape).background(dotColor))
+            Spacer(Modifier.size(10.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(entry.name, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Medium, maxLines = 1)
+                    if (isDefault) { Spacer(Modifier.size(6.dp)); Text("★", color = HavenTheme.pink, fontSize = 13.sp) }
+                }
+                Text(status, color = HavenTheme.textSecondary, fontSize = 11.sp)
+                Text(if (entry.isS3) entry.hex else entry.hex.take(16) + "…",
+                    color = HavenTheme.textSecondary, fontSize = 11.sp,
+                    fontFamily = androidx.compose.ui.text.font.FontFamily.Monospace)
+            }
+            Box {
+                Text("⋯", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { menu = true }.padding(horizontal = 10.dp, vertical = 4.dp))
+                androidx.compose.material3.DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Rename") }, onClick = { menu = false; onRename() })
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text(if (isDefault) "Unset default" else "Make default") },
+                        onClick = { menu = false; onSetDefault() })
+                    androidx.compose.material3.DropdownMenuItem(
+                        text = { Text("Delete now", color = Color(0xFFF87171)) }, onClick = { menu = false; onDelete() })
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (entry.active) {
+                RelayActionChip("Deactivate", HavenTheme.textSecondary, onDeactivate)
+            } else {
+                RelayActionChip("Reactivate", Color(0xFF34C759), onReactivate)
+            }
+            if (!isDefault) RelayActionChip("Set default", HavenTheme.pink, onSetDefault)
+        }
+    }
+}
+
+@Composable
+private fun RelayActionChip(label: String, color: Color, onClick: () -> Unit) {
+    Text(label, color = color, fontSize = 13.sp, fontWeight = FontWeight.Medium,
+        modifier = Modifier.clip(RoundedCornerShape(8.dp))
+            .border(1.dp, color.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+            .clickable { onClick() }.padding(horizontal = 12.dp, vertical = 8.dp))
+}
+
+/** The "Add relay" form: a Haven relay (paste a node id) OR an S3 bucket (with a store-and-forward
+ *  disclaimer). The S3 secret goes to StorageStore (device-local creds), never the relays prefs. */
+@Composable
+private fun AddRelayForm(context: android.content.Context, onDone: () -> Unit) {
+    var isS3 by remember { mutableStateOf(false) }
+    var name by remember { mutableStateOf("") }
+    var makeDefault by remember { mutableStateOf(true) }
+    var nodeInput by remember { mutableStateOf("") }
+    var endpoint by remember { mutableStateOf("") }
+    var region by remember { mutableStateOf("us-east-1") }
+    var bucket by remember { mutableStateOf("") }
+    var accessKey by remember { mutableStateOf("") }
+    var secret by remember { mutableStateOf("") }
+
+    val havenValid = nodeInput.trim().length == 64 && nodeInput.trim().all { it.isDigit() || it.lowercaseChar() in 'a'..'f' }
+    val s3Valid = endpoint.isNotBlank() && bucket.isNotBlank() && accessKey.isNotBlank() && secret.isNotBlank()
+
+    Column(Modifier.fillMaxWidth()) {
+        // Type segmented toggle.
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RelayTypeSeg("Haven relay", !isS3) { isS3 = false }
+            RelayTypeSeg("S3 bucket", isS3) { isS3 = true }
+        }
+        Spacer(Modifier.height(10.dp))
+        StorageField("Name (optional)", name) { name = it }
+        Spacer(Modifier.height(8.dp))
+        SettingSwitch("Make the default for all circles", makeDefault) { makeDefault = it }
+        Spacer(Modifier.height(8.dp))
+
+        if (!isS3) {
+            StorageField("Relay node id (64 hex)", nodeInput) { nodeInput = it.trim() }
+            Spacer(Modifier.height(6.dp))
+            Text("Paste the node id printed by a haven-relay daemon, or another device that's acting as a relay. Connects over iroh — a live P2P relay.",
+                color = HavenTheme.textSecondary, fontSize = 11.sp)
+        } else {
+            StorageField("Endpoint (e.g. https://s3.us-east-1.amazonaws.com)", endpoint) { endpoint = it }
+            Spacer(Modifier.height(8.dp))
+            StorageField("Region", region) { region = it }
+            Spacer(Modifier.height(8.dp))
+            StorageField("Bucket", bucket) { bucket = it }
+            Spacer(Modifier.height(8.dp))
+            StorageField("Access key id", accessKey) { accessKey = it }
+            Spacer(Modifier.height(8.dp))
+            StorageField("Secret access key", secret, secret = true) { secret = it }
+            Spacer(Modifier.height(6.dp))
+            Text("ⓘ Store-and-forward only: an S3 bucket holds sealed posts & media for offline delivery — it is NOT a live P2P relay (no realtime fan-out). Your secret stays in this device's secure storage, never on any server.",
+                color = Color(0xFFFF9500), fontSize = 11.sp)
+        }
+
+        Spacer(Modifier.height(12.dp))
+        val valid = if (isS3) s3Valid else havenValid
+        Text("Add relay", color = if (valid) HavenTheme.pink else HavenTheme.textSecondary,
+            fontWeight = FontWeight.SemiBold, fontSize = 14.sp,
+            modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable(enabled = valid) {
+                if (isS3) {
+                    val cfg = StorageStore.Config(endpoint.trim(),
+                        region.ifBlank { "us-east-1" }.trim(), bucket.trim(), accessKey.trim(), secret)
+                    HavenNet.addS3Relay(cfg, name.ifBlank { "S3 · ${bucket.trim()}" }, makeDefault)
+                } else {
+                    HavenNet.adoptRelay(nodeInput.trim().lowercase(), name.ifBlank { null }, makeDefault)
+                }
+                onDone()
+            }.padding(horizontal = 12.dp, vertical = 8.dp))
+    }
+}
+
+@Composable
+private fun RelayTypeSeg(text: String, selected: Boolean, onClick: () -> Unit) {
+    Text(text, color = if (selected) Color.White else HavenTheme.textSecondary,
+        fontSize = 13.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+        modifier = Modifier.clip(RoundedCornerShape(8.dp))
+            .background(if (selected) HavenTheme.pink.copy(alpha = 0.28f) else Color.White.copy(alpha = 0.06f))
+            .clickable { onClick() }.padding(horizontal = 14.dp, vertical = 8.dp))
 }
 
 @Composable

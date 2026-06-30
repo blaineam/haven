@@ -440,6 +440,9 @@ private fun CircleManageSheet(circleId: String, onDismiss: () -> Unit) {
                     Text("Override the app-wide Photos / optimize / auto-delete defaults just for this circle.",
                         color = HavenTheme.textSecondary, fontSize = 11.sp)
                 }
+                // Per-circle relay OVERRIDE: pick which CONFIGURED relays this circle uses. Adding /
+                // removing relays lives under Settings ▸ Relays — not here.
+                CircleRelaySection(circleId)
                 Text("Members (${members.size})", color = HavenTheme.textSecondary, fontSize = 12.sp)
                 if (members.isEmpty()) {
                     Text("No one else yet — invite a friend to this circle.", color = HavenTheme.textSecondary, fontSize = 13.sp)
@@ -492,6 +495,45 @@ private fun OverrideSeg(text: String, selected: Boolean, onClick: () -> Unit) {
             .background(if (selected) HavenTheme.pink.copy(alpha = 0.28f) else Color.Transparent)
             .clickable { onClick() }.padding(horizontal = 8.dp, vertical = 4.dp),
     )
+}
+
+/**
+ * Per-circle relay OVERRIDE: toggle which of your CONFIGURED relays this circle uses. Adding /
+ * removing / configuring relays lives under Settings ▸ Relays — this only SELECTS among the ones you
+ * already configured. The all-circles default always applies (shown but locked). Parity with iOS
+ * `CircleRelayOverrideSection`, wired to HavenNet's per-circle relay associations.
+ */
+@Composable
+private fun CircleRelaySection(circleId: String) {
+    val relaysVersion by HavenNet.relaysVersion
+    val configured = remember(relaysVersion) { HavenNet.allRelayEntries().filter { it.active } }
+    val explicit = remember(relaysVersion, circleId) { HavenNet.explicitRelaysForCircle(circleId).toSet() }
+    val default = remember(relaysVersion) { HavenNet.defaultRelay() }
+
+    Text("Relays for this circle", color = HavenTheme.textSecondary, fontSize = 12.sp)
+    if (configured.isEmpty()) {
+        Text("No relays configured. Add one under Settings ▸ Relays so this circle's posts reach people who were offline.",
+            color = HavenTheme.textSecondary, fontSize = 11.sp)
+        return
+    }
+    configured.forEach { e ->
+        val isDefault = default == e.hex
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(e.name, color = Color.White, fontSize = 13.sp, maxLines = 1)
+                if (isDefault) Text("Default — inherited by every circle", color = HavenTheme.textSecondary, fontSize = 10.sp)
+            }
+            androidx.compose.material3.Switch(
+                checked = explicit.contains(e.hex) || isDefault,
+                enabled = !isDefault,   // the default is always on; manage it under Settings ▸ Relays
+                onCheckedChange = { on -> HavenNet.setCircleRelay(circleId, e.hex, on) },
+                colors = androidx.compose.material3.SwitchDefaults.colors(
+                    checkedThumbColor = Color.White, checkedTrackColor = HavenTheme.pink),
+            )
+        }
+    }
+    Text("Choose which configured relays this circle uses. The default relay (if set) always applies — change it under Settings ▸ Relays.",
+        color = HavenTheme.textSecondary, fontSize = 11.sp)
 }
 
 /** Per-circle auto-delete override: Auto (inherit) / Keep forever / 1d / 1w / 30d / 1yr. */

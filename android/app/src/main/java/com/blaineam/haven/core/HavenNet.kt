@@ -66,9 +66,33 @@ object HavenNet : InboundListener {
     // every relay (redundancy) and read from all of them (graceful fallback if one is down) —
     // parity with the desktop `relays: HashMap<String, Vec<String>>`.
     private val relayNodes = HashMap<String, MutableList<String>>()
-    /** Relays the user explicitly FORGOT — auto-learn (frame-19 announce / SelfSync) must not resurrect
-     *  them, or Forget is a visible no-op. Cleared on explicit re-adoption. Mirrors iOS `suppressed`. */
+    /** Relays the user explicitly FORGOT/deactivated — auto-learn (frame-19 announce / SelfSync) must
+     *  not resurrect a *deactivated* relay passively, or Forget is a visible no-op. A deliberate
+     *  re-announce DOES reactivate it (handleRelayNode). Cleared on explicit re-adoption / reactivation.
+     *  Mirrors iOS `suppressed`. */
     private val suppressedRelays = mutableSetOf<String>()
+
+    /**
+     * One configured relay: a Haven relay node (isS3=false) or an S3 bucket transport (isS3=true).
+     * `hex` is the 64-char node id for a Haven relay, or a synthetic "s3:<bucket>" id for an S3 entry,
+     * so the same map can address both kinds. DEACTIVATE-NOT-ERASE: "removing" a relay flips `active`
+     * to false and keeps the config (name + which circles use it) so it can be reactivated without
+     * re-pasting. Only [purgeStaleRelays] erases — and only entries that are BOTH inactive AND unseen
+     * for > 7 days. Mirrors iOS `RelayEntry`/`RelayMailboxStore`.
+     */
+    data class RelayEntry(
+        val hex: String,
+        val name: String,
+        val active: Boolean,
+        val lastSeenMs: Long,
+        val isS3: Boolean,
+    )
+    /** Per-relay metadata records, keyed by hex. The config survives deactivation here. */
+    private val relayEntries = HashMap<String, RelayEntry>()
+    /** The all-circles default relay (every present + future circle inherits it). "" = none. */
+    private var defaultRelayHex: String = ""
+    /** Erase inactive+unseen relay entries after this long (parity with iOS staleAfterMs). */
+    private val RELAY_STALE_AFTER_MS = 7L * 24 * 3600 * 1000
     private val relayClients = HashMap<String, RelayClient>()
     private val relayMutex = Mutex()
     private val seenMailbox = HashSet<String>()
@@ -129,6 +153,7 @@ object HavenNet : InboundListener {
         loadContacts()
         loadBlocked()
         loadRelayNodes()
+        purgeStaleRelays()   // erase relays inactive AND unseen > 7 days (config else survives)
         // Restore the last-selected circle (if it still exists), so it survives relaunch.
         val savedCircle = prefs.getString("activeCircle", DEFAULT_CIRCLE) ?: DEFAULT_CIRCLE
         activeCircle.value = if (savedCircle == DEFAULT_CIRCLE ||
@@ -175,6 +200,8 @@ object HavenNet : InboundListener {
                 // Proactively push the media we hold to nearby own devices (the reliable own-device
                 // channel) so a sibling gets our photos without relying on request/response.
                 runCatching { pushOwnMediaNearby() }
+                // GC relays that have been inactive + unseen > 7 days (active-but-unreachable kept).
+                runCatching { purgeStaleRelays() }
             }
         }
     }
@@ -837,14 +864,25 @@ object HavenNet : InboundListener {
         val sealed = r.rest()
         if (circleId.isEmpty() || sealed.isEmpty()) return
         val open = runCatching { social.openCircleMedia(circleId, sealed) }.getOrNull() ?: return
-        val nodeHex = String(open, Charsets.UTF_8).trim()
+        val nodeHex = String(open, Charsets.UTF_8).trim().lowercase()
         if (nodeHex.length != 64) return
-        if (suppressedRelays.contains(nodeHex)) return   // user forgot it — don't auto-resurrect
+        // A contact (often your OWN other device) RE-ANNOUNCED their circle relay. Previously a relay
+        // the user had deactivated/forgot stayed in `suppressed` and was permanently ignored here — so
+        // deleting your Mac's relay on your phone meant it never came back even when the Mac re-announced
+        // it. Now a deliberate re-announce REACTIVATES the existing inactive entry (clears suppression +
+        // active=true) rather than being dropped, so own-device / re-announced relays can resurface.
+        if (suppressedRelays.contains(nodeHex) || !isRelayActive(nodeHex)) {
+            suppressedRelays.remove(nodeHex)
+            ensureRelayEntry(nodeHex, activate = true)
+            relayHealth.remove(nodeHex)
+        }
         // A contact advertised their circle relay → ADD it to our redundant set for this circle,
         // so members automatically pool relays (more redundancy, no manual setup). Append, never
         // replace — parity with desktop handle_relay_node.
         val list = relayNodes.getOrPut(circleId) { mutableListOf() }
-        if (list.contains(nodeHex)) return
+        ensureRelayEntry(nodeHex, isS3 = false, activate = true)
+        scope.launch(Dispatchers.Main) { bumpRelays() }   // recompose the Relays hub off the inbound thread
+        if (list.contains(nodeHex)) { saveRelayNodes(); return }
         list.add(nodeHex)
         saveRelayNodes()
         Log.i(TAG, "learned relay for $circleId: ${nodeHex.take(8)}")
@@ -872,11 +910,14 @@ object HavenNet : InboundListener {
     /**
      * Adopt a relay node for all circles (Settings paste) — ADDED to the redundant set, not
      * replacing existing relays — + tell contacts via frame 19. Adopt several for redundancy.
+     * This is the EXPLICIT path, so it CLEARS any suppression AND reactivates the entry.
      */
-    fun adoptRelay(nodeHex: String) {
+    fun adoptRelay(nodeHex: String, name: String? = null, setDefault: Boolean = false) {
         val hex = nodeHex.trim().lowercase()
         if (hex.length != 64) return
         suppressedRelays.remove(hex)   // explicit adoption overrides a prior Forget
+        ensureRelayEntry(hex, name = name, isS3 = false, activate = true)
+        if (setDefault) defaultRelayHex = hex
         scope.launch {
             for (c in social.circles()) {
                 val cid = c.id
@@ -896,13 +937,45 @@ object HavenNet : InboundListener {
         }
     }
 
-    /** Drop a relay from every circle (and forget its cached connection + health). */
-    fun forgetRelay(nodeHex: String) {
-        val hex = nodeHex.trim().lowercase()
+    /**
+     * Add an S3 bucket as a (store-and-forward) relay: persist its creds via [StorageStore], record a
+     * RelayEntry(isS3=true) so it shows in the Relays list, and associate it with every circle. The
+     * secret lives in StorageStore (the device-local creds store), never in the relays prefs. Mirrors
+     * iOS `addS3Relay` — represented as a synthetic "s3:<bucket>" relay id.
+     */
+    fun addS3Relay(config: StorageStore.Config, name: String?, setDefault: Boolean) {
+        if (!config.isConfigured) return
+        StorageStore.save(appContext, config)
+        val hex = "s3:${config.bucket.trim()}"
+        suppressedRelays.remove(hex)
+        ensureRelayEntry(hex, name = name, isS3 = true, activate = true)
+        if (setDefault) defaultRelayHex = hex
         scope.launch {
-            for (list in relayNodes.values) list.removeAll { it == hex }
-            relayNodes.entries.removeAll { it.value.isEmpty() }
-            suppressedRelays.add(hex)   // tombstone so auto-learn can't resurrect it
+            for (c in social.circles()) {
+                val list = relayNodes.getOrPut(c.id) { mutableListOf() }
+                if (!list.contains(hex)) list.add(hex)
+                backfillMailbox(c.id)
+            }
+            saveRelayNodes()
+            withContext(Dispatchers.Main) { bumpRelays() }
+            pollMailbox()
+        }
+    }
+
+    /**
+     * DEACTIVATE a relay across EVERY circle (non-destructive): flip active=false, KEEP its name +
+     * circle associations, suppress passive auto-relearn while inactive, and drop its cached
+     * connection + health. The config survives so it can be reactivated later. Mirrors iOS `forget`.
+     */
+    fun forgetRelay(nodeHex: String) {
+        val hex = if (nodeHex.startsWith("s3:")) nodeHex else nodeHex.trim().lowercase()
+        scope.launch {
+            val e = relayEntries[hex]
+            relayEntries[hex] = if (e != null) e.copy(active = false)
+                else RelayEntry(hex, shortRelayName(hex), false, relayNow(), hex.startsWith("s3:"))
+            // Keep relayNodes + the default intact — only the active flag changes. relaysFor() already
+            // filters inactive entries out, so it stops being dialed/served immediately.
+            suppressedRelays.add(hex)   // tombstone so passive auto-learn can't resurrect it
             saveRelayNodes()
             relayMutex.withLock {
                 runCatching { relayClients.remove(hex)?.close() }
@@ -912,21 +985,157 @@ object HavenNet : InboundListener {
         }
     }
 
+    /** Reactivate a deactivated relay: flip active=true + clear its suppression so it's dialed again. */
+    fun reactivateRelay(nodeHex: String) {
+        val hex = if (nodeHex.startsWith("s3:")) nodeHex else nodeHex.trim().lowercase()
+        suppressedRelays.remove(hex)
+        ensureRelayEntry(hex, activate = true)
+        relayHealth.remove(hex)   // clear stale backoff so it's retried immediately
+        saveRelayNodes()
+        bumpRelays()
+    }
+
+    /** ERASE a relay for good — its associations across every circle, its entry, the default, caches. */
+    fun eraseRelayNow(nodeHex: String) {
+        val hex = if (nodeHex.startsWith("s3:")) nodeHex else nodeHex.trim().lowercase()
+        scope.launch {
+            for (list in relayNodes.values) list.removeAll { it == hex }
+            relayNodes.entries.removeAll { it.value.isEmpty() }
+            if (defaultRelayHex == hex) defaultRelayHex = ""
+            relayEntries.remove(hex)
+            suppressedRelays.add(hex)
+            saveRelayNodes()
+            relayMutex.withLock {
+                runCatching { relayClients.remove(hex)?.close() }
+                relayHealth.remove(hex)
+            }
+            withContext(Dispatchers.Main) { bumpRelays() }
+        }
+    }
+
+    /** Rename a relay (user-facing label only). */
+    fun renameRelay(nodeHex: String, name: String) {
+        val hex = if (nodeHex.startsWith("s3:")) nodeHex else nodeHex.trim().lowercase()
+        val trimmed = name.trim()
+        val e = relayEntries[hex] ?: return
+        if (trimmed.isEmpty()) return
+        relayEntries[hex] = e.copy(name = trimmed)
+        saveRelayNodes(); bumpRelays()
+    }
+
+    /** Pick a relay as the all-circles default (or null to clear it). */
+    fun setDefaultRelay(nodeHex: String?) {
+        val hex = nodeHex?.let { if (it.startsWith("s3:")) it else it.trim().lowercase() }
+        if (hex != null) ensureRelayEntry(hex, activate = true)
+        defaultRelayHex = hex ?: ""
+        saveRelayNodes(); bumpRelays()
+    }
+
+    /** Toggle whether a single configured relay applies to one circle (per-circle override). */
+    fun setCircleRelay(circleId: String, nodeHex: String, on: Boolean) {
+        val hex = if (nodeHex.startsWith("s3:")) nodeHex else nodeHex.trim().lowercase()
+        if (on) {
+            val list = relayNodes.getOrPut(circleId) { mutableListOf() }
+            if (!list.contains(hex)) list.add(hex)
+        } else {
+            relayNodes[circleId]?.removeAll { it == hex }
+            if (relayNodes[circleId]?.isEmpty() == true) relayNodes.remove(circleId)
+        }
+        saveRelayNodes(); bumpRelays()
+        scope.launch { if (on) backfillMailbox(circleId); pollMailbox() }
+    }
+
+    /** The relays EXPLICITLY associated with this circle (no default fallback, INCLUDING inactive). */
+    fun explicitRelaysForCircle(circleId: String): List<String> = relayNodes[circleId]?.toList() ?: emptyList()
+
+    // ---- RelayEntry bookkeeping (deactivate-not-erase model) ----
+
+    /** Epoch-ms as a Long for relay bookkeeping (the top-level nowMs() returns ULong for the FFI). */
+    private fun relayNow() = System.currentTimeMillis()
+
+    private fun shortRelayName(hex: String): String =
+        if (hex.startsWith("s3:")) "S3 · " + hex.removePrefix("s3:").take(16)
+        else "Relay · " + hex.take(8) + "…"
+
+    /** True when a relay is recorded + currently active. Unknown hexes are treated active (nothing breaks). */
+    fun isRelayActive(hex: String): Boolean = relayEntries[hex]?.active ?: true
+
+    /** Create-or-update a RelayEntry. `activate` flips it on; lastSeen is stamped now on first create. */
+    private fun ensureRelayEntry(hex: String, name: String? = null, isS3: Boolean = false, activate: Boolean = false) {
+        val e = relayEntries[hex]
+        relayEntries[hex] = if (e != null) {
+            e.copy(
+                name = if (!name.isNullOrBlank()) name else e.name,
+                active = if (activate) true else e.active,
+            )
+        } else {
+            RelayEntry(hex, if (name.isNullOrBlank()) shortRelayName(hex) else name, true, relayNow(), isS3)
+        }
+        saveRelayNodes()
+    }
+
+    /** Stamp a relay as just-seen (a successful op) — persisted so "last seen" survives a restart. */
+    private fun markRelaySeen(hex: String) {
+        val e = relayEntries[hex] ?: return
+        relayEntries[hex] = e.copy(lastSeenMs = relayNow())
+        saveRelayNodes()
+    }
+
+    /** Ensure every relay referenced by relayNodes / the default has a RelayEntry (legacy migration). */
+    private fun migrateRelayEntries() {
+        var changed = false
+        val known = HashSet<String>()
+        for (list in relayNodes.values) known.addAll(list)
+        if (defaultRelayHex.isNotEmpty()) known.add(defaultRelayHex)
+        for (hex in known) if (relayEntries[hex] == null) {
+            relayEntries[hex] = RelayEntry(hex, shortRelayName(hex), true, relayNow(), hex.startsWith("s3:"))
+            changed = true
+        }
+        if (changed) saveRelayNodes()
+    }
+
+    /** ERASE only entries that are BOTH inactive AND unseen > 7 days. Called on launch + the sync timer. */
+    fun purgeStaleRelays() {
+        val cutoff = relayNow()
+        val dead = relayEntries.values.filter { !it.active && (cutoff - it.lastSeenMs) > RELAY_STALE_AFTER_MS }
+        for (e in dead) eraseRelayNow(e.hex)
+    }
+
+    /** Every configured relay (active + inactive), active-first then by name — for the Relays hub. */
+    fun allRelayEntries(): List<RelayEntry> = relayEntries.values.sortedWith(
+        compareByDescending<RelayEntry> { it.active }.thenBy { it.name.lowercase() }
+    )
+
+    /** The all-circles default relay hex, or null. */
+    fun defaultRelay(): String? = defaultRelayHex.ifEmpty { null }
+
     /** Bump so the relay-settings UI recomposes after the adopted set / health changes. */
     var relaysVersion = mutableStateOf(0); private set
     private fun bumpRelays() { relaysVersion.value++ }
 
-    /** The redundant relay set for a circle (mirrored writes, fallback reads). */
-    private fun relaysFor(circleId: String): List<String> = relayNodes[circleId]?.toList() ?: emptyList()
+    /** The redundant ACTIVE relay set for a circle: its own list plus the all-circles default (deduped).
+     *  Deactivated relays are filtered out so they aren't dialed/served, but their config survives. */
+    private fun relaysFor(circleId: String): List<String> {
+        val out = (relayNodes[circleId] ?: emptyList()).filter { isRelayActive(it) }.toMutableList()
+        if (defaultRelayHex.isNotEmpty() && isRelayActive(defaultRelayHex) && !out.contains(defaultRelayHex))
+            out.add(defaultRelayHex)
+        return out
+    }
 
-    /** Every distinct adopted relay across all circles. */
-    private fun allRelays(): List<String> = relayNodes.values.flatten().distinct()
+    /** Every distinct ACTIVE relay across all circles + the default — for mesh sync / active transport. */
+    private fun allRelays(): List<String> {
+        val out = relayNodes.values.flatten().filter { isRelayActive(it) }.distinct().toMutableList()
+        if (defaultRelayHex.isNotEmpty() && isRelayActive(defaultRelayHex) && !out.contains(defaultRelayHex))
+            out.add(defaultRelayHex)
+        return out
+    }
 
     private fun relayAvailable(nodeHex: String): Boolean =
         relayHealth[nodeHex]?.available(System.currentTimeMillis()) ?: true
 
     private fun markRelayOk(nodeHex: String) {
         relayHealth.getOrPut(nodeHex) { RelayHealth() }.recordSuccess()
+        markRelaySeen(nodeHex)   // stamp lastSeen so the stale-clock only ticks while truly unseen
     }
 
     private fun markRelayFail(nodeHex: String) {
@@ -1076,6 +1285,15 @@ object HavenNet : InboundListener {
         val key = mailboxKey(circleId, env)
         val hostedHex = runCatching { relayHost?.nodeIdHex() }.getOrNull()
         for (nodeHex in relaysFor(circleId)) {
+            // S3-bucket relay (store-and-forward): PUT the sealed blob straight into the bucket via the
+            // direct S3 FFI using the device-local creds (StorageStore). Content-addressed key.
+            if (nodeHex.startsWith("s3:")) {
+                val cfg = StorageStore.s3Config(appContext) ?: continue
+                runCatching { uniffi.haven_ffi.s3Put(cfg, key, env) }
+                    .onSuccess { markRelaySeen(nodeHex); withContext(Dispatchers.Main) { relayActive.value = true } }
+                    .onFailure { Log.d(TAG, "s3 relay put failed ($nodeHex): ${it.message}") }
+                continue
+            }
             // Our OWN hosted relay: store directly into the local mailbox (no iroh self-dial).
             if (hostedHex != null && nodeHex == hostedHex) {
                 runCatching { relayHost?.localPut(key, env) }
@@ -1139,8 +1357,34 @@ object HavenNet : InboundListener {
         // by the content-addressed key, so the same envelope mirrored on several relays is
         // ingested exactly once (dedup by content key).
         val relayTargets: List<Pair<String, String>> = relayNodes.toMap()
-            .flatMap { (cid, list) -> list.map { cid to it } }
+            .flatMap { (cid, list) -> list.filter { isRelayActive(it) }.map { cid to it } }
+            .let { base ->
+                // The all-circles default applies to every circle that hasn't already listed it.
+                val def = defaultRelayHex
+                if (def.isNotEmpty() && isRelayActive(def)) {
+                    val extra = relayNodes.keys.filter { cid -> base.none { it.first == cid && it.second == def } }
+                        .map { it to def }
+                    base + extra
+                } else base
+            }
         for ((circleId, nodeHex) in relayTargets) {
+            // S3-bucket relay: LIST + GET via the direct S3 FFI (store-and-forward poll).
+            if (nodeHex.startsWith("s3:")) {
+                val cfg = StorageStore.s3Config(appContext) ?: continue
+                val prefix = "haven/mailbox/$circleId/"
+                val keys = runCatching { uniffi.haven_ffi.s3List(cfg, prefix) }.getOrNull() ?: continue
+                markRelaySeen(nodeHex)
+                if (keys.isNotEmpty()) withContext(Dispatchers.Main) { relayActive.value = true }
+                for (s3key in keys) {
+                    if (seenMailbox.contains(s3key)) continue
+                    val env = runCatching { uniffi.haven_ffi.s3Get(cfg, s3key) }.getOrNull() ?: continue
+                    seenMailbox.add(s3key)
+                    if (runCatching { social.receive(circleId, env) }.getOrDefault(false)) {
+                        changed = true; notifyInbound(circleId)
+                    }
+                }
+                continue
+            }
             val client = relayClientFor(nodeHex) ?: continue
             val prefix = "haven/mailbox/$circleId/"
             val keys = runCatching { client.list(prefix) }.getOrNull()
@@ -1419,6 +1663,8 @@ object HavenNet : InboundListener {
     private fun loadRelayNodes() {
         relayNodes.clear()
         suppressedRelays.clear()
+        relayEntries.clear()
+        defaultRelayHex = prefs.getString("relayDefault", "") ?: ""
         prefs.getString("relaysSuppressed", null)?.let { raw ->
             runCatching { val a = JSONArray(raw); for (i in 0 until a.length()) suppressedRelays.add(a.getString(i)) }
         }
@@ -1450,15 +1696,43 @@ object HavenNet : InboundListener {
                 }
             }
         }
+        // Load persisted per-relay RelayEntry records (deactivate-not-erase metadata).
+        prefs.getString("relayEntries", null)?.let { raw ->
+            runCatching {
+                val a = JSONArray(raw)
+                for (i in 0 until a.length()) {
+                    val o = a.getJSONObject(i)
+                    val hex = o.getString("hex")
+                    relayEntries[hex] = RelayEntry(
+                        hex = hex,
+                        name = o.optString("name", shortRelayName(hex)),
+                        active = o.optBoolean("active", true),
+                        lastSeenMs = o.optLong("lastSeenMs", relayNow()),
+                        isS3 = o.optBoolean("isS3", hex.startsWith("s3:")),
+                    )
+                }
+            }
+        }
+        // Migrate any relay that only exists in relayNodes/the default into a RelayEntry.
+        migrateRelayEntries()
     }
 
     private fun saveRelayNodes() {
         val o = JSONObject()
         relayNodes.forEach { (k, v) -> o.put(k, JSONArray().apply { v.forEach { put(it) } }) }
+        val entriesArr = JSONArray()
+        relayEntries.values.forEach { e ->
+            entriesArr.put(JSONObject().apply {
+                put("hex", e.hex); put("name", e.name); put("active", e.active)
+                put("lastSeenMs", e.lastSeenMs); put("isS3", e.isS3)
+            })
+        }
         // Write the new format and clear the legacy key (completes the migration).
         prefs.edit()
             .putString("relays", o.toString())
             .putString("relaysSuppressed", JSONArray().apply { suppressedRelays.forEach { put(it) } }.toString())
+            .putString("relayEntries", entriesArr.toString())
+            .putString("relayDefault", defaultRelayHex)
             .remove("relayNodes").apply()
     }
 
@@ -1468,6 +1742,7 @@ object HavenNet : InboundListener {
     fun reset() {
         contacts.clear(); pending.clear(); blocked.clear(); initiated.clear()
         relayNodes.clear(); relayClients.clear(); relayHealth.clear(); seenMailbox.clear()
+        relayEntries.clear(); suppressedRelays.clear(); defaultRelayHex = ""
         Presign.reset()
         CircleLock.reset()
         AvatarStore.clear()
@@ -1515,7 +1790,8 @@ object HavenNet : InboundListener {
     fun selfSyncAddRelay(circleId: String, nodeHex: String) {
         val hex = nodeHex.trim().lowercase()
         if (hex.length != 64) return
-        if (suppressedRelays.contains(hex)) return   // user forgot it — don't auto-resurrect
+        if (suppressedRelays.contains(hex) || !isRelayActive(hex)) return   // deactivated — don't auto-resurrect
+        ensureRelayEntry(hex, isS3 = false, activate = false)
         val list = relayNodes.getOrPut(circleId) { mutableListOf() }
         if (!list.contains(hex)) { list.add(hex); saveRelayNodes() }
     }
