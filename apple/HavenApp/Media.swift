@@ -236,7 +236,7 @@ final class MediaStore: ObservableObject {
         return max(4096, Int(s.width * s.height) * 4)
     }
     /// Drop all decoded media from memory (factory reset, or to proactively relieve pressure).
-    func clearMemoryCache() { cache.removeAllObjects() }
+    func clearMemoryCache() { cache.removeAllObjects(); thumbCache.removeAllObjects() }
 
     // MARK: - Captured location (opt-in)
 
@@ -601,6 +601,28 @@ final class MediaStore: ObservableObject {
         case .video: cachePut(ref, MediaItem(id: ref, kind: .video, image: Self.poster(for: dst), videoURL: dst))
         case .audio: cachePut(ref, MediaItem(id: ref, kind: .audio, image: nil, videoURL: dst))
         }
+    }
+
+    /// A separate, bounded cache of DOWNSCALED thumbnails for feed tiles / avatars. Rendering a full-res
+    /// 2560px photo in a 56–150px slot makes SwiftUI re-sample a huge bitmap on the main thread every
+    /// scroll frame — that's the feed/You-tab scroll lag. Downscale once to ~maxDimension, cache, and the
+    /// tiles draw a tiny bitmap instead. The full image stays available via item(_:) for the zoom viewer.
+    private let thumbCache: NSCache<NSString, Boxed> = {
+        let c = NSCache<NSString, Boxed>()
+        c.totalCostLimit = 48 * 1024 * 1024   // ~48 MB of decoded thumbnails, then evict LRU
+        return c
+    }()
+    func thumbnail(_ ref: String, maxDimension: CGFloat) -> PlatformImage? {
+        let bucket = Int(maxDimension.rounded())
+        let key = "\(ref)@\(bucket)" as NSString
+        if let b = thumbCache.object(forKey: key) { return b.item.image }
+        guard let full = item(ref)?.image else { return nil }
+        // Already small enough → don't waste a re-encode; cache the original under the bucket key.
+        let t = (max(full.size.width, full.size.height) <= maxDimension) ? full
+                                                                         : Self.downscale(full, maxDimension: maxDimension)
+        let mi = MediaItem(id: ref, kind: .image, image: t, videoURL: nil)
+        thumbCache.setObject(Boxed(mi), forKey: key, cost: Self.decodedCost(mi))
+        return t
     }
 
     func item(_ ref: String) -> MediaItem? {

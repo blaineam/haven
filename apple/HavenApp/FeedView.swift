@@ -2440,7 +2440,7 @@ struct FeedView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 ForEach(attachedMedia, id: \.self) { ref in
-                    if let m = MediaStore.shared.item(ref), let img = m.image {
+                    if let m = MediaStore.shared.item(ref), let img = MediaStore.shared.thumbnail(ref, maxDimension: 160) {
                         ZStack(alignment: .topTrailing) {
                             Image(platformImage: img).resizable().scaledToFill()
                                 .frame(width: 56, height: 56).clipShape(RoundedRectangle(cornerRadius: 10))
@@ -2787,7 +2787,9 @@ struct PostCard: View {
     }
 
     @ViewBuilder private func masonryTile(_ ref: String, height: CGFloat) -> some View {
-        if let m = MediaStore.shared.item(ref), let img = m.image {
+        // Use a downscaled thumbnail (≈3× the row height for retina), not the full-res image — rendering a
+        // 2560px bitmap in a 150px tile was the scroll lag. Full-res stays for the zoom viewer.
+        if let m = MediaStore.shared.item(ref), let img = MediaStore.shared.thumbnail(ref, maxDimension: height * 3) {
             // Aspect width for the fixed row height, clamped so a panorama/portrait stays sane.
             let aspect = min(2.4, max(0.6, img.size.width / max(img.size.height, 1)))
             Image(platformImage: img).resizable().scaledToFill()
@@ -2846,7 +2848,9 @@ struct PostCard: View {
                 GestureVideoPlayer(player: playerFor(ref, url),
                                    onTap: { togglePostMute() },
                                    onDoubleTap: { heartIt() })
-            } else if let img = m.image {
+            } else if let img = MediaStore.shared.thumbnail(ref, maxDimension: 1200) ?? m.image {
+                // A ~1200px thumbnail (not the 2560px original) keeps the single-image post crisp at the
+                // feed's ≤480pt frame without re-sampling a giant bitmap every scroll frame. Zoom uses full-res.
                 Image(platformImage: img).resizable().scaledToFit()      // show the whole image (no crop)
             } else {
                 mediaLoadingPlaceholder(ref)
