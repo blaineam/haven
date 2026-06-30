@@ -750,10 +750,13 @@ final class FeedStore: ObservableObject {
         // throttled to occasional — offline members get history from the mailbox/relay, and a freshly-added
         // contact is back-filled directly by the share-history flow, not this periodic sweep.
         let nowMs = now()
-        let resendHistory = nowMs - lastHistoryResendMs > 180_000   // ~3 min, not every 20s
+        // The FLOOD was the per-contact IROH re-send (envs × contacts × every 20s) — throttle THAT.
+        // The nearby broadcast is a single LOCAL fan-out (not × contacts) and is the own-device
+        // (iPhone↔Mac) sync path, so it stays every cycle.
+        let resendHistoryIroh = nowMs - lastHistoryResendMs > 180_000   // ~3 min for the per-friend iroh blast
         for circle in circles {
             guard let hello = helloPayload(circleId: circle.id, circleName: circle.name) else { continue }
-            let envs = resendHistory ? social.syncEnvelopes(circleId: circle.id) : []
+            let envs = social.syncEnvelopes(circleId: circle.id)
             // The default circle bootstraps with ALL QR contacts (newly-added ones aren't
             // members yet — this is how we get their bundle). Other circles target members.
             var targets = Set(social.contactNodeIds(circleId: circle.id))
@@ -762,8 +765,9 @@ final class FeedStore: ObservableObject {
             }
             for nodeHex in targets {
                 sendIroh(0, hello, to: nodeHex)
-                // Back-fill history only to people we agreed to share it with (throttled).
-                if !envs.isEmpty, ConnectionsStore.shared.sharesHistory(nodeHex) {
+                // Per-contact history re-send is the flood — throttle it (offline members get history
+                // from the mailbox; new contacts via the share-history flow).
+                if resendHistoryIroh, !envs.isEmpty, ConnectionsStore.shared.sharesHistory(nodeHex) {
                     for env in envs { sendIroh(1, eventPayload(circle.id, env), to: nodeHex) }
                 }
             }
@@ -771,15 +775,16 @@ final class FeedStore: ObservableObject {
             // circles must NOT — a broadcast Hello let any nearby contact handshake their way
             // into a circle they were never added to (membership contamination).
             if circle.id == "default" { nearbyBroadcast(0, hello) }
-            // Sealed events are safe to fan out (non-members can't open them; receive() also
-            // gates on membership), so keep nearby delivery for posts — just not DMs (throttled).
-            if !envs.isEmpty, !circle.id.hasPrefix("dm:") {
+            // Sealed events are safe to fan out (non-members can't open them; receive() also gates on
+            // membership). Nearby is ONE local broadcast per env — NOT a flood — and it's how a linked
+            // Mac/phone catches up, so keep it every cycle.
+            if !circle.id.hasPrefix("dm:") {
                 for env in envs { nearbyBroadcast(1, eventPayload(circle.id, env)) }
             }
             // Mesh: let a relay carry our handshake to members we can't reach directly.
             originateRelay(dests: Array(targets), inner: frame(0, hello))
         }
-        if resendHistory { lastHistoryResendMs = nowMs }
+        if resendHistoryIroh { lastHistoryResendMs = nowMs }
         requestMissingMedia()
     }
 
@@ -1430,14 +1435,19 @@ final class FeedStore: ObservableObject {
         // mailbox/relay restore below is the real path and it's idempotent.
         var directBudget = 8
         for ref in missing {
+            var payload = Data(myHex.utf8)          // 64-byte requester id
+            payload.append(Data(ref.utf8))
+            // Nearby is a single LOCAL broadcast — NOT a flood — and is how a linked Mac pulls media
+            // from the phone. Ask over nearby every cycle.
+            nearbyBroadcast(3, payload)
+            // The per-contact IROH request × every missing ref × every cycle WAS the flood — throttle it
+            // (each ref at most once / 5 min, a handful per cycle). The idempotent mailbox restore below
+            // is the real cross-network path.
             let stale = (mediaReqAt[ref].map { nowMs - $0 > 300_000 } ?? true)
             if stale && directBudget > 0 {
                 mediaReqAt[ref] = nowMs
                 directBudget -= 1
-                var payload = Data(myHex.utf8)          // 64-byte requester id
-                payload.append(Data(ref.utf8))
                 for contact in ContactsStore.shared.contacts { sendIroh(3, payload, to: contact.idHex) }
-                nearbyBroadcast(3, payload)
             }
             // Always try the circle's mailbox (relay/S3) — content-addressed + idempotent, no flood.
             if circleIds.contains(where: { SharedStore.hasMailbox($0) }) {
