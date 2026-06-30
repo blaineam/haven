@@ -69,7 +69,9 @@ final class FeedStore: ObservableObject {
     private var syncTimer: Timer?
 
     // Chunked media reassembly: ref → temp file + which chunk indices we've received.
-    private static let mediaChunkSize = 512 * 1024
+    // 512KB chunks overflowed MultipeerConnectivity's reliable-send buffer (small frames got through, media
+    // chunks were silently dropped), so own-device media never arrived over nearby. 64KB transmits reliably.
+    private static let mediaChunkSize = 64 * 1024
     private struct IncomingMedia { let tempURL: URL; let total: Int; var got: Set<Int> }
     private var incoming: [String: IncomingMedia] = [:]
 
@@ -1532,7 +1534,7 @@ final class FeedStore: ObservableObject {
         let me = social.myNodeHex()
         var refs: [String] = []
         for item in items { refs.append(contentsOf: item.media); for c in item.comments { refs.append(contentsOf: c.media) } }
-        var budget = 40
+        var budget = 10   // a few per pass — paced so the nearby link isn't flooded; the rest follow next tick
         for ref in refs {
             if budget <= 0 { break }
             if pushedNearby.contains(ref) || SharedLocation.parse(ref) != nil { continue }
@@ -1567,6 +1569,7 @@ final class FeedStore: ObservableObject {
                 nearby?.broadcast(out)
                 if let node { Task.detached { try? await node.sendToNode(nodeIdHex: requesterHex, payload: out) } }
                 index += 1
+                try? await Task.sleep(nanoseconds: 12_000_000)   // pace so a burst can't overflow the nearby buffer
             }
         }
     }
