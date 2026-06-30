@@ -221,7 +221,8 @@ final class MediaStore: ObservableObject {
     private final class Boxed { let item: MediaItem; init(_ i: MediaItem) { item = i } }
     private let cache: NSCache<NSString, Boxed> = {
         let c = NSCache<NSString, Boxed>()
-        c.totalCostLimit = 192 * 1024 * 1024   // ~192 MB of decoded media resident, then evict LRU
+        c.totalCostLimit = 96 * 1024 * 1024   // ~96 MB of full-res media resident (the feed uses thumbnails;
+                                              // full images are only the zoom viewer), then evict LRU
         return c
     }()
     private func cacheGet(_ ref: String) -> MediaItem? { cache.object(forKey: ref as NSString)?.item }
@@ -593,14 +594,13 @@ final class MediaStore: ObservableObject {
 
     /// Move a fully-reassembled temp file into place under `ref` and cache the item.
     func adopt(_ ref: String, from temp: URL) {
-        guard let kind = MediaKind(ref: ref), let dst = fileURL(ref) else { return }
+        guard MediaKind(ref: ref) != nil, let dst = fileURL(ref) else { return }
         try? FileManager.default.removeItem(at: dst)
         do { try FileManager.default.moveItem(at: temp, to: dst) } catch { return }
-        switch kind {
-        case .image: cachePut(ref, MediaItem(id: ref, kind: .image, image: PlatformImage(contentsOfFile: dst.path), videoURL: nil))
-        case .video: cachePut(ref, MediaItem(id: ref, kind: .video, image: Self.poster(for: dst), videoURL: dst))
-        case .audio: cachePut(ref, MediaItem(id: ref, kind: .audio, image: nil, videoURL: dst))
-        }
+        // Do NOT eagerly decode the full image here. With own-device media sync, a burst of received blobs
+        // each got decoded to a ~20MB bitmap on arrival → memory spike → iOS jetsam (SIGKILL) on launch.
+        // Just drop any stale cache entry; item()/thumbnail() decode lazily (and downsampled) when rendered.
+        cacheRemove(ref)
     }
 
     /// A separate, bounded cache of DOWNSCALED thumbnails for feed tiles / avatars. Rendering a full-res
@@ -616,13 +616,40 @@ final class MediaStore: ObservableObject {
         let bucket = Int(maxDimension.rounded())
         let key = "\(ref)@\(bucket)" as NSString
         if let b = thumbCache.object(forKey: key) { return b.item.image }
-        guard let full = item(ref)?.image else { return nil }
-        // Already small enough → don't waste a re-encode; cache the original under the bucket key.
-        let t = (max(full.size.width, full.size.height) <= maxDimension) ? full
-                                                                         : Self.downscale(full, maxDimension: maxDimension)
-        let mi = MediaItem(id: ref, kind: .image, image: t, videoURL: nil)
+        let kind = MediaKind(ref: ref)
+        let t: PlatformImage?
+        if kind == .image, let url = fileURL(ref), FileManager.default.fileExists(atPath: url.path) {
+            // Decode a DOWNSAMPLED bitmap straight from the file via ImageIO — never materialize the full
+            // 2560px image in memory (that spike OOM-jetsammed iOS on launch).
+            t = Self.downsampled(at: url, maxPixel: maxDimension)
+        } else if let full = item(ref)?.image {
+            // Video poster (already small) / fallback.
+            t = max(full.size.width, full.size.height) <= maxDimension ? full : Self.downscale(full, maxDimension: maxDimension)
+        } else {
+            t = nil
+        }
+        guard let thumb = t else { return nil }
+        let mi = MediaItem(id: ref, kind: .image, image: thumb, videoURL: nil)
         thumbCache.setObject(Boxed(mi), forKey: key, cost: Self.decodedCost(mi))
-        return t
+        return thumb
+    }
+
+    /// Decode a downsampled image directly from a file via ImageIO — peak memory is the THUMBNAIL size,
+    /// not the full bitmap. This is the memory-safe way to make feed thumbnails.
+    static func downsampled(at url: URL, maxPixel: CGFloat) -> PlatformImage? {
+        guard let src = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary) else { return nil }
+        let opts: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+        ]
+        guard let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return nil }
+        #if canImport(UIKit)
+        return UIImage(cgImage: cg)
+        #else
+        return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
+        #endif
     }
 
     func item(_ ref: String) -> MediaItem? {

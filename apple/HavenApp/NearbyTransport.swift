@@ -54,12 +54,26 @@ final class NearbyTransport: NSObject {
         session.disconnect()
     }
 
+    /// Bytes enqueued for sending but not yet handed off — backpressure so a slow link (BLE) can't let the
+    /// send backlog grow unbounded (it ballooned to multi-GB and jetsam-killed the app).
+    private let backlogLock = NSLock()
+    private var backlogBytes = 0
+    static let sendBacklogCap = 4 * 1024 * 1024   // 4 MB of unsent frames; drop large ones past this
+    /// True when the unsent backlog is high — a media sender checks this to stop early instead of piling on.
+    var sendBacklogHigh: Bool { backlogLock.lock(); defer { backlogLock.unlock() }; return backlogBytes > Self.sendBacklogCap }
+
     /// Send a frame to every connected nearby peer (recipients who can't open it ignore it).
     /// Fire-and-forget on a background queue so a slow/jammed Multipeer link never stalls the main
     /// thread (see `sendQueue`).
     func broadcast(_ frame: Data) {
+        // Backpressure: when the unsent backlog is high, DROP large (media-chunk) frames — the receiver
+        // re-requests / the sender re-pushes later. Small frames (posts/hellos/requests) always go through.
+        backlogLock.lock(); let backlog = backlogBytes; backlogLock.unlock()
+        if frame.count > 8192 && backlog > Self.sendBacklogCap { return }
+        backlogLock.lock(); backlogBytes += frame.count; backlogLock.unlock()
         sendQueue.async { [weak self] in
             guard let self else { return }
+            defer { self.backlogLock.lock(); self.backlogBytes -= frame.count; self.backlogLock.unlock() }
             let peers = self.session.connectedPeers
             guard !peers.isEmpty else { return }
             try? self.session.send(frame, toPeers: peers, with: .reliable)

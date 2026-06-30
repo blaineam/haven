@@ -769,10 +769,15 @@ final class FeedStore: ObservableObject {
         // The FLOOD was the per-contact IROH re-send (envs × contacts × every 20s) — throttle THAT.
         // The nearby broadcast is a single LOCAL fan-out (not × contacts) and is the own-device
         // (iPhone↔Mac) sync path, so it stays every cycle.
-        let resendHistoryIroh = nowMs - lastHistoryResendMs > 180_000   // ~3 min for the per-friend iroh blast
+        let resendHistory = nowMs - lastHistoryResendMs > 180_000   // ~3 min; gates the WHOLE history re-send
         for circle in circles {
             guard let hello = helloPayload(circleId: circle.id, circleName: circle.name) else { continue }
-            let envs = social.syncEnvelopes(circleId: circle.id)
+            // syncEnvelopes RE-SEALS every one of my events — expensive. Calling it for every circle on every
+            // 20s tick pinned the main thread → iOS watchdog SIGKILL (macOS has no watchdog, so it was fine
+            // there). Only do it on the throttled cadence: new events reach devices immediately via
+            // broadcastEvent, a freshly-connected sibling gets full history via nearbyPeerConnected, and this
+            // periodic full re-broadcast is just redundancy.
+            let envs = resendHistory ? social.syncEnvelopes(circleId: circle.id) : []
             // The default circle bootstraps with ALL QR contacts (newly-added ones aren't
             // members yet — this is how we get their bundle). Other circles target members.
             var targets = Set(social.contactNodeIds(circleId: circle.id))
@@ -783,7 +788,7 @@ final class FeedStore: ObservableObject {
                 sendIroh(0, hello, to: nodeHex)
                 // Per-contact history re-send is the flood — throttle it (offline members get history
                 // from the mailbox; new contacts via the share-history flow).
-                if resendHistoryIroh, !envs.isEmpty, ConnectionsStore.shared.sharesHistory(nodeHex) {
+                if !envs.isEmpty, ConnectionsStore.shared.sharesHistory(nodeHex) {
                     for env in envs { sendIroh(1, eventPayload(circle.id, env), to: nodeHex) }
                 }
             }
@@ -800,7 +805,7 @@ final class FeedStore: ObservableObject {
             // Mesh: let a relay carry our handshake to members we can't reach directly.
             originateRelay(dests: Array(targets), inner: frame(0, hello))
         }
-        if resendHistoryIroh { lastHistoryResendMs = nowMs }
+        if resendHistory { lastHistoryResendMs = nowMs }
         reannounceOwnRelay()   // frame 19 was a one-shot at relay start; re-emit so peers reliably learn it
         // Push MY media up to every circle relay periodically. The nearby request/response (frame 3→5) was
         // unreliable (0 chunks served), so instead each device durably mirrors its own media to the relays
@@ -1588,7 +1593,7 @@ final class FeedStore: ObservableObject {
         let me = social.myNodeHex()
         var refs: [String] = []
         for item in items { refs.append(contentsOf: item.media); for c in item.comments { refs.append(contentsOf: c.media) } }
-        var budget = 10   // a few per pass — paced so the nearby link isn't flooded; the rest follow next tick
+        var budget = 2   // only a couple per pass — the link is slow; the rest follow on later ticks
         for ref in refs {
             if budget <= 0 { break }
             if pushedNearby.contains(ref) || SharedLocation.parse(ref) != nil { continue }
@@ -1637,7 +1642,9 @@ final class FeedStore: ObservableObject {
                     guard let sealed = try? AES.GCM.seal(chunk, using: ownKey).combined else { break }
                     nearby?.broadcast(Data([5]) + Self.chunkFrame(refData: refData, index: index, total: total, sealed: sealed))
                     index += 1
-                    Thread.sleep(forTimeInterval: 0.006)   // pace so a burst can't overflow the nearby buffer
+                    Thread.sleep(forTimeInterval: 0.030)   // pace so we don't outrun a slow link → unbounded send backlog
+                    // Stop early if the send backlog is already high — the rest re-pushes next tick.
+                    if (nearby?.sendBacklogHigh ?? false) { break }
                 }
             }
             return
@@ -1693,7 +1700,15 @@ final class FeedStore: ObservableObject {
         let tempURL = entry.tempURL
         let chunkSize = Self.mediaChunkSize
         let ownKey = Self.ownMediaKey()
+        // Receive backpressure: if the decrypt+write queue is already backed up, DROP this chunk — the
+        // reassembly stays incomplete and it's re-requested / re-sent. Prevents an unbounded queue → jetsam.
+        Self.mediaBacklogLock.lock()
+        let drop = Self.mediaBacklogBytes > Self.mediaBacklogCap
+        if !drop { Self.mediaBacklogBytes += sealed.count }
+        Self.mediaBacklogLock.unlock()
+        if drop { return }
         Self.mediaQueue.async { [weak self] in
+            defer { Self.mediaBacklogLock.lock(); Self.mediaBacklogBytes -= sealed.count; Self.mediaBacklogLock.unlock() }
             // Own-device chunks are symmetric (account-key); friend chunks are KEM. Try symmetric first.
             var plain: Data? = nil
             if let ownKey, let box = try? AES.GCM.SealedBox(combined: sealed), let p = try? AES.GCM.open(box, using: ownKey) {
@@ -1718,6 +1733,11 @@ final class FeedStore: ObservableObject {
     }
 
     private static let mediaQueue = DispatchQueue(label: "haven.media.reassembly", qos: .utility)
+    // Backpressure for the receive queue: chunks arriving faster than they're decrypted+written piled up
+    // here and ballooned memory to multi-GB → jetsam. Drop incoming chunks past this cap (re-requested).
+    private static let mediaBacklogLock = NSLock()
+    private static var mediaBacklogBytes = 0
+    private static let mediaBacklogCap = 8 * 1024 * 1024
 
     /// Bookkeeping after a chunk's plaintext is written to the temp file (main-actor state).
     @MainActor private func finishChunk(ref: String, index: Int) {
