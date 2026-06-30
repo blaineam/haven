@@ -98,6 +98,16 @@ final class FeedStore: ObservableObject {
     func configure(seed: Data) {
         guard social == nil else { return }
         social = try? HavenSocial(accountSeed: seed)
+        // Option 1 (device-key identity): adopt this device's transport/open key so the engine opens
+        // content sealed to THIS device's bundle (and dual-opens older account-sealed content), then
+        // self-register so contacts learn to dial + seal to this device. Account seed stays the
+        // author/contact id + roster signer. The roster rides every sync bundle, so contacts converge.
+        if let social {
+            _ = social.useDeviceIdentity(deviceSeed: DeviceKeyStore.deviceAccount().secretSeed())
+            _ = social.registerDevice(deviceBundle: DeviceKeyStore.deviceBundle(),
+                                      name: DeviceKeyStore.deviceName,
+                                      createdAt: UInt64(Date().timeIntervalSince1970))
+        }
         loadPersisted()
         loadLastHeard()   // so "last seen" survives an app restart
         refreshCircles()     // also purges any contaminated DM membership (see refreshCircles)
@@ -468,7 +478,10 @@ final class FeedStore: ObservableObject {
         listener = bridge
         Task { @MainActor in
             do {
-                let n = try await HavenNode.start(accountSeed: seed, listener: bridge)
+                // Option 1: bind the iroh transport to THIS device's key → a distinct node id per device
+                // (no more two-devices-same-id discovery collision). `accountSeed:` is the FFI param name;
+                // we pass the device transport seed. The account identity lives in HavenSocial.
+                let n = try await HavenNode.start(accountSeed: DeviceKeyStore.deviceAccount().secretSeed(), listener: bridge)
                 self.node = n
                 self.internetReady = true
                 self.online = true
@@ -904,12 +917,18 @@ final class FeedStore: ObservableObject {
     private func sendIroh(_ type: UInt8, _ payload: Data, to nodeHex: String) {
         guard let node else { return }
         let f = frame(type, payload)
+        // Option 1 transport edge: callers pass an ACCOUNT id (so all the social/allow logic stays on
+        // account ids); here we expand to that account's authorized DEVICE ids (or the account id itself
+        // for a pre-multidevice peer) and deliver to each, so the post reaches whichever device is online.
+        let targets = social?.deviceNodeIdsFor(accountHex: nodeHex) ?? [nodeHex]
         Task { [weak self] in
-            do {
-                try await node.sendToNode(nodeIdHex: nodeHex, payload: f)
-                await MainActor.run { self?.lastSendError = nil }   // a success clears a stale error
+            var anyOk = false
+            var lastErr: String?
+            for t in targets {
+                do { try await node.sendToNode(nodeIdHex: t, payload: f); anyOk = true }
+                catch { lastErr = error.localizedDescription }   // try the next device
             }
-            catch { await MainActor.run { self?.lastSendError = error.localizedDescription } }
+            await MainActor.run { self?.lastSendError = anyOk ? nil : lastErr }
         }
     }
     private func nearbyBroadcast(_ type: UInt8, _ payload: Data) {
@@ -1204,9 +1223,17 @@ final class FeedStore: ObservableObject {
     func circleMemberships() -> [(String, [String])] {
         guard let social else { return [] }
         return social.circles().map { c in
-            var m = memberHexes(circleId: c.id)
-            if !myNodeHex.isEmpty, !m.contains(myNodeHex) { m.append(myNodeHex) }
-            return (c.id, m)
+            var accounts = memberHexes(circleId: c.id)
+            if !myNodeHex.isEmpty, !accounts.contains(myNodeHex) { accounts.append(myNodeHex) }
+            // Authorize each member at the TRANSPORT layer by their DEVICE ids (Option 1 — peers connect as
+            // their device), keeping the account id too for any pre-multidevice peer. Includes MY OWN device
+            // ids, so a sibling device can read this host's mailbox. De-duplicated.
+            var ids: [String] = []
+            for a in accounts {
+                if !ids.contains(a) { ids.append(a) }
+                for d in social.deviceNodeIdsFor(accountHex: a) where !ids.contains(d) { ids.append(d) }
+            }
+            return (c.id, ids)
         }
     }
     func sealCirclePresign(circleId: String, data: Data) -> Data? { try? social?.sealCircleMedia(circleId: circleId, data: data) }

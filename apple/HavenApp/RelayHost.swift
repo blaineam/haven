@@ -367,19 +367,19 @@ enum RelayClients {
     /// A connected client for a relay, honoring per-relay backoff. nil if in backoff or unreachable.
     static func client(_ nodeHex: String) async -> RelayClient? {
         if let c = cache[nodeHex] { return c }
-        // NEVER dial our OWN account node id. Relays now share the account node id (one shared endpoint),
-        // and same-account SIBLING devices share that id too — so dialing it is a self-dial, which sends
-        // iroh's path discovery into a tight loop (open_path_on_all_conns / normalize_network_path),
-        // exploding memory by tens of GB — THE runaway leak. We never need a client to ourselves: our own
-        // events go straight to the local mailbox, and own-device sync rides the nearby mesh. (This used to
-        // be guarded ONLY while hosting, so a non-hosting device — or a second device — still self-dialed.)
-        let mine = FeedStore.shared.myNodeHex.lowercased()
+        // NEVER dial our OWN DEVICE node id (our iroh transport id — Option 1). A node dialing itself
+        // sends iroh's path discovery into a tight loop (open_path_on_all_conns), exploding memory by tens
+        // of GB — THE runaway leak. We never need a client to ourselves: our own events go to the local
+        // mailbox, and own-device sync rides the nearby mesh. Distinct per-device ids mean a SIBLING
+        // device's relay is a different id, so we CAN read it (no longer stranded).
+        let mine = DeviceKeyStore.deviceNodeHex().lowercased()
         if !mine.isEmpty, nodeHex.lowercased() == mine { return nil }
         if RelayHost.shared.serving, !RelayHost.shared.nodeId.isEmpty, nodeHex == RelayHost.shared.nodeId {
             return nil
         }
         guard RelayHealth.shared.available(nodeHex) else { return nil }   // skip relays in backoff
-        guard let seed = AccountStore.storedSeed() else { return nil }
+        // Connect as THIS device (its transport key), so the relay sees our authorized device id as the peer.
+        let seed = DeviceKeyStore.deviceAccount().secretSeed()
         guard let c = try? await RelayClient.connect(seed: seed, relayNodeHex: nodeHex) else {
             RelayHealth.shared.recordFailure(nodeHex)
             return nil
