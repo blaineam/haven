@@ -341,16 +341,18 @@ pub fn recipients_with_devices(
     let mut seen: std::collections::HashSet<[u8; 32]> = std::collections::HashSet::new();
     for m in members {
         let acct = m.node_id_bytes();
-        let bundles = devices_by_account
-            .get(&acct)
-            .map(|d| d.authorized_bundles())
-            .unwrap_or_default();
-        if bundles.is_empty() {
-            if seen.insert(acct) {
-                out.push(m.clone()); // back-compat: no device info → seal to the account key itself.
-            }
-        } else {
-            for b in bundles {
+        // ALWAYS seal to the account key: any holder of the account seed (the user's own iCloud-synced
+        // devices) opens it robustly, WITHOUT depending on full device-roster propagation. This is what
+        // makes sibling devices reliably read each other's content — a device that only knows its own id
+        // would otherwise seal to itself alone and strand its siblings.
+        if seen.insert(acct) {
+            out.push(m.clone());
+        }
+        // PLUS each currently-authorized device bundle, so a LINK-FLOW device (which does NOT hold the
+        // account seed) can also open — and revocation still cuts it off: a revoked device is dropped from
+        // here AND lacks the account seed, so it can open neither path.
+        if let Some(d) = devices_by_account.get(&acct) {
+            for b in d.authorized_bundles() {
                 if seen.insert(b.node_id_bytes()) {
                     out.push(b);
                 }
@@ -562,7 +564,10 @@ mod tests {
         assert!(ids.contains(&phone.public().node_id_bytes()));
         assert!(ids.contains(&mac.public().node_id_bytes()));
         assert!(!ids.contains(&stolen.public().node_id_bytes()), "revoked device is not a recipient");
-        assert!(!ids.contains(&account.public().node_id_bytes()), "with devices known, don't seal to the bare account key");
+        // The account key is ALWAYS a recipient now, so any account-seed holder (the user's iCloud-synced
+        // siblings) opens content robustly without waiting for full roster propagation. A revoked LINK-FLOW
+        // device is still cut off: it's dropped above AND doesn't hold the account seed.
+        assert!(ids.contains(&account.public().node_id_bytes()), "always seal to the account key (robust sibling open)");
     }
 
     #[test]
