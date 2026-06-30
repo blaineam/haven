@@ -75,8 +75,9 @@ final class FeedStore: ObservableObject {
 
     // Chunked media reassembly: ref → temp file + which chunk indices we've received.
     // 512KB chunks overflowed MultipeerConnectivity's reliable-send buffer (small frames got through, media
-    // chunks were silently dropped), so own-device media never arrived over nearby. 64KB transmits reliably.
-    private static let mediaChunkSize = 64 * 1024
+    // chunks were silently dropped), so own-device media never arrived over nearby. 32KB transmits reliably
+    // over a slow BLE-only link.
+    private static let mediaChunkSize = 32 * 1024
     private struct IncomingMedia { let tempURL: URL; let total: Int; var got: Set<Int> }
     private var incoming: [String: IncomingMedia] = [:]
 
@@ -1511,7 +1512,7 @@ final class FeedStore: ObservableObject {
         let haveLocal = MediaStore.shared.storagePath(for: ref).map { FileManager.default.fileExists(atPath: $0.path) } ?? false
         HavenLog.net("media REQ ref=\(ref.prefix(12)) have=\(haveLocal) from=\(requesterHex.prefix(8))")
         if let url = MediaStore.shared.storagePath(for: ref), FileManager.default.fileExists(atPath: url.path) {
-            sendMediaChunks(ref: ref, fileURL: url, to: requesterHex)
+            if shouldServeNearby(ref) { sendMediaChunks(ref: ref, fileURL: url, to: requesterHex) }
             return
         }
         // I don't hold it locally — if I'm the circle's backup, restore it and serve.
@@ -1525,6 +1526,19 @@ final class FeedStore: ObservableObject {
                 }
             }
         }
+    }
+
+    private var servedAt: [String: UInt64] = [:]
+    /// Rate-limit serving a media ref over nearby: the Mac re-requests every cycle while it waits, so
+    /// without this the iPhone re-served the same blobs hundreds of times (↑323 for ~18 items), flooding
+    /// MultipeerConnectivity's serial send queue so NOTHING actually drained to the peer. One serve per ref
+    /// per 25s lets the queue clear and the chunks really deliver.
+    private func shouldServeNearby(_ ref: String) -> Bool {
+        let nowMs = now()
+        if let last = servedAt[ref], nowMs - last < 25_000 { return false }
+        servedAt[ref] = nowMs
+        if servedAt.count > 4000 { servedAt.removeAll() }
+        return true
     }
 
     private var pushedNearby = Set<String>()
@@ -1546,6 +1560,7 @@ final class FeedStore: ObservableObject {
             if pushedNearby.contains(ref) || SharedLocation.parse(ref) != nil { continue }
             guard let url = MediaStore.shared.storagePath(for: ref), FileManager.default.fileExists(atPath: url.path) else { continue }
             pushedNearby.insert(ref)
+            guard shouldServeNearby(ref) else { continue }
             sendMediaChunks(ref: ref, fileURL: url, to: me)
             budget -= 1
         }
