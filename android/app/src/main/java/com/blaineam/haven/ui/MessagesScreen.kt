@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -254,7 +255,9 @@ fun DmThread(circleId: String, partner: Contact, onBack: () -> Unit) {
     }
 
     HavenBackground {
-        Column(Modifier.fillMaxSize()) {
+        // imePadding() lifts the composer above the on-screen keyboard so the focused
+        // text field stays visible (parity with CircleScreen / StoryEditor).
+        Column(Modifier.fillMaxSize().imePadding()) {
             Row(
                 Modifier.fillMaxWidth().padding(start = 8.dp, end = 16.dp, top = 14.dp, bottom = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
