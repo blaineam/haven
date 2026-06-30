@@ -378,7 +378,7 @@ enum RelayClients {
         // of GB — THE runaway leak. We never need a client to ourselves: our own events go to the local
         // mailbox, and own-device sync rides the nearby mesh. Distinct per-device ids mean a SIBLING
         // device's relay is a different id, so we CAN read it (no longer stranded).
-        let mine = FeedStore.shared.myNodeHex.lowercased()   // account id == our transport id (reachable by friends)
+        let mine = FeedStore.shared.transportNodeHex.lowercased()   // our OWN relay's id (account id if host, else device id)
         if !mine.isEmpty, nodeHex.lowercased() == mine { return nil }
         if RelayHost.shared.serving, !RelayHost.shared.nodeId.isEmpty, nodeHex == RelayHost.shared.nodeId {
             return nil

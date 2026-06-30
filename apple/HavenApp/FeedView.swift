@@ -60,6 +60,9 @@ final class FeedStore: ObservableObject {
     /// The messaging transport node — the in-process relay ATTACHES to its endpoint (one iroh node,
     /// two ALPNs) so hosting a relay never spins up a second node (the path-churn leak).
     var transportNode: HavenNode? { node }
+    /// This device's actual TRANSPORT node id hex (account id if we host the relay, else our device id).
+    /// The self-dial guard skips THIS (our own relay), so a non-host still dials the host's account-id relay.
+    var transportNodeHex: String { node?.nodeIdHex() ?? myNodeHex }
     private var nearby: NearbyTransport?
     private var mailboxTimer: Timer?
     private var listener: InboundBridge?
@@ -98,11 +101,25 @@ final class FeedStore: ObservableObject {
     func configure(seed: Data) {
         guard social == nil else { return }
         social = try? HavenSocial(accountSeed: seed)
-        // Option 1 (per-device transport identity) is DISABLED: live logs proved it made this node
-        // unreachable to existing friends (they dial our account id; binding a device id → 0 inbound) and
-        // it wasn't the cause of the friend-connectivity failure anyway (iroh dials time out regardless).
-        // Transport + sealing stay on the ACCOUNT identity (account-sealed content opens on every device).
-        if let social { HavenLog.net("configure account=\(social.myNodeHex().prefix(10)) (account-id transport)") }
+        // Multi-device reachability: iroh discovery is one-owner-per-id, so two devices on the SAME account
+        // id collide (the host loses → can't be reached). Resolution:
+        //  • The RELAY-HOST device keeps the ACCOUNT id — it's the always-on, reachable mailbox friends dial,
+        //    and its in-app relay (shared endpoint) serves on that id. One endpoint, no leak.
+        //  • A NON-HOST device takes a per-DEVICE transport id so it never competes with the host for the
+        //    account id; friends learn it via the host's roster. (Sealing stays account-based either way.)
+        if let social {
+            // Discriminate by DEVICE CLASS (not the relay toggle, which can sync between devices): the
+            // always-on DESKTOP keeps the account id (reachable relay host); MOBILE takes a device id.
+            if RelayHost.shared.isDesktopClass {
+                HavenLog.net("configure HOST account=\(social.myNodeHex().prefix(10)) (desktop keeps account id)")
+            } else {
+                _ = social.useDeviceIdentity(deviceSeed: DeviceKeyStore.deviceAccount().secretSeed())
+                _ = social.registerDevice(deviceBundle: DeviceKeyStore.deviceBundle(),
+                                          name: DeviceKeyStore.deviceName,
+                                          createdAt: UInt64(Date().timeIntervalSince1970))
+                HavenLog.net("configure CLIENT account=\(social.myNodeHex().prefix(10)) device=\(social.myDeviceNodeHex().prefix(10))")
+            }
+        }
         loadPersisted()
         loadLastHeard()   // so "last seen" survives an app restart
         refreshCircles()     // also purges any contaminated DM membership (see refreshCircles)
@@ -473,14 +490,20 @@ final class FeedStore: ObservableObject {
         listener = bridge
         Task { @MainActor in
             do {
-                // Bind the iroh transport to the ACCOUNT id — that's the id friends have in their contact
-                // card and dial to reach us, so binding a per-DEVICE id (Option 1) made us unreachable for
-                // inbound (live logs: 0 inbound). The engine still adopts a device identity for OPENING
-                // (use_device_identity) + the roster, but reachability stays on the account id.
-                let n = try await HavenNode.start(accountSeed: seed, listener: bridge)
+                // DESKTOP → account id (reachable mailbox, owns discovery); MOBILE → its device id (so it
+                // doesn't collide with the desktop on the account id). One endpoint per device → no leak.
+                let transportSeed = RelayHost.shared.isDesktopClass ? seed : DeviceKeyStore.deviceAccount().secretSeed()
+                let n = try await HavenNode.start(accountSeed: transportSeed, listener: bridge)
                 self.node = n
                 self.internetReady = true
                 self.online = true
+                HavenLog.net("node started id=\(n.nodeIdHex().prefix(10))")
+                // The node's reachable address (direct addrs + iroh relay url). If this is empty or has no
+                // relay, NOTHING can reach us regardless of identity — that's a network/discovery problem.
+                Task {
+                    if let t = try? await n.ticket(), !t.isEmpty { HavenLog.net("node TICKET ok len=\(t.count): \(t.prefix(160))") }
+                    else { HavenLog.net("node TICKET = EMPTY/NONE — no reachable path (discovery/relay down?)") }
+                }
                 self.startSyncTimer()
                 // Sync soon (discovery needs a moment to resolve), then keep retrying.
                 for delay in [1.0, 4.0, 10.0] {
