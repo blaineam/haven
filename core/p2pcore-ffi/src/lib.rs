@@ -1478,19 +1478,19 @@ impl HavenSocial {
     pub fn device_node_ids_for(&self, account_hex: String) -> Vec<String> {
         let acct = account_hex.to_lowercase();
         let st = self.state.lock().unwrap();
-        let mut out = vec![acct.clone()];
         for (id, cd) in st.device_lists.iter() {
             if hex(id) == acct {
-                for b in cd.authorized_bundles() {
-                    let h = hex(&b.node_id_bytes());
-                    if !out.contains(&h) {
-                        out.push(h);
-                    }
+                let devices: Vec<String> = cd.authorized_bundles().iter().map(|b| hex(&b.node_id_bytes())).collect();
+                // Upgraded contact (we have their roster) → dial their devices ONLY; the account id is no
+                // longer a live transport id, so dialing it would just waste a connect timeout.
+                if !devices.is_empty() {
+                    return devices;
                 }
                 break;
             }
         }
-        out
+        // No roster known → the contact is still on its account node (pre-multidevice). Dial that.
+        vec![acct]
     }
 
     /// The full public **bundles** of a circle's members — for multi-device sync. Another of the
