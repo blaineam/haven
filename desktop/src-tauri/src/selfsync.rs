@@ -96,6 +96,14 @@ pub fn current_local(prefs: &Prefs, social: &HavenSocial) -> BTreeMap<String, Ve
         }
     }
 
+    // Contact device ROSTERS — so a freshly-linked device (e.g. a new PC) learns which device ids to
+    // DIAL/seal for each friend directly from a sibling that already knows them, instead of dialing dead
+    // account ids and timing out. Keyed by account hex so a newer roster version replaces the old.
+    // Additive (never tombstoned); the wire is verified + version-checked in the engine on ingest.
+    for r in social.export_contact_rosters() {
+        m.insert(format!("roster:{}", r.account_hex), r.wire);
+    }
+
     m
 }
 
@@ -211,6 +219,16 @@ pub fn apply_local(
     prefs.blocked.retain(|h| want_blocked.contains(h));
     if prefs.blocked.len() != before {
         changed = true;
+    }
+
+    // Contact rosters synced from another of our devices → ingest so THIS device can also dial + seal to
+    // each friend's CURRENT devices (verified against the account bundle carried inside the wire). This is
+    // what lets a freshly-linked PC reach friends it never contacted directly — it inherits their device
+    // ids from a sibling. Idempotent + version-checked in the engine, so a stale roster can't roll back.
+    for (k, v) in entries {
+        if k.starts_with("roster:") {
+            let _ = social.ingest_roster_wire(v.clone());
+        }
     }
 
     // Explicit circle severances synced from our other devices (grow-only): record them locally so the

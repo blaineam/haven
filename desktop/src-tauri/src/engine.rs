@@ -43,6 +43,13 @@ struct DynState {
     /// ref -> partial chunks while a media transfer is in flight.
     incoming_media: HashMap<String, IncomingMedia>,
     requested_refs: HashSet<String>,
+    /// ref -> last direct (peer) media-request ms. THROTTLE: a missing ref must not be re-blasted to
+    /// every contact on every sweep (that floods the network with hundreds of thousands of frames and
+    /// buries real delivery — the iOS "nothing communicates" flood). The relay/mailbox restore is the
+    /// real, idempotent path; direct peer re-requests are capped + cooled-down to fill gaps only.
+    media_req_at: HashMap<String, u64>,
+    /// last time we mirrored our OWN media to the circle relays (idempotent backfill, ~every 2 min).
+    last_media_backfill_ms: u64,
     internet_active: bool,
     relay_active: bool,
     started: bool,
@@ -305,6 +312,24 @@ impl Engine {
                 me.fire_due_scheduled();
                 me.mesh_sync().await;
                 me.poll_self_sync().await;
+                // Re-emit our own relay id every tick so peers reliably learn it (frame 19 was a one-shot
+                // at relay start). Cheap; no-op unless we host.
+                me.reannounce_own_relay();
+                // Mirror our own media to the relays we know periodically (~every 2 min). The cross-device
+                // chunk path is unreliable; the relay is the durable convergence path.
+                let due = {
+                    let mut st = me.dyn_state.lock().unwrap();
+                    let now = now_ms();
+                    if now - st.last_media_backfill_ms > 120_000 {
+                        st.last_media_backfill_ms = now;
+                        true
+                    } else {
+                        false
+                    }
+                };
+                if due {
+                    me.backfill_media_to_relays().await;
+                }
             }
         });
     }
@@ -974,6 +999,9 @@ impl Engine {
         for id_hex in ids {
             self.send_hello(DEFAULT_CIRCLE, &id_hex);
         }
+        // Re-emit our own relay id whenever we re-greet contacts, so a peer that just came online surfaces
+        // our relay instead of missing the one-shot announce.
+        self.reannounce_own_relay();
     }
 
     fn send_frame(self: &Arc<Self>, t: u8, payload: &[u8], to_node_hex: &str) {
@@ -1170,6 +1198,66 @@ impl Engine {
         *self.relay_host.lock().unwrap() = None;
         self.dyn_state.lock().unwrap().hosting = false;
         self.emit_changed();
+    }
+
+    /// Re-emit THIS host's own relay id (frame 19) to every circle's contacts, WITHOUT adopt_relay's heavy
+    /// backfill. Frame 19 used to fire only once at relay start, so a sibling/friend that wasn't reachable
+    /// at that instant never learned the relay (the iPhone "sees the PC but won't show its relay"). Cheap
+    /// (one sealed announce per circle per contact), so it's safe to run every sync tick. No-op unless we're
+    /// hosting. (Desktop has no nearby/Bluetooth mesh, so this is the iroh-only subset of the iOS fix.)
+    pub fn reannounce_own_relay(self: &Arc<Self>) {
+        let hex = match self.relay_host.lock().unwrap().as_ref() {
+            Some(h) => h.node_id_hex(),
+            None => return,
+        };
+        if hex.len() != 64 {
+            return;
+        }
+        for c in self.social.circles() {
+            let Ok(sealed) = self.social.seal_circle_media(c.id.clone(), hex.clone().into_bytes()) else { continue };
+            let frame = wire::event_payload(&c.id, &sealed);
+            for id_hex in self.social.contact_node_ids(c.id.clone()) {
+                self.send_frame(wire::RELAY_NODE, &frame, &id_hex);
+            }
+        }
+    }
+
+    /// Periodically mirror MY OWN media to every circle relay I know (idempotent backup). The cross-device
+    /// chunk request/response path is unreliable, so instead each device durably mirrors its own media to
+    /// the relays it knows — including a sibling's hosted relay — and the other side reads it back during
+    /// its normal poll/restore. upload_media is content-addressed + idempotent (re-puts are cheap), so this
+    /// just fills gaps. Throttled to ~once per 2 min by the caller.
+    async fn backfill_media_to_relays(self: &Arc<Self>) {
+        let circle_ids: Vec<String> = self.social.circles().into_iter().map(|c| c.id).collect();
+        for circle_id in circle_ids {
+            let has_relay = !self.relays_for(&circle_id).is_empty();
+            let has_s3 = self.prefs.lock().unwrap().s3.is_some();
+            if !has_relay && !has_s3 {
+                continue;
+            }
+            let feed = self.social.feed(circle_id.clone(), now_ms(), None);
+            let mut refs: Vec<String> = vec![];
+            for item in feed {
+                if !item.is_me {
+                    continue; // only MY media — others' media is mirrored by their own devices
+                }
+                for r in item.media {
+                    if self.media.has(&r) && !refs.contains(&r) {
+                        refs.push(r);
+                    }
+                }
+                for cm in item.comments {
+                    for r in cm.media {
+                        if self.media.has(&r) && !refs.contains(&r) {
+                            refs.push(r);
+                        }
+                    }
+                }
+            }
+            for r in refs {
+                self.upload_media(&circle_id, &r).await;
+            }
+        }
     }
 
     /// Adopt a relay node for all circles (ADDED to the redundant set, not replacing existing
@@ -1513,6 +1601,19 @@ impl Engine {
         format!("haven/media/{reference}")
     }
 
+    /// A symmetric key derived from the ACCOUNT seed — every one of the user's own devices derives the
+    /// identical key, so own-device media chunks sealed with it always open on a sibling. KEM-sealing to
+    /// your own account doesn't decap reliably (the engine's per-device identity makes it fail), which is
+    /// why media between a user's own devices never decrypted. HKDF-SHA256(ikm=seed, salt="haven-own-
+    /// media-v1", info="", len=32) — byte-identical to the iOS CryptoKit derivation, so a chunk sealed on
+    /// the PC opens on the iPhone and vice-versa.
+    fn own_media_key(&self) -> [u8; 32] {
+        let hk = hkdf::Hkdf::<Sha256>::new(Some(b"haven-own-media-v1"), &self.seed);
+        let mut okm = [0u8; 32];
+        hk.expand(&[], &mut okm).expect("32 is a valid HKDF length");
+        okm
+    }
+
     pub fn request_missing_media(self: &Arc<Self>) {
         let my_hex = self.node_id_hex();
         let mut missing: Vec<(String, String)> = vec![]; // (ref, circleId)
@@ -1533,20 +1634,55 @@ impl Engine {
                 }
             }
         }
+        // THROTTLE the direct (peer) fallback. A missing ref used to be re-requested from EVERY contact
+        // on every 15s sweep, so a backlog of missing media flooded the network with hundreds of thousands
+        // of frames per cycle, drowning real delivery (the iOS "nothing communicates" flood). Direct-request
+        // each ref at most once per 5 min, and only a handful per cycle — the relay/mailbox restore below is
+        // the real, idempotent path and runs unthrottled.
+        let now = now_ms();
+        let mut direct_budget = 8;
+        {
+            let mut st = self.dyn_state.lock().unwrap();
+            if st.media_req_at.len() > 4000 {
+                st.media_req_at.clear(); // bound the throttle map
+            }
+        }
         for (reference, circle_id) in missing {
+            // Decide direct-eligibility up front (cooldown + per-cycle budget) so the spawned task only
+            // peer-blasts when the gate allows; the relay restore always runs.
+            let direct_ok = {
+                let mut st = self.dyn_state.lock().unwrap();
+                let stale = st.media_req_at.get(&reference).map(|&t| now - t > 300_000).unwrap_or(true);
+                if stale && direct_budget > 0 {
+                    st.media_req_at.insert(reference.clone(), now);
+                    direct_budget -= 1;
+                    true
+                } else {
+                    false
+                }
+            };
             let me = self.clone();
             let my_hex = my_hex.clone();
             tauri::async_runtime::spawn(async move {
+                // ALWAYS try the circle's mailbox (relay/S3) first — content-addressed + idempotent, no flood.
                 if me.fetch_media_from_relay(&circle_id, &reference).await {
                     me.emit_changed();
                     return;
                 }
-                // Relay couldn't serve it → re-request from peers. Retried each sweep (not once per
-                // session) so an interrupted peer transfer with no relay still completes; chunk
-                // re-sends just fill the gaps.
+                // Relay couldn't serve it → re-request from peers, but only when the throttle allowed it
+                // (capped at 8/cycle with a 5-min per-ref cooldown). An interrupted peer transfer still
+                // completes over successive sweeps; chunk re-sends just fill the gaps.
+                if !direct_ok {
+                    return;
+                }
                 me.dyn_state.lock().unwrap().requested_refs.insert(reference.clone());
                 let mut payload = my_hex.into_bytes();
                 payload.extend_from_slice(reference.as_bytes());
+                // NOTE: we deliberately do NOT add our own account node id as a request target here. iroh
+                // publishes this device's endpoint under the shared account id, so dialing it is a self-dial,
+                // which sends iroh's QUIC path-discovery into an unbounded loop (the multi-GB leak the
+                // RelayClient guard already prevents). Own-device media converges via the relay backfill
+                // (each device mirrors its own media to the relays a sibling reads) — the reliable path.
                 let ids: Vec<String> = me.prefs.lock().unwrap().contacts.iter().map(|c| c.id_hex.clone()).collect();
                 for id_hex in ids {
                     me.send_frame(wire::MEDIA_REQ, &payload, &id_hex);
@@ -1612,12 +1748,24 @@ impl Engine {
     async fn send_media_chunks(self: &Arc<Self>, reference: &str, bytes: &[u8], requester_hex: &str) {
         let total = ((bytes.len() + MEDIA_CHUNK_SIZE - 1) / MEDIA_CHUNK_SIZE).max(1) as u32;
         let ref_bytes = reference.as_bytes();
+        // Own-device (the requester is MY OWN account) → seal each chunk with the symmetric account-key, which
+        // a sibling can always open (KEM-to-self decap is unreliable). A friend requester → per-recipient KEM
+        // seal as before. The receiver tries the symmetric open first, then falls back to the engine's KEM.
+        let own = requester_hex == self.node_id_hex();
+        let own_key = if own { Some(self.own_media_key()) } else { None };
         let mut index = 0u32;
         let mut offset = 0;
         while offset < bytes.len() {
             let end = (offset + MEDIA_CHUNK_SIZE).min(bytes.len());
             let chunk = &bytes[offset..end];
-            let Ok(sealed) = self.social.seal_media(requester_hex.to_string(), chunk.to_vec()) else { return };
+            let sealed = if let Some(key) = own_key.as_ref() {
+                p2pcore::crypto::seal(key, chunk)
+            } else {
+                match self.social.seal_media(requester_hex.to_string(), chunk.to_vec()) {
+                    Ok(s) => s,
+                    Err(_) => return,
+                }
+            };
             self.send_frame(wire::MEDIA_CHUNK, &wire::chunk_frame(ref_bytes, index, total, &sealed), requester_hex);
             offset = end;
             index += 1;
@@ -1642,7 +1790,12 @@ impl Engine {
         if reference.is_empty() || total == 0 || self.media.has(&reference) {
             return;
         }
-        let Some(plain) = self.social.open_media(sealed.to_vec()) else { return };
+        // Own-device chunks are symmetric (account-key) sealed; friend chunks are KEM. Try the cheap
+        // symmetric open first, then fall back to the engine's KEM open.
+        let plain = p2pcore::crypto::open(&self.own_media_key(), sealed)
+            .ok()
+            .or_else(|| self.social.open_media(sealed.to_vec()));
+        let Some(plain) = plain else { return };
         let mut complete: Option<Vec<u8>> = None;
         {
             let mut st = self.dyn_state.lock().unwrap();

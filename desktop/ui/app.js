@@ -314,6 +314,33 @@ function blobToBase64(blob) {
 }
 
 // Render a media ref as the right element: video (v:), voice note (a:), or image.
+// A shared location is a synthetic `geo:<lat>,<lon>,<label>` ref stuffed into a post's media array
+// (iOS/Android parity). It isn't real media — rendering it through the image loader produced a
+// forever-spinner tile. Parse it out and show a map link instead. Returns {lat, lon, label} or null.
+function parseGeo(ref) {
+  if (typeof ref !== "string" || !ref.startsWith("geo:")) return null;
+  const rest = ref.slice(4);
+  const comma1 = rest.indexOf(",");
+  if (comma1 < 0) return null;
+  const comma2 = rest.indexOf(",", comma1 + 1);
+  const lat = parseFloat(rest.slice(0, comma1));
+  const lon = parseFloat(rest.slice(comma1 + 1, comma2 < 0 ? rest.length : comma2));
+  if (!isFinite(lat) || !isFinite(lon)) return null;
+  const label = comma2 < 0 ? "" : rest.slice(comma2 + 1);
+  return { lat, lon, label };
+}
+
+// Render a location ref as a tappable map chip (opens the OS maps / browser). Kept OUT of the photo
+// grid so a photo+location post doesn't fall into the masonry path with a broken tile.
+function geoChip(geo) {
+  const text = geo.label && geo.label.trim() ? geo.label : `${geo.lat.toFixed(4)}, ${geo.lon.toFixed(4)}`;
+  return el("button", {
+    class: "song-chip",
+    title: "Open in maps",
+    onclick: () => openExternal(`https://www.openstreetmap.org/?mlat=${geo.lat}&mlon=${geo.lon}#map=15/${geo.lat}/${geo.lon}`),
+  }, el("span", { class: "note" }, "📍"), el("strong", {}, text));
+}
+
 function mediaNode(ref, imgStyle) {
   // Videos start muted unless the global "play video sound" toggle is on (iOS parity); native controls
   // still let the user override per-video. data-video lets the toggle re-apply across all of them.
@@ -498,7 +525,10 @@ function postCard(it, circleId) {
 
   const mediaRefs = it.media || [];
   const audioRefs = mediaRefs.filter((r) => r.startsWith("a:"));
-  const visualRefs = mediaRefs.filter((r) => !r.startsWith("a:"));
+  // A `geo:` location ref is NOT real media — split it out so it renders as a map chip above the grid
+  // instead of a broken spinner tile (and so a photo+location post doesn't fall into the masonry path).
+  const geo = mediaRefs.map(parseGeo).find(Boolean) || null;
+  const visualRefs = mediaRefs.filter((r) => !r.startsWith("a:") && !r.startsWith("geo:"));
   const mediaCount = visualRefs.length;
   const media = el("div", { class: "post-media" + (mediaCount > 1 ? " masonry" : mediaCount === 1 ? " single" : ""), style: "position:relative" });
   for (const ref of visualRefs) media.append(mediaNode(ref));
@@ -543,7 +573,8 @@ function postCard(it, circleId) {
   comments.append(el("div", { class: "row" }, cin));
   cmtBtn.addEventListener("click", () => comments.classList.toggle("show"));
 
-  return el("div", { class: "card post" }, head, body, media.children.length ? media : null, audio.children.length ? audio : null, song, actions, comments);
+  const geoNode = geo ? geoChip(geo) : null;
+  return el("div", { class: "card post" }, head, body, media.children.length ? media : null, geoNode, audio.children.length ? audio : null, song, actions, comments);
 }
 
 const hasMine = (rs, e) => (rs || []).some((r) => r.emoji === e && r.mine);
@@ -605,7 +636,10 @@ async function manageCircleDialog(circle) {
         try { await invoke("add_to_circle", { circleId: circle.id, contactIdHex: c.id_hex }); e.target.textContent = "Added ✓"; e.target.disabled = true; toast(`Added ${c.name}`); }
         catch (err) { toast("Couldn't add: " + err); }
       } }, "Add"),
-      isDefault ? null : el("button", { class: "btn small ghost", title: "Remove from this circle", onclick: async (e) => {
+      // Removing works for the DEFAULT circle ("My Circle") too: the engine writes the authoritative
+      // removal tombstone AND purges them, so they can't auto-rejoin on their next handshake/self-sync.
+      // (Previously hidden for default, which is why a removed member silently rejoined.)
+      el("button", { class: "btn small ghost", title: isDefault ? "Remove from My Circle" : "Remove from this circle", onclick: async (e) => {
         try { await invoke("remove_from_circle", { circleId: circle.id, contactIdHex: c.id_hex }); e.target.textContent = "Removed ✓"; e.target.disabled = true; toast(`Removed ${c.name}`); renderFeed(); }
         catch (err) { toast("Couldn't remove: " + err); }
       } }, "Remove")));
@@ -637,7 +671,8 @@ async function renderStories() {
     el("div", { class: "ring" }, el("div", {}, "＋")), el("div", { class: "small" }, "Add")));
   for (const it of items) {
     const inner = el("div", {});
-    if ((it.media || []).length) { const img = el("img", { "data-ref": it.media[0] }); inner.append(img); }
+    const firstReal = (it.media || []).find((r) => !r.startsWith("geo:") && !r.startsWith("a:"));
+    if (firstReal) { const img = el("img", { "data-ref": firstReal }); inner.append(img); }
     else inner.append(document.createTextNode("✨"));
     tray.append(el("div", { class: "story-ring", onclick: () => viewStory(it) },
       el("div", { class: "ring" }, inner), el("div", { class: "small" }, it.author_name.split(" ")[0])));
@@ -657,7 +692,10 @@ function addStoryDialog() {
 
 function viewStory(it) {
   const inner = el("div", { class: "col", style: "align-items:center" });
-  if ((it.media || []).length) { const m = it.media[0].startsWith("v:") ? el("video", { "data-ref": it.media[0], controls: "", autoplay: "" }) : el("img", { "data-ref": it.media[0], style: "max-width:100%;border-radius:12px" }); inner.append(m); }
+  const storyRef = (it.media || []).find((r) => !r.startsWith("geo:") && !r.startsWith("a:"));
+  if (storyRef) { const m = storyRef.startsWith("v:") ? el("video", { "data-ref": storyRef, controls: "", autoplay: "" }) : el("img", { "data-ref": storyRef, style: "max-width:100%;border-radius:12px" }); inner.append(m); }
+  const storyGeo = (it.media || []).map(parseGeo).find(Boolean);
+  if (storyGeo) inner.append(geoChip(storyGeo));
   if (it.body) inner.append(el("p", {}, it.body));
   const m = el("div", {}, el("h2", {}, it.author_name + "'s story"), inner);
   modal(m);
@@ -717,7 +755,8 @@ async function renderThread(root, dm) {
   const chat = el("div", { class: "chat" });
   for (const m of msgs) {
     if (m.unsent) continue;
-    const mediaEls = (m.media || []).map((r) => mediaNode(r, "max-width:220px;border-radius:10px;display:block;margin-top:6px"));
+    // A `geo:` ref renders as a map chip, not media (otherwise a broken tile in the bubble).
+    const mediaEls = (m.media || []).map((r) => { const g = parseGeo(r); return g ? geoChip(g) : mediaNode(r, "max-width:220px;border-radius:10px;display:block;margin-top:6px"); });
     const bubble = isSecret(m.body)
       ? secretBubble(m.body, m.is_me)
       : el("div", { class: "chat-bubble" }, m.body || "", ...mediaEls);

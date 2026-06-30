@@ -2255,6 +2255,7 @@ dependencies = [
  "haven-s3",
  "haven_ffi",
  "hex",
+ "hkdf",
  "keyring",
  "log",
  "p2pcore",
