@@ -139,6 +139,13 @@ object SelfSyncCoordinator {
                 m["circle:${ci.id}"] = runCatching { encodeCircleSync(ci.name, members, relays) }.getOrNull()
                     ?: continue
             }
+            // Contact device ROSTERS — so a freshly-linked device learns which device ids to DIAL/seal for
+            // each friend directly from a sibling that already knows them, instead of dialing dead account
+            // ids and timing out (the regression that made friend comms fail on a new device). Keyed by
+            // account hex so a newer roster version replaces the old. Additive (never tombstoned).
+            for (r in runCatching { social.exportContactRosters() }.getOrDefault(emptyList())) {
+                m["roster:${r.accountHex}"] = r.wire
+            }
         }
         return m
     }
@@ -166,6 +173,17 @@ object SelfSyncCoordinator {
 
         // Roster reconciliation (set-like — enumerate the converged state via entries()).
         val live = h.entries()
+
+        // Contact rosters synced from another of my devices → ingest so THIS device can also dial + seal to
+        // each friend's CURRENT devices (verified against the account bundle carried inside the wire). This
+        // is what lets a freshly-linked device reach friends it never contacted directly — it inherits their
+        // device ids from a sibling. Idempotent + version-checked in the engine, so a stale roster can't roll
+        // anything back. Additive (roster: is never in dynamicPrefixes, so it's never tombstoned).
+        if (social != null) {
+            for (e in live) if (e.key.startsWith("roster:")) {
+                runCatching { social.ingestRosterWire(e.value) }
+            }
+        }
 
         // Contacts: upsert everything present; drop locals the converged state no longer has
         // (a contact deleted on another device propagated as a tombstone).

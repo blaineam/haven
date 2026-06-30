@@ -164,10 +164,17 @@ object HavenNet : InboundListener {
             while (true) {
                 delay(15_000)
                 runCatching { pollMailbox() }
+                // Greet contacts (Hello every tick keeps connections warm; full history re-send +
+                // own-media relay backfill are throttled internally) and re-announce our relay so peers
+                // that weren't connected at relay start still learn it (iOS reannounceOwnRelay parity).
+                runCatching { syncWithContacts() }
                 // Persistently retry any media an interrupted nearby/iroh transfer left incomplete —
                 // pull from the circle relay AND re-request from peers every tick until nothing is
                 // missing, so posts never stay fragmented (parity with iOS).
                 runCatching { requestMissingMedia() }
+                // Proactively push the media we hold to nearby own devices (the reliable own-device
+                // channel) so a sibling gets our photos without relying on request/response.
+                runCatching { pushOwnMediaNearby() }
             }
         }
     }
@@ -559,11 +566,15 @@ object HavenNet : InboundListener {
     }
 
     /** Send our Hello + (optionally) back-fill this circle's events to one node. */
-    private fun sendHello(circleId: String, toNodeHex: String) {
+    /** [resendHistory] gates the full per-contact history re-blast. When false we send only the cheap
+     *  Hello + relay announce (keeps connections warm) — the history is throttled (see [syncWithContacts]). */
+    private fun sendHello(circleId: String, toNodeHex: String, resendHistory: Boolean = true) {
         val hello = helloPayload(circleId) ?: return
         sendFrame(Wire.HELLO, hello, toNodeHex)
-        val envs = runCatching { social.syncEnvelopes(circleId) }.getOrDefault(emptyList())
-        for (env in envs) sendFrame(Wire.EVENT, Wire.eventPayload(circleId, env), toNodeHex)
+        if (resendHistory) {
+            val envs = runCatching { social.syncEnvelopes(circleId) }.getOrDefault(emptyList())
+            for (env in envs) sendFrame(Wire.EVENT, Wire.eventPayload(circleId, env), toNodeHex)
+        }
         // Tell this peer about EVERY relay I know for the circle, so we pool all mailboxes.
         for (nodeHex in relaysFor(circleId)) {
             val sealed = runCatching { social.sealCircleMedia(circleId, nodeHex.toByteArray()) }.getOrNull()
@@ -571,11 +582,29 @@ object HavenNet : InboundListener {
         }
     }
 
-    /** Periodic/triggered sync: greet every contact so circles form + back-fill. */
+    /** Periodic/triggered sync: greet every contact so circles form + back-fill.
+     *
+     *  Re-blasting our ENTIRE history (every post → every contact) on every tick flooded the network
+     *  with hundreds of thousands of frames, drowning real delivery (the iOS "nothing communicates"
+     *  bug). The Hello goes out every tick (cheap, keeps connections warm + bootstraps); the full
+     *  per-contact history re-send is throttled to ~once per 3 min — offline members get history from
+     *  the mailbox/relay, and a freshly-added contact is back-filled directly by acceptContact. */
+    private var lastHistoryResendMs: Long = 0
+    private var lastMediaBackfillMs: Long = 0
     fun syncWithContacts() {
         if (!ready) return
+        val nowMs = System.currentTimeMillis()
+        val resendHistory = nowMs - lastHistoryResendMs > 180_000   // ~3 min, not every tick
         val snapshot = contacts.map { it.idHex }
-        for (idHex in snapshot) sendHello(DEFAULT_CIRCLE, idHex)
+        for (idHex in snapshot) sendHello(DEFAULT_CIRCLE, idHex, resendHistory = resendHistory)
+        if (resendHistory) lastHistoryResendMs = nowMs
+        reannounceOwnRelay()   // frame 19 was a one-shot at relay start; re-emit so peers reliably learn it
+        // Push MY media up to every circle relay periodically (idempotent — skips blobs already present),
+        // so a sibling reading the relay finds it. The nearby chunk path is unreliable; the relay is durable.
+        if (nowMs - lastMediaBackfillMs > 120_000) {
+            lastMediaBackfillMs = nowMs
+            scope.launch { runCatching { for (c in social.circles()) backfillMailbox(c.id) } }
+        }
     }
 
     private fun helloPayload(circleId: String): ByteArray? {
@@ -683,6 +712,119 @@ object HavenNet : InboundListener {
         for (env in runCatching { social.syncEnvelopes(DEFAULT_CIRCLE) }.getOrDefault(emptyList())) {
             NearbyTransport.broadcast(Wire.frame(Wire.EVENT, Wire.eventPayload(DEFAULT_CIRCLE, env)))
         }
+        reannounceOwnRelay()                 // a freshly-connected sibling/friend immediately learns this host's relay
+        pushOwnMediaNearby(freshPeer = true) // a newly-connected sibling has nothing — push it my media now
+    }
+
+    /**
+     * Re-emit the host's OWN relay id (frame 19) to every circle over nearby + to contacts via iroh,
+     * WITHOUT the heavy backfill of [adoptRelay]. Frame 19 used to fire only once at relay start, so a
+     * sibling/friend that wasn't reachable at that instant never learned the relay (the "sees the Mac
+     * nearby but won't show its relay" bug). Cheap (one sealed announce per circle), so it's safe every
+     * sync tick + on each connect. iOS reannounceOwnRelay parity.
+     */
+    private fun reannounceOwnRelay() {
+        val hex = runCatching { relayHost?.nodeIdHex() }.getOrNull() ?: return
+        if (hex.length != 64) return
+        for (c in runCatching { social.circles() }.getOrDefault(emptyList())) {
+            val sealed = runCatching { social.sealCircleMedia(c.id, hex.toByteArray()) }.getOrNull() ?: continue
+            val frame = Wire.eventPayload(c.id, sealed)  // [LP cid][sealed] — same layout as frame 19
+            if (NearbyTransport.active) NearbyTransport.broadcast(Wire.frame(Wire.RELAY_NODE, frame))
+            for (idHex in runCatching { social.contactNodeIds(c.id) }.getOrDefault(emptyList())) {
+                sendFrame(Wire.RELAY_NODE, frame, idHex)
+            }
+        }
+    }
+
+    /**
+     * Opportunistically PUSH the media I hold to nearby own devices, symmetric-sealed to my account
+     * (only my own devices can open it). Rides the nearby mesh — the reliable own-device channel when
+     * iroh is blocked — so a linked sibling gets my photos WITHOUT relying on the request/response
+     * round-trip (which delivers 0 chunks in practice). Deduplicated (each ref pushed once per peer
+     * session) + budgeted + rate-limited (25s/ref); every item is an independent send so one large/slow
+     * item can't stall the rest. [freshPeer] re-pushes everything for a newly-connected sibling.
+     * All file-read + seal + I/O runs OFF the main thread (the [scope] is Dispatchers.IO). iOS parity.
+     */
+    private fun pushOwnMediaNearby(freshPeer: Boolean = false) {
+        if (!ready || !NearbyTransport.active) return
+        val me = runCatching { social.myNodeHex() }.getOrNull() ?: return
+        if (freshPeer) pushedNearby.clear()
+        val refs = LinkedHashSet<String>()
+        for (c in runCatching { social.circles() }.getOrDefault(emptyList())) {
+            val feed = runCatching { social.feed(c.id, nowMs(), null) }.getOrDefault(emptyList())
+            for (item in feed) { refs.addAll(item.media); item.comments.forEach { refs.addAll(it.media) } }
+        }
+        var budget = 10   // a few per pass — paced so the nearby link isn't flooded; the rest follow next tick
+        for (ref in refs) {
+            if (budget <= 0) break
+            if (pushedNearby.contains(ref) || LocationShare.isLocation(ref)) continue
+            if (!LocalMedia.has(ref)) continue
+            pushedNearby.add(ref)
+            if (!shouldServeNearby(ref)) continue
+            scope.launch { sendMediaChunks(ref, LocalMedia.loadAnyCircle(ref) ?: return@launch, me) }
+            budget--
+        }
+        if (pushedNearby.size > 5000) pushedNearby.clear()
+    }
+
+    /**
+     * Rate-limit serving a media ref over nearby: a waiting sibling re-requests every cycle, so without
+     * this the same blobs were re-served hundreds of times, flooding the serial send queue so NOTHING
+     * drained. One serve per ref per 25s lets the queue clear and chunks really deliver. iOS shouldServeNearby.
+     */
+    private fun shouldServeNearby(ref: String): Boolean {
+        val nowMs = System.currentTimeMillis()
+        servedAt[ref]?.let { if (nowMs - it < 25_000) return false }
+        servedAt[ref] = nowMs
+        if (servedAt.size > 4000) servedAt.clear()
+        return true
+    }
+
+    /**
+     * Symmetric key derived from the ACCOUNT seed — both of the user's own devices derive the identical
+     * key, so own-device media chunks sealed with it ALWAYS open on the sibling. KEM-sealing-to-self was
+     * unreliable (per-device engine identity made decap fail), which is why media between a user's own
+     * devices never decrypted. Mirrors the (working) self-sync slot's account-derived key.
+     * HKDF-SHA256(ikm=accountSeed, salt="haven-own-media-v1", info=empty, len=32). iOS ownMediaKey parity.
+     */
+    private val ownMediaKey: javax.crypto.spec.SecretKeySpec? by lazy {
+        runCatching {
+            val seed = core.seed
+            val salt = "haven-own-media-v1".toByteArray(Charsets.UTF_8)
+            // HKDF-Extract: PRK = HMAC-SHA256(salt, ikm).
+            val extractMac = javax.crypto.Mac.getInstance("HmacSHA256")
+            extractMac.init(javax.crypto.spec.SecretKeySpec(salt, "HmacSHA256"))
+            val prk = extractMac.doFinal(seed)
+            // HKDF-Expand: T(1) = HMAC-SHA256(PRK, info | 0x01); 32 bytes = one block, info empty.
+            val expandMac = javax.crypto.Mac.getInstance("HmacSHA256")
+            expandMac.init(javax.crypto.spec.SecretKeySpec(prk, "HmacSHA256"))
+            val okm = expandMac.doFinal(byteArrayOf(0x01))
+            javax.crypto.spec.SecretKeySpec(okm.copyOf(32), "AES")
+        }.getOrNull()
+    }
+
+    /** AES-GCM seal with the own-media key. Output = [12-byte nonce][ciphertext+16-byte tag] (CryptoKit
+     *  `.combined` layout, so iOS opens Android chunks and vice-versa). */
+    private fun sealOwnMedia(plain: ByteArray): ByteArray? {
+        val key = ownMediaKey ?: return null
+        return runCatching {
+            val nonce = ByteArray(12).also { java.security.SecureRandom().nextBytes(it) }
+            val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, key, javax.crypto.spec.GCMParameterSpec(128, nonce))
+            nonce + cipher.doFinal(plain)
+        }.getOrNull()
+    }
+
+    /** AES-GCM open with the own-media key (null if it isn't an own-media chunk → caller falls back to KEM). */
+    private fun openOwnMedia(sealed: ByteArray): ByteArray? {
+        val key = ownMediaKey ?: return null
+        if (sealed.size < 12 + 16) return null
+        return runCatching {
+            val nonce = sealed.copyOfRange(0, 12)
+            val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(javax.crypto.Cipher.DECRYPT_MODE, key, javax.crypto.spec.GCMParameterSpec(128, nonce))
+            cipher.doFinal(sealed, 12, sealed.size - 12)
+        }.getOrNull()
     }
 
     // ---- Circle relay / mailbox (store-and-forward, so posts cross even when not both online) ----
@@ -1030,10 +1172,15 @@ object HavenNet : InboundListener {
 
     // ---- Cross-device media bytes (frame 3 request / frame 5 sealed chunks), like iOS ----
 
-    private val mediaChunkSize = 512 * 1024
+    // 32KB chunks transmit reliably over a slow BLE-only nearby link (larger frames overflowed the
+    // reliable-send buffer and were silently dropped, so own-device media never arrived). iOS parity.
+    private val mediaChunkSize = 32 * 1024
     private class IncomingMedia(val total: Int) { val chunks = HashMap<Int, ByteArray>() }
     private val incomingMedia = HashMap<String, IncomingMedia>()
     private val requestedRefs = HashSet<String>()
+    private val mediaReqAt = HashMap<String, Long>()   // ref -> last direct-request ms (5-min throttle)
+    private val servedAt = HashMap<String, Long>()      // ref -> last nearby-serve ms (25s rate-limit)
+    private val pushedNearby = HashSet<String>()        // refs already pushed to nearby siblings this session
 
     private fun mediaKey(ref: String) = "haven/media/$ref"
 
@@ -1049,20 +1196,31 @@ object HavenNet : InboundListener {
                 item.comments.forEach { cm -> cm.media.forEach { if (!LocalMedia.has(it)) missing.putIfAbsent(it, c.id) } }
             }
         }
+        // THROTTLE: a missing ref used to be direct-requested from EVERY contact on every sweep, so a
+        // backlog of missing media flooded the network with hundreds of thousands of frames per cycle
+        // (drowning real delivery — the iOS flood bug). Direct-request each ref at most once per 5 min and
+        // only a handful per cycle; the content-addressed relay/mailbox restore below is the real path and
+        // is idempotent, so it carries the bulk without flooding.
+        val nowMs = System.currentTimeMillis()
+        var directBudget = 8
         for ((ref, circleId) in missing) {
+            val stale = (mediaReqAt[ref]?.let { nowMs - it > 300_000 } ?: true)
+            val allowDirect = stale && directBudget > 0
+            if (allowDirect) { mediaReqAt[ref] = nowMs; directBudget-- }
             scope.launch {
                 if (fetchMediaFromRelay(circleId, ref)) {
                     withContext(Dispatchers.Main) { feedVersion.value++ }
                     return@launch
                 }
-                // Relay couldn't serve it (none configured, or it doesn't hold it yet) → re-request
-                // from peers. Retried on each sweep, not once per session, so an interrupted peer
-                // transfer with no relay still completes (chunk re-sends fill the gaps).
+                // Relay couldn't serve it (none configured, or it doesn't hold it yet) → re-request from
+                // peers, but only within the per-ref cooldown + per-cycle budget so we never flood.
+                if (!allowDirect) return@launch
                 requestedRefs.add(ref)
                 val payload = myHex.toByteArray(Charsets.UTF_8) + ref.toByteArray(Charsets.UTF_8)
                 for (idHex in contacts.map { it.idHex }) sendFrame(Wire.MEDIA_REQ, payload, idHex)
             }
         }
+        if (mediaReqAt.size > 4000) mediaReqAt.clear()   // bound the throttle map
     }
 
     /** Mirror a sealed media blob to EVERY circle relay (redundancy) so members can fetch offline. */
@@ -1098,19 +1256,31 @@ object HavenNet : InboundListener {
         if (requester.length != 64) return
         val ref = String(body.copyOfRange(64, body.size), Charsets.UTF_8)
         if (ref.isEmpty() || !LocalMedia.has(ref)) return
+        // Rate-limit: a waiting requester re-asks every cycle, so without this we re-served the same blobs
+        // hundreds of times and flooded the send queue so nothing drained. One serve per ref per 25s.
+        if (!shouldServeNearby(ref)) return
         val bytes = LocalMedia.loadAnyCircle(ref) ?: return
         scope.launch { sendMediaChunks(ref, bytes, requester) }
     }
 
+    /**
+     * Stream [bytes] to [requesterHex] as individually-sealed 32KB chunks. OWN-device requests (the
+     * requester is my own account) are symmetric-sealed with the account-derived key so they ALWAYS open
+     * on a sibling (KEM-to-self decap is unreliable); a friend requester gets a per-recipient KEM seal.
+     * Runs on the IO scope — file read + seal happen off the main thread (heavy streaming caused severe
+     * UI lag on iOS when on-main). iOS sendMediaChunks parity.
+     */
     private suspend fun sendMediaChunks(ref: String, bytes: ByteArray, requesterHex: String) {
         val total = maxOf(1, (bytes.size + mediaChunkSize - 1) / mediaChunkSize)
         val refBytes = ref.toByteArray(Charsets.UTF_8)
+        val isOwn = runCatching { social.myNodeHex() }.getOrNull() == requesterHex
         var index = 0
         var offset = 0
         while (offset < bytes.size) {
             val end = minOf(offset + mediaChunkSize, bytes.size)
             val chunk = bytes.copyOfRange(offset, end)
-            val sealed = runCatching { social.sealMedia(requesterHex, chunk) }.getOrNull() ?: return
+            val sealed = if (isOwn) sealOwnMedia(chunk) else runCatching { social.sealMedia(requesterHex, chunk) }.getOrNull()
+            if (sealed == null) return
             sendFrame(Wire.MEDIA_CHUNK, chunkFrame(refBytes, index, total, sealed), requesterHex)
             offset = end; index++
         }
@@ -1143,7 +1313,9 @@ object HavenNet : InboundListener {
         val index = u32(); val total = u32()
         val sealed = body.copyOfRange(off, body.size)
         if (ref.isEmpty() || total <= 0 || LocalMedia.has(ref)) return
-        val plain = runCatching { social.openMedia(sealed) }.getOrNull() ?: return
+        // Own-device chunks are symmetric (account-key) sealed; friend chunks are KEM. Try the cheap
+        // symmetric open first, then fall back to the engine's KEM open. iOS handleMediaChunk parity.
+        val plain = openOwnMedia(sealed) ?: runCatching { social.openMedia(sealed) }.getOrNull() ?: return
         val entry = incomingMedia.getOrPut(ref) { IncomingMedia(total) }
         entry.chunks[index] = plain
         if (entry.chunks.size >= entry.total) {
