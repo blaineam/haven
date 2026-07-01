@@ -866,8 +866,6 @@ final class FeedStore: ObservableObject {
                 let envs = social.exportRecentEnvelopes(circleId: cid, limit: 50)
                 if !envs.isEmpty { work.append((cid, envs)) }
             }
-            let total = work.reduce(0) { $0 + $1.1.count }
-            HavenLog.sync("export re-broadcast: \(total) envelopes across \(work.count)/\(cidsForNearby.count) circles")
             await MainActor.run {
                 guard let self else { return }
                 for (cid, envs) in work { for env in envs { self.nearbyBroadcast(1, self.eventPayload(cid, env)) } }
@@ -1069,14 +1067,17 @@ final class FeedStore: ObservableObject {
         // Option 1 transport edge: callers pass an ACCOUNT id (so all the social/allow logic stays on
         // account ids); here we expand to that account's authorized DEVICE ids (or the account id itself
         // for a pre-multidevice peer) and deliver to each, so the post reaches whichever device is online.
-        let targets = social?.deviceNodeIdsFor(accountHex: nodeHex) ?? [nodeHex]
-        HavenLog.net("sendIroh type=\(type) acct=\(nodeHex.prefix(8)) → \(targets.count) targets: \(targets.map { String($0.prefix(8)) }.joined(separator: ","))")
         Task { [weak self] in
+            // Expand to device ids OFF the main thread — this crosses the FFI, and on a busy sync cycle
+            // sendIroh fires dozens of times; doing it (and the send) on a background Task keeps the feed
+            // scroll smooth. (Per-send logging was removed: building those strings on every send was itself
+            // measurable main-thread churn during sync.)
+            let targets = self?.social?.deviceNodeIdsFor(accountHex: nodeHex) ?? [nodeHex]
             var anyOk = false
             var lastErr: String?
             for t in targets {
-                do { try await node.sendToNode(nodeIdHex: t, payload: f); anyOk = true; HavenLog.net("  ✓ \(type)→\(t.prefix(8))") }
-                catch { lastErr = error.localizedDescription; HavenLog.net("  ✗ \(type)→\(t.prefix(8)): \(error.localizedDescription)") }
+                do { try await node.sendToNode(nodeIdHex: t, payload: f); anyOk = true }
+                catch { lastErr = error.localizedDescription }
             }
             await MainActor.run { self?.lastSendError = anyOk ? nil : lastErr }
         }
@@ -1087,7 +1088,6 @@ final class FeedStore: ObservableObject {
 
     private func handleInbound(_ data: Data, viaNearby: Bool) {
         guard let type = data.first else { return }
-        HavenLog.net("inbound type=\(type) via=\(viaNearby ? "nearby" : "iroh") bytes=\(data.count)")
         if viaNearby { nearbyActive = true } else { internetActive = true }
         let payload = Data(data.dropFirst())
         // Frames that lead with a 64-char sender id (media req + calls + camera state): drop if
@@ -1935,7 +1935,6 @@ final class FeedStore: ObservableObject {
         let envelope = payload.subdata(in: (payload.startIndex + off)..<payload.endIndex)
         guard !circleId.isEmpty, !envelope.isEmpty else { return }
         let ingested = (try? social.receive(circleId: circleId, envelope: envelope)) == true
-        HavenLog.sync("event circle=\(circleId.prefix(18)) ingested=\(ingested) bytes=\(envelope.count)")
         if ingested {
             // Hearing a message is proof of life — refresh "last seen" for a DM's partner.
             if circleId.hasPrefix("dm:"), let partner = dmPartnerHex(circleId) { recordHeard(partner) }
@@ -2973,7 +2972,9 @@ struct PostCard: View {
 
     /// The single-media tile's aspect ratio, taken from the image (or a video's thumbnail).
     private func singleAspect(_ ref: String) -> CGFloat {
-        if let sz = MediaStore.shared.item(ref)?.image?.size, sz.width > 0, sz.height > 0 {
+        // Read pixel dimensions from the file header (ImageIO) — NOT item()?.image.size, which decoded the
+        // whole bitmap on the main thread just to get an aspect ratio (a scroll hitch per single-media post).
+        if let sz = MediaStore.shared.pixelSize(ref), sz.width > 0, sz.height > 0 {
             return sz.width / sz.height
         }
         return 4.0 / 3.0

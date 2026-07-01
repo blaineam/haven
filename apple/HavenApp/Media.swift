@@ -658,6 +658,26 @@ final class MediaStore: ObservableObject {
         return thumb
     }
 
+    /// Pixel dimensions of a media ref WITHOUT decoding the full bitmap — ImageIO reads just the header for
+    /// images; videos use the (cached, off-main) poster if present, else a sane default. Used for feed
+    /// aspect ratios during scroll, where decoding the full image only to read `.size` was a main-thread hitch.
+    private var sizeCache: [String: CGSize] = [:]
+    func pixelSize(_ ref: String) -> CGSize? {
+        if let s = sizeCache[ref] { return s }
+        guard let kind = MediaKind(ref: ref), let url = fileURL(ref) else { return nil }
+        if kind == .image,
+           let src = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+           let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any],
+           let w = props[kCGImagePropertyPixelWidth] as? CGFloat, let h = props[kCGImagePropertyPixelHeight] as? CGFloat,
+           w > 0, h > 0 {
+            let s = CGSize(width: w, height: h); sizeCache[ref] = s; return s
+        }
+        if kind == .video, let poster = cacheGet(ref)?.image, poster.size.width > 0 {
+            sizeCache[ref] = poster.size; return poster.size
+        }
+        return nil
+    }
+
     /// Decode a downsampled image directly from a file via ImageIO — peak memory is the THUMBNAIL size,
     /// not the full bitmap. This is the memory-safe way to make feed thumbnails.
     static func downsampled(at url: URL, maxPixel: CGFloat) -> PlatformImage? {
@@ -680,14 +700,31 @@ final class MediaStore: ObservableObject {
         if let c = cacheGet(ref) { return c }
         guard let kind = MediaKind(ref: ref), let url = fileURL(ref),
               FileManager.default.fileExists(atPath: url.path) else { return nil }
-        let item: MediaItem
         switch kind {
-        case .image: item = MediaItem(id: ref, kind: .image, image: PlatformImage(contentsOfFile: url.path), videoURL: nil)
-        case .video: item = MediaItem(id: ref, kind: .video, image: Self.poster(for: url), videoURL: url)
-        case .audio: item = MediaItem(id: ref, kind: .audio, image: nil, videoURL: url)
+        case .image:
+            let item = MediaItem(id: ref, kind: .image, image: PlatformImage(contentsOfFile: url.path), videoURL: nil)
+            cachePut(ref, item); return item
+        case .video:
+            // NEVER generate the video poster (AVAssetImageGenerator) on the calling thread — during scroll
+            // that's a main-thread hitch the first time each video appears. Return with videoURL now (the
+            // player + grid tiles don't need item().image; tiles get their poster from thumbnail(), which
+            // generates off-main). Kick off an off-main poster generation that re-caches when ready.
+            if !posterInFlight.contains(ref) {
+                posterInFlight.insert(ref)
+                DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                    guard let self else { return }
+                    let poster = Self.poster(for: url)
+                    DispatchQueue.main.async {
+                        self.posterInFlight.remove(ref)
+                        if let poster { self.cachePut(ref, MediaItem(id: ref, kind: .video, image: poster, videoURL: url)) }
+                    }
+                }
+            }
+            return MediaItem(id: ref, kind: .video, image: nil, videoURL: url)   // not cached (would shadow the real poster)
+        case .audio:
+            let item = MediaItem(id: ref, kind: .audio, image: nil, videoURL: url)
+            cachePut(ref, item); return item
         }
-        cachePut(ref, item)
-        return item
     }
 
     /// Can this video be trimmed? Native macOS has its own AVFoundation `VideoTrimmer`; iOS uses
