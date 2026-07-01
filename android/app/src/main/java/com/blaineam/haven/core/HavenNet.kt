@@ -1616,9 +1616,21 @@ object HavenNet : InboundListener {
     }
 
     private suspend fun fetchMediaFromRelay(circleId: String, ref: String): Boolean {
-        val key = mediaKey(ref)
+        val key = mediaKey(ref)   // "haven/media/<ref>" — matches the iOS S3 upload key
         // Try each relay in turn; the first that has the blob wins (graceful fallback).
         for (nodeHex in relaysFor(circleId)) {
+            // S3-BUCKET relay: fetch the blob directly via the S3 FFI. relayClientFor can't dial an "s3:"
+            // pseudo-node, so WITHOUT this branch media stored in S3 was NEVER fetched per-ref — the mailbox
+            // poll has an S3 branch (so posts synced) but this media fetch did not, so videos + large photos
+            // that can't inline never arrived. THE "posts sync but recent videos won't play on Android" bug.
+            if (nodeHex.startsWith("s3:")) {
+                val cfg = StorageStore.s3Config(appContext) ?: continue
+                val blob = runCatching { uniffi.haven_ffi.s3Get(cfg, key) }.getOrNull() ?: continue
+                markRelaySeen(nodeHex)
+                LocalMedia.writeRawSealed(ref, blob)
+                android.util.Log.i("MediaSync", "S3 fetched ref=$ref size=${blob.size}")
+                return true
+            }
             val client = relayClientFor(nodeHex) ?: continue
             val blob = runCatching { client.get(key) }.getOrNull()
             if (blob == null) { relayFailed(nodeHex); continue }
