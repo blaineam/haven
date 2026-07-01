@@ -293,8 +293,9 @@ final class MediaStore: ObservableObject {
         let optimize = CircleSettingsStore.shared.autoOptimize(FeedStore.shared.activeCircleId)
         // Bake EXIF orientation into the pixels: Android's BitmapFactory ignores the orientation tag,
         // so a portrait iPhone photo arrives sideways unless we normalize it to .up here.
-        let img = Self.normalizedUp(optimize ? Self.downscale(image, maxDimension: 2560) : image)
-        let quality: CGFloat = optimize ? 0.88 : 0.95
+        // Auto-optimize → 2048px JPEG @ 70% (small + universally compatible). Off → original quality.
+        let img = Self.normalizedUp(optimize ? Self.downscale(image, maxDimension: 2048) : image)
+        let quality: CGFloat = optimize ? 0.70 : 0.95
         if let data = img.jpegData(compressionQuality: quality), let url = fileURL(ref) {
             try? data.write(to: url)
         }
@@ -311,15 +312,15 @@ final class MediaStore: ObservableObject {
         try? FileManager.default.removeItem(at: dst)
         var ok = false
         if CircleSettingsStore.shared.autoOptimize(FeedStore.shared.activeCircleId) {
-            ok = await Self.optimizeVideo(src, to: dst)   // re-encode (H.264) also drops metadata
-        } else if await Self.isHEVC(src) {
-            // Even "pristine" sharing must be cross-platform playable: iPhones record HEVC (H.265),
-            // which many Androids can't decode. Re-encode HEVC sources to H.264 (1080p) so the video
-            // plays everywhere; H.264 sources skip this and pass through untouched below.
+            // Auto-optimize (default): re-encode to 1080p H.264 with a faststart moov atom — small and
+            // universally playable, including on Androids that can't decode the iPhone's native HEVC.
             ok = await Self.optimizeVideo(src, to: dst)
         }
-        // Strip metadata (GPS/location, creation device, etc.) before it ever leaves the device —
-        // a fast pass-through remux, no re-encode. Falls back to a raw copy only if that fails.
+        // Auto-optimize OFF: share in the ORIGINAL format + quality (no transcode). Still do a lossless
+        // passthrough remux to strip GPS/device metadata AND move the moov atom to the front (faststart),
+        // so playback starts fast — neither changes the codec or quality. Falls back to a raw copy.
+        // (Note: with optimize off, an HEVC source stays HEVC, so it may not play on HEVC-less devices —
+        //  that's the explicit trade for "original quality as-is".)
         if !ok {
             ok = await Self.stripVideoMetadata(src, to: dst)
         }
@@ -340,6 +341,10 @@ final class MediaStore: ObservableObject {
         // .mp4 (not .mov/QuickTime): Android's MediaPlayer reliably plays MP4; some builds choke on MOV.
         export.outputFileType = .mp4
         export.metadata = []   // no location/maker metadata travels with shared media
+        // FASTSTART: move the moov atom to the FRONT of the file. Android's VideoView/MediaPlayer needs the
+        // moov early to initialize — a moov-at-the-end file (AVFoundation's default) often won't play or
+        // stalls. This is a lossless container rewrite (no re-encode), so it's safe even for "share original".
+        export.shouldOptimizeForNetworkUse = true
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             export.exportAsynchronously { cont.resume() }
         }
@@ -448,8 +453,8 @@ final class MediaStore: ObservableObject {
     private func replaceImage(ref: String, with image: PlatformImage) -> Bool {
         guard MediaKind(ref: ref) == .image, let url = fileURL(ref) else { return false }
         let optimize = CircleSettingsStore.shared.autoOptimize(FeedStore.shared.activeCircleId)
-        let img = optimize ? Self.downscale(image, maxDimension: 2560) : image
-        let quality: CGFloat = optimize ? 0.88 : 0.95
+        let img = optimize ? Self.downscale(image, maxDimension: 2048) : image
+        let quality: CGFloat = optimize ? 0.70 : 0.95
         guard let data = img.jpegData(compressionQuality: quality) else { return false }
         do { try data.write(to: url) } catch { return false }
         cachePut(ref, MediaItem(id: ref, kind: .image, image: img, videoURL: nil))

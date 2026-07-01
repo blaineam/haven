@@ -877,16 +877,25 @@ fun VideoTile(circleId: String, ref: String, modifier: Modifier = Modifier) {
                 modifier = Modifier.fillMaxSize(),
                 factory = { ctx ->
                     android.widget.VideoView(ctx).apply {
-                        setVideoPath(f.absolutePath)
-                        val mc = android.widget.MediaController(ctx)
-                        mc.setAnchorView(this)
-                        setMediaController(mc)
+                        // Listeners BEFORE setVideoPath so onError catches prepare/decode failures.
                         setOnPreparedListener {
                             it.isLooping = true
                             val v = if (profile.videoSoundOn) 1f else 0f
                             it.setVolume(v, v)
                             player.value = it
+                            start()   // AUTOPLAY (iOS parity) — VideoView does NOT auto-start on setVideoPath,
+                                      // so feed videos just sat on a black frame and looked like they never loaded.
                         }
+                        setOnErrorListener { _, what, extra ->
+                            // Surface decode failures (e.g. an HEVC clip this device can't decode) instead of
+                            // failing silently — visible in logcat as tag VideoTile.
+                            android.util.Log.e("VideoTile", "playback error what=$what extra=$extra ref=$ref path=${f.absolutePath}")
+                            false
+                        }
+                        val mc = android.widget.MediaController(ctx)
+                        mc.setAnchorView(this)
+                        setMediaController(mc)
+                        setVideoPath(f.absolutePath)
                     }
                 },
             )
