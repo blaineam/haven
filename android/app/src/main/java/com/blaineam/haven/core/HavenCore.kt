@@ -33,9 +33,7 @@ class HavenCore private constructor(
     /** A shareable invite link — the https website form pointing at the static site (parity with iOS),
      *  so opening it in a browser lands on wemiller.com/apps/haven, which resolves /#<id>.<verify> into
      *  an "open in Haven" page. The id + verify ride in the URL fragment and never reach a server. */
-    fun inviteUri(): String = account.havenLink(INVITE_DOMAIN)
-
-    companion object { const val INVITE_DOMAIN = "wemiller.com/apps/haven" }
+    fun inviteUri(): String = account.havenLink("wemiller.com/apps/haven")
 
     /** Run the on-device privacy self-test (identity / seal-open / signing / link parsing). */
     fun runSelfTest(): SelfTestReport = selfTest()
