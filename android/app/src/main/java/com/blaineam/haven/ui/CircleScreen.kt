@@ -648,8 +648,19 @@ fun LocationChip(ref: String) {
     val pin = com.blaineam.haven.core.LocationShare.parse(ref) ?: return
     Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(HavenTheme.card)
         .clickable {
-            val uri = android.net.Uri.parse("geo:${pin.lat},${pin.lon}?q=${pin.lat},${pin.lon}(${android.net.Uri.encode(pin.label)})")
-            runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, uri)) }
+            // Prefer the native maps app via a geo: URI, but many devices (e.g. the Nokia 6.1 with
+            // no Google Maps) have NOTHING registered for the bare geo: scheme, so the intent silently
+            // no-ops. Resolve first; if nothing handles it (or it throws), fall back to a plain
+            // https maps URL any browser can open.
+            val geoUri = android.net.Uri.parse("geo:${pin.lat},${pin.lon}?q=${pin.lat},${pin.lon}(${android.net.Uri.encode(pin.label)})")
+            val geoIntent = android.content.Intent(android.content.Intent.ACTION_VIEW, geoUri)
+            val handled = geoIntent.resolveActivity(context.packageManager) != null &&
+                runCatching { context.startActivity(geoIntent) }.isSuccess
+            if (!handled) {
+                val webUri = android.net.Uri.parse(
+                    "https://www.google.com/maps/search/?api=1&query=${pin.lat},${pin.lon}")
+                runCatching { context.startActivity(android.content.Intent(android.content.Intent.ACTION_VIEW, webUri)) }
+            }
         }
         .padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.size(36.dp).clip(CircleShape).background(HavenTheme.pink.copy(alpha = 0.2f)), contentAlignment = Alignment.Center) {
@@ -693,7 +704,14 @@ fun MediaViewer(circleId: String, refs: List<String>, startIndex: Int, onClose: 
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     LaunchedEffect(pager.currentPage) { scale = 1f; offset = Offset.Zero }
-    Box(Modifier.fillMaxSize().background(Color.Black).clickable { onClose() }) {
+    // Tap-to-close applies to photo pages (tap the letterbox to dismiss); on a video page we let the
+    // VideoView's own MediaController + the sound toggle own all taps, and dismissal goes through the
+    // explicit Close button — otherwise a stray tap on the video would close the viewer.
+    val onVideoPage = refs.getOrNull(pager.currentPage)?.let { LocalMedia.isVideo(it) } == true
+    Box(
+        Modifier.fillMaxSize().background(Color.Black)
+            .then(if (onVideoPage) Modifier else Modifier.clickable { onClose() }),
+    ) {
         androidx.compose.foundation.pager.HorizontalPager(
             state = pager,
             modifier = Modifier.fillMaxSize(),
@@ -701,6 +719,9 @@ fun MediaViewer(circleId: String, refs: List<String>, startIndex: Int, onClose: 
         ) { page ->
             val ref = refs[page]
             if (LocalMedia.isVideo(ref)) {
+                // Full-screen player: VideoTile autoplays (start() in onPreparedListener), loops, has an
+                // onErrorListener logging to tag "VideoTile", and a sound toggle. This is why grid videos
+                // opened via the pager now actually play instead of showing the play-glyph still.
                 VideoTile(circleId, ref, Modifier.fillMaxSize())
             } else {
                 MediaImage(
@@ -1059,6 +1080,15 @@ fun PostCard(item: FeedItemFfi, circleId: String = DEFAULT_CIRCLE) {
                     )
                 }
             }
+        }
+        // An unsent post shows a placeholder and hides ALL affordances (media, reactions,
+        // react/comment bar, composer) — parity with iOS, which renders "Message unsent" and
+        // strips the interaction controls. Keep the author + timestamp row above.
+        if (item.unsent) {
+            Spacer(Modifier.height(8.dp))
+            Text("Message unsent", color = HavenTheme.textSecondary, fontSize = 14.sp,
+                fontStyle = androidx.compose.ui.text.font.FontStyle.Italic)
+            return@Column
         }
         if (item.body.isNotBlank()) {
             Spacer(Modifier.height(10.dp))
