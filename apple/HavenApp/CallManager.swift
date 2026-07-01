@@ -1462,36 +1462,45 @@ struct CallOverlay: View {
     }
 
     private var controls: some View {
-        HStack(spacing: 14) {
-            Button { CallManager.shared.toggleMute() } label: {
-                callButton(call.muted ? "mic.slash.fill" : "mic.fill", on: call.muted)
-            }
-            #if !targetEnvironment(macCatalyst)
-            Button { CallManager.shared.toggleSpeaker() } label: {
-                callButton(call.speakerOn ? "speaker.wave.3.fill" : "speaker.fill", on: call.speakerOn)
-            }
-            #endif
-            Button { CallManager.shared.toggleVideo() } label: {
-                callButton(call.videoOn ? "video.fill" : "video.slash.fill", on: call.videoOn)
-            }
-            screenShareButton
-            #if targetEnvironment(macCatalyst)
-            if call.videoOn { cameraMenu }
-            micMenu
-            outputLabel
-            #else
-            if call.videoOn {
-                Button { CallManager.shared.flipCamera() } label: {
-                    callButton("arrow.triangle.2.circlepath.camera.fill", on: false)
+        // TWO rows: the media toggles up top, the call actions (add / hang up) below — a single row
+        // overflowed on iPhone once screen-share + flip-camera were added.
+        VStack(spacing: 14) {
+            HStack(spacing: 14) {
+                Button { CallManager.shared.toggleMute() } label: {
+                    callButton(call.muted ? "mic.slash.fill" : "mic.fill", on: call.muted)
                 }
+                #if targetEnvironment(macCatalyst)
+                micMenu
+                #else
+                Button { CallManager.shared.toggleSpeaker() } label: {
+                    callButton(call.speakerOn ? "speaker.wave.3.fill" : "speaker.fill", on: call.speakerOn)
+                }
+                #endif
+                Button { CallManager.shared.toggleVideo() } label: {
+                    callButton(call.videoOn ? "video.fill" : "video.slash.fill", on: call.videoOn)
+                }
+                #if targetEnvironment(macCatalyst)
+                if call.videoOn { cameraMenu }
+                #else
+                if call.videoOn {
+                    Button { CallManager.shared.flipCamera() } label: {
+                        callButton("arrow.triangle.2.circlepath.camera.fill", on: false)
+                    }
+                }
+                #endif
             }
-            #endif
-            // Add another person to the live call — rings them and meshes them with everyone already in.
-            Button { showAddPicker = true } label: { callButton("person.badge.plus", on: false) }
-            Button { CallManager.shared.endCall() } label: {
-                Image(systemName: "phone.down.fill").font(.title2)
-                    .foregroundStyle(.white).frame(width: 58, height: 58)
-                    .background(Color.red, in: Circle())
+            HStack(spacing: 14) {
+                screenShareButton
+                #if targetEnvironment(macCatalyst)
+                outputLabel
+                #endif
+                // Add another person to the live call — rings them and meshes them with everyone already in.
+                Button { showAddPicker = true } label: { callButton("person.badge.plus", on: false) }
+                Button { CallManager.shared.endCall() } label: {
+                    Image(systemName: "phone.down.fill").font(.title2)
+                        .foregroundStyle(.white).frame(width: 58, height: 58)
+                        .background(Color.red, in: Circle())
+                }
             }
         }
         .padding(.horizontal, 12)
