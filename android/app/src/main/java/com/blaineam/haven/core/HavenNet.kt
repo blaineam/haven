@@ -1489,6 +1489,35 @@ object HavenNet : InboundListener {
     private val pushedNearby = HashSet<String>()        // refs already pushed to nearby siblings this session
 
     private fun mediaKey(ref: String) = "haven/media/$ref"
+    private fun mediaChunkKey(ref: String, i: Int) = "haven/media/$ref/$i"
+
+    // ---- Chunked media transfer (large-blob fix) -----------------------------------------------
+    // A relay/S3 blob is capped at MAX_BLOB = 256 MB (core/haven-net). Large sealed videos (600 MB+)
+    // stored as ONE blob under "haven/media/<ref>" exceed that → a GET truncates and the receiver can't
+    // play them (photos, ~5 MB, worked). Fix: slice the SEALED bytes into 8 MB chunks under
+    // "haven/media/<ref>/<i>" and store a tiny manifest under "haven/media/<ref>". Download fetches
+    // chunks IN ORDER and appends to a temp file on disk (streaming — never the whole blob in RAM).
+    // Small media (<= one chunk) stays a single sealed blob (no manifest) for back-compat. The format is
+    // BYTE-IDENTICAL to iOS/macOS + desktop (same 8 MB size, key scheme, and manifest bytes).
+    private val mediaChunkBytes = 8 * 1024 * 1024   // 8 MB — under MAX_BLOB, memory-safe
+    // 9-byte ASCII magic marking a manifest. A sealed envelope is JSON starting with '{', so no collision.
+    private val manifestMagic = "HVCHUNK1\n".toByteArray(Charsets.US_ASCII)
+
+    private fun makeManifest(sizes: List<Int>): ByteArray {
+        val json = org.json.JSONObject()
+            .put("v", 1).put("chunks", sizes.size).put("total", sizes.sum())
+            .put("sizes", org.json.JSONArray(sizes))
+        return manifestMagic + json.toString().toByteArray(Charsets.UTF_8)
+    }
+    /** If [blob] is a chunk manifest, return its chunk count; else null (legacy/small single blob). */
+    private fun parseManifest(blob: ByteArray): Int? {
+        if (blob.size <= manifestMagic.size) return null
+        for (i in manifestMagic.indices) if (blob[i] != manifestMagic[i]) return null
+        return runCatching {
+            val body = String(blob, manifestMagic.size, blob.size - manifestMagic.size, Charsets.UTF_8)
+            org.json.JSONObject(body).getInt("chunks").takeIf { it > 0 }
+        }.getOrNull()
+    }
 
     // ---- Serial media-transfer queue (OOM guard) ------------------------------------------------
     // Backups (uploadMedia) and relay restores (fetchMediaFromRelay) each load a FULL media blob
@@ -1578,6 +1607,7 @@ object HavenNet : InboundListener {
             }
         }
         SyncMetrics.setPending(missing.size)   // media refs still missing locally (iOS nbMediaPending)
+        android.util.Log.i("MediaSync", "requestMissing missing=${missing.size} firstFew=${missing.keys.take(3)} defaultRelay=${defaultRelayHex.take(12)} relayNodes=${relayNodes.mapValues { it.value.map { n -> n.take(10) } }}")
         // THROTTLE: a missing ref used to be direct-requested from EVERY contact on every sweep, so a
         // backlog of missing media flooded the network with hundreds of thousands of frames per cycle
         // (drowning real delivery — the iOS flood bug). Direct-request each ref at most once per 5 min and
@@ -1607,38 +1637,104 @@ object HavenNet : InboundListener {
     suspend fun uploadMedia(circleId: String, ref: String) {
         val blob = LocalMedia.rawSealed(ref) ?: return
         val key = mediaKey(ref)
+        val chunked = blob.size > mediaChunkBytes
         for (nodeHex in relaysFor(circleId)) {
+            // S3-BUCKET relay: put via the S3 FFI (relayClientFor can't dial an "s3:" pseudo-node).
+            if (nodeHex.startsWith("s3:")) {
+                val cfg = StorageStore.s3Config(appContext) ?: continue
+                runCatching {
+                    if (chunked) {
+                        val sizes = chunkOffsets(blob.size).mapIndexed { i, (from, to) ->
+                            uniffi.haven_ffi.s3Put(cfg, mediaChunkKey(ref, i), blob.copyOfRange(from, to)); to - from
+                        }
+                        uniffi.haven_ffi.s3Put(cfg, key, makeManifest(sizes))
+                    } else {
+                        uniffi.haven_ffi.s3Put(cfg, key, blob)
+                    }
+                }.onSuccess { markRelaySeen(nodeHex) }
+                    .onFailure { android.util.Log.d(TAG, "s3 media put failed ($nodeHex): ${it.message}") }
+                continue
+            }
             val client = relayClientFor(nodeHex) ?: continue
-            runCatching { client.put(key, blob) }
+            runCatching {
+                if (chunked) {
+                    val sizes = chunkOffsets(blob.size).mapIndexed { i, (from, to) ->
+                        client.put(mediaChunkKey(ref, i), blob.copyOfRange(from, to)); to - from
+                    }
+                    client.put(key, makeManifest(sizes))
+                } else {
+                    client.put(key, blob)
+                }
+            }
                 .onSuccess { markRelayOk(nodeHex) }
                 .onFailure { relayFailed(nodeHex) }
         }
     }
 
+    /** Byte ranges of each 8 MB chunk over a blob of [size] bytes: list of (from, toExclusive). */
+    private fun chunkOffsets(size: Int): List<Pair<Int, Int>> {
+        val out = ArrayList<Pair<Int, Int>>()
+        var off = 0
+        while (off < size) { val end = minOf(off + mediaChunkBytes, size); out.add(off to end); off = end }
+        return out
+    }
+
     private suspend fun fetchMediaFromRelay(circleId: String, ref: String): Boolean {
         val key = mediaKey(ref)   // "haven/media/<ref>" — matches the iOS S3 upload key
-        // Try each relay in turn; the first that has the blob wins (graceful fallback).
-        for (nodeHex in relaysFor(circleId)) {
-            // S3-BUCKET relay: fetch the blob directly via the S3 FFI. relayClientFor can't dial an "s3:"
-            // pseudo-node, so WITHOUT this branch media stored in S3 was NEVER fetched per-ref — the mailbox
-            // poll has an S3 branch (so posts synced) but this media fetch did not, so videos + large photos
-            // that can't inline never arrived. THE "posts sync but recent videos won't play on Android" bug.
+        val relays = relaysFor(circleId)
+        val mineId = runCatching { node?.nodeIdHex() ?: social.myNodeHex() }.getOrNull()?.take(12)
+        android.util.Log.i("MediaSync", "fetch ref=$ref circle=$circleId relays=${relays.map { it.take(12) }} mine=$mineId")
+        // Try each relay in turn; the first that has the (manifest or) blob wins (graceful fallback).
+        for (nodeHex in relays) {
+            // S3-BUCKET relay: fetch via the S3 FFI. relayClientFor can't dial an "s3:" pseudo-node, so
+            // WITHOUT this branch media stored in S3 was NEVER fetched per-ref — the mailbox poll has an
+            // S3 branch (so posts synced) but this media fetch did not, so videos + large photos that
+            // can't inline never arrived. THE "posts sync but recent videos won't play on Android" bug.
             if (nodeHex.startsWith("s3:")) {
                 val cfg = StorageStore.s3Config(appContext) ?: continue
-                val blob = runCatching { uniffi.haven_ffi.s3Get(cfg, key) }.getOrNull() ?: continue
+                val head = runCatching { uniffi.haven_ffi.s3Get(cfg, key) }.getOrNull() ?: continue
+                val ok = reassembleInto(ref, head) { i -> runCatching { uniffi.haven_ffi.s3Get(cfg, mediaChunkKey(ref, i)) }.getOrNull() }
+                if (!ok) continue
                 markRelaySeen(nodeHex)
-                LocalMedia.writeRawSealed(ref, blob)
-                android.util.Log.i("MediaSync", "S3 fetched ref=$ref size=${blob.size}")
+                android.util.Log.i("MediaSync", "S3 fetched ref=$ref headBytes=${head.size}")
                 return true
             }
-            val client = relayClientFor(nodeHex) ?: continue
-            val blob = runCatching { client.get(key) }.getOrNull()
-            if (blob == null) { relayFailed(nodeHex); continue }
+            val client = relayClientFor(nodeHex)
+            if (client == null) { android.util.Log.i("MediaSync", "  node=${nodeHex.take(12)} client=NULL (self-dial guard / backoff / connect-fail)"); continue }
+            val head = runCatching { client.get(key) }.getOrNull()
+            android.util.Log.i("MediaSync", "  node=${nodeHex.take(12)} got=${head?.size ?: -1}")
+            if (head == null) { relayFailed(nodeHex); continue }
+            val ok = reassembleInto(ref, head) { i -> runCatching { client.get(mediaChunkKey(ref, i)) }.getOrNull() }
+            if (!ok) { relayFailed(nodeHex); continue }
             markRelayOk(nodeHex)
-            LocalMedia.writeRawSealed(ref, blob)
             return true
         }
+        android.util.Log.i("MediaSync", "fetch ref=$ref FAILED — no relay served it")
         return false
+    }
+
+    /**
+     * Persist a fetched media [head] for [ref]. If [head] is a chunk manifest, fetch each chunk via
+     * [getChunk] and APPEND it to a temp file on disk (streaming — the full sealed blob is never held in
+     * RAM), then adopt it. Otherwise [head] IS the sealed blob (legacy/small). Returns false on any
+     * missing chunk so the caller can try the next relay.
+     */
+    private suspend fun reassembleInto(ref: String, head: ByteArray, getChunk: suspend (Int) -> ByteArray?): Boolean {
+        val count = parseManifest(head)
+        if (count == null) { LocalMedia.writeRawSealed(ref, head); return true }
+        val part = LocalMedia.newSealedPart(ref)
+        for (i in 0 until count) {
+            val chunk = getChunk(i)
+            if (chunk == null || !LocalMedia.appendSealedPart(part, chunk)) {
+                runCatching { part.delete() }
+                android.util.Log.i("MediaSync", "reassemble ref=$ref FAILED at chunk $i/$count")
+                return false
+            }
+        }
+        val ok = LocalMedia.adoptSealedPart(ref, part)
+        if (!ok) runCatching { part.delete() }
+        android.util.Log.i("MediaSync", "reassemble ref=$ref chunks=$count adopted=$ok")
+        return ok
     }
 
     /** Frame 3: [hex64 requester][ref]. If we hold the bytes, stream them back as sealed chunks. */

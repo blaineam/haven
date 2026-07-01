@@ -78,6 +78,39 @@ enum SharedStore {
     static var isVolunteering: Bool { mailboxClient() != nil }
 
     private static func key(_ ref: String) -> String { "haven/media/\(ref)" }
+    private static func chunkKey(_ ref: String, _ i: Int) -> String { "haven/media/\(ref)/\(i)" }
+
+    // MARK: - Chunked media transfer (large-blob fix)
+    //
+    // A relay/S3 blob is capped at MAX_BLOB = 256 MB (core/haven-net blobstore). Large videos
+    // (600 MB+) sealed into ONE blob under "haven/media/<ref>" exceed that, so a GET truncates and
+    // the receiver can't play them (photos, ~5 MB, worked). Fix: slice the SEALED bytes into 8 MB
+    // chunks under "haven/media/<ref>/<i>" and store a tiny manifest under "haven/media/<ref>". On
+    // download, fetch chunks IN ORDER and APPEND to a file on disk (streaming — never hold the full
+    // sealed blob in RAM, which OOM-killed Android before). Small media (<= one chunk) stays a single
+    // sealed blob (no manifest) for back-compat. This format is BYTE-IDENTICAL across iOS/macOS,
+    // Android and desktop so they interoperate.
+    static let mediaChunkBytes = 8 * 1024 * 1024   // 8 MB — well under MAX_BLOB, memory-safe
+    /// Magic prefix that marks a manifest blob (a sealed envelope is JSON starting with '{', so it can
+    /// never collide). Exactly these 9 bytes, then a JSON body.
+    static let manifestMagic = Data("HVCHUNK1\n".utf8)
+
+    /// Build the manifest blob for a sealed media of `sizes` chunk lengths.
+    private static func makeManifest(sizes: [Int]) -> Data {
+        let total = sizes.reduce(0, +)
+        let json: [String: Any] = ["v": 1, "chunks": sizes.count, "total": total, "sizes": sizes]
+        var out = manifestMagic
+        out.append((try? JSONSerialization.data(withJSONObject: json)) ?? Data("{}".utf8))
+        return out
+    }
+    /// If `blob` is a chunk manifest, return the parsed chunk count; else nil (legacy/small single blob).
+    private static func parseManifest(_ blob: Data) -> Int? {
+        guard blob.count > manifestMagic.count, blob.prefix(manifestMagic.count) == manifestMagic else { return nil }
+        let body = blob.suffix(from: blob.startIndex + manifestMagic.count)
+        guard let obj = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let n = obj["chunks"] as? Int, n > 0 else { return nil }
+        return n
+    }
 
     /// The relay node ids serving a circle (the common path) — posts are mirrored to ALL of them
     /// and read from any (graceful fallback if one is down).
@@ -108,49 +141,144 @@ enum SharedStore {
             guard let raw = try? Data(contentsOf: url) else { return nil }
             return try? social.sealCircleMedia(circleId: circleId, data: raw)
         }.value
-        guard let sealed else { return }
+        guard let sealed else { HavenLog.sync("backup SEAL-FAIL ref=\(ref)"); return }
         let nodes = relayNodes(circleId)
+        let chunked = sealed.count > mediaChunkBytes
+        HavenLog.sync("backup ref=\(ref) size=\(sealed.count) chunked=\(chunked) relays=\(nodes.count) s3=\(mailboxClient() != nil)")
         if !nodes.isEmpty {
             // Mirror to EVERY configured relay (redundancy). Content-addressed key → idempotent
             // re-puts, and a relay in backoff is skipped (RelayClients is health-aware).
             for node in nodes {
                 // Our OWN hosted relay: store the media directly in the local mailbox (no iroh self-dial).
                 if RelayHost.shared.serving, node == RelayHost.shared.nodeId {
-                    _ = RelayHost.shared.localPut(key(ref), sealed); continue
+                    if chunked {
+                        var sizes: [Int] = []
+                        var off = 0
+                        while off < sealed.count {
+                            let end = min(off + mediaChunkBytes, sealed.count)
+                            let slice = sealed.subdata(in: off..<end)
+                            _ = RelayHost.shared.localPut(chunkKey(ref, sizes.count), slice)
+                            sizes.append(slice.count); off = end
+                        }
+                        _ = RelayHost.shared.localPut(key(ref), makeManifest(sizes: sizes))
+                    } else {
+                        _ = RelayHost.shared.localPut(key(ref), sealed)
+                    }
+                    continue
                 }
                 guard let c = await RelayClients.client(node) else { continue }
                 if await c.has(key: key(ref)) { RelayHealth.shared.recordSuccess(node); RelayMailboxStore.shared.markSeen(node); continue }
-                do { try await c.put(key: key(ref), data: sealed); RelayHealth.shared.recordSuccess(node); RelayMailboxStore.shared.markSeen(node) }
+                do {
+                    if chunked {
+                        var sizes: [Int] = []
+                        var off = 0
+                        while off < sealed.count {
+                            let end = min(off + mediaChunkBytes, sealed.count)
+                            let slice = sealed.subdata(in: off..<end)
+                            try await c.put(key: chunkKey(ref, sizes.count), data: slice)
+                            sizes.append(slice.count); off = end
+                        }
+                        try await c.put(key: key(ref), data: makeManifest(sizes: sizes))
+                    } else {
+                        try await c.put(key: key(ref), data: sealed)
+                    }
+                    RelayHealth.shared.recordSuccess(node); RelayMailboxStore.shared.markSeen(node)
+                }
                 catch { RelayHealth.shared.recordFailure(node); RelayClients.forget(node) }
             }
             return
         }
-        guard let s3 = mailboxClient() else { return }
-        if await s3.headObject(key: key(ref)) { return }
-        try? await s3.putObject(key: key(ref), data: sealed)
+        guard let s3 = mailboxClient() else { HavenLog.sync("backup NO-DEST ref=\(ref)"); return }
+        if await s3.headObject(key: key(ref)) { HavenLog.sync("backup s3-have ref=\(ref)"); return }
+        do {
+            if chunked {
+                var sizes: [Int] = []
+                var off = 0
+                while off < sealed.count {
+                    let end = min(off + mediaChunkBytes, sealed.count)
+                    let slice = sealed.subdata(in: off..<end)
+                    try await s3.putObject(key: chunkKey(ref, sizes.count), data: slice)
+                    sizes.append(slice.count); off = end
+                }
+                try await s3.putObject(key: key(ref), data: makeManifest(sizes: sizes))
+            } else {
+                try await s3.putObject(key: key(ref), data: sealed)
+            }
+            HavenLog.sync("backup s3-put OK ref=\(ref) size=\(sealed.count) chunked=\(chunked)")
+        }
+        catch { HavenLog.sync("backup s3-put FAIL ref=\(ref): \(error.localizedDescription)") }
+    }
+
+    /// A source that can serve the manifest+chunk keys for one media ref.
+    private enum MediaSource {
+        case ownRelay                              // our own hosted relay (local store)
+        case relay(RelayClient, String)            // dialed relay client + node hex
+        case s3(S3Client)                          // shared/owner bucket
+    }
+    /// Fetch one key's bytes from a source (nil = miss).
+    private static func fetch(_ src: MediaSource, _ key: String) async -> Data? {
+        switch src {
+        case .ownRelay: return RelayHost.shared.localGet(key)
+        case .relay(let c, _): return await c.get(key: key)
+        case .s3(let s3): return try? await s3.getObject(key: key)
+        }
     }
 
     /// Fetch a media blob from the circle's mailbox and open it for whichever circle it belongs to.
+    /// If the mailbox holds a chunked manifest (large media), reassemble the sealed bytes by streaming
+    /// each 8 MB chunk to a temp file on disk — the full sealed blob is NEVER held in RAM during transfer.
     static func restore(ref: String, circleIds: [String], social: HavenSocial) async -> Data? {
-        var sealed: Data?
+        var chosen: MediaSource?
+        var head: Data?
         var src = "none"
-        // Try every relay of every circle first (fallback reads), then the S3 bucket.
+        // Try every relay of every circle first (fallback reads), then the S3 bucket. We fetch the
+        // manifest key "haven/media/<ref>" first; whichever source serves it also serves the chunks.
         outer: for cid in circleIds {
             for node in relayNodes(cid) {
                 // OUR OWN hosted relay: read the media from the local store (a sibling/friend uploaded it
                 // to us) — we can't dial ourselves. This is what made a host's media show "all spinners".
                 if RelayHost.shared.serving, node == RelayHost.shared.nodeId {
-                    if let s = RelayHost.shared.localGet(key(ref)) { sealed = s; src = "own:\(node.prefix(8))"; break outer }
+                    if let s = RelayHost.shared.localGet(key(ref)) { head = s; chosen = .ownRelay; src = "own:\(node.prefix(8))"; break outer }
                     continue
                 }
                 guard let c = await RelayClients.client(node) else { continue }
-                if let s = await c.get(key: key(ref)) { RelayHealth.shared.recordSuccess(node); RelayMailboxStore.shared.markSeen(node); sealed = s; src = "dial:\(node.prefix(8))"; break outer }
+                if let s = await c.get(key: key(ref)) { RelayHealth.shared.recordSuccess(node); RelayMailboxStore.shared.markSeen(node); head = s; chosen = .relay(c, node); src = "dial:\(node.prefix(8))"; break outer }
             }
         }
-        if sealed == nil, let s3 = mailboxClient() { sealed = try? await s3.getObject(key: key(ref)); if sealed != nil { src = "s3" } }
-        guard let blob = sealed else {
+        if head == nil, let s3 = mailboxClient() {
+            if let s = try? await s3.getObject(key: key(ref)) { head = s; chosen = .s3(s3); src = "s3" }
+        }
+        guard let head, let source = chosen else {
             HavenLog.relay("media restore \(ref.prefix(12)): NOT FOUND on any relay/S3")
             return nil
+        }
+
+        // Reassemble the SEALED bytes. If `head` is a manifest, stream each chunk to a temp file on disk
+        // (bounded RAM: one 8 MB chunk at a time); otherwise `head` IS the sealed blob (legacy/small).
+        let sealed: Data?
+        if let chunkCount = parseManifest(head) {
+            let temp = MediaStore.shared.makeTempFile()
+            guard let handle = try? FileHandle(forWritingTo: temp) else {
+                try? FileManager.default.removeItem(at: temp)
+                HavenLog.relay("media restore \(ref.prefix(12)): temp-open FAIL"); return nil
+            }
+            var ok = true
+            for i in 0..<chunkCount {
+                guard let part = await fetch(source, chunkKey(ref, i)) else { ok = false; break }
+                do { try handle.write(contentsOf: part) } catch { ok = false; break }
+            }
+            try? handle.close()
+            guard ok else {
+                try? FileManager.default.removeItem(at: temp)
+                HavenLog.relay("media restore \(ref.prefix(12)): chunked reassemble FAIL via \(src)"); return nil
+            }
+            sealed = try? Data(contentsOf: temp)   // read the reassembled sealed blob to open it
+            try? FileManager.default.removeItem(at: temp)
+        } else {
+            sealed = head
+        }
+        guard let blob = sealed else {
+            HavenLog.relay("media restore \(ref.prefix(12)): reassembled read FAIL via \(src)"); return nil
         }
         for cid in circleIds {
             if let data = social.openCircleMedia(circleId: cid, sealed: blob) {

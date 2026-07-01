@@ -5,7 +5,7 @@
 //! right player; bare refs (or `i:`) are images.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use haven_ffi::HavenSocial;
@@ -135,6 +135,35 @@ impl LocalMedia {
     /// Write a sealed blob fetched from the relay straight to disk.
     pub fn write_raw_sealed(&self, reference: &str, blob: &[u8]) {
         let _ = fs::write(self.dir.join(bare_id(reference)), blob);
+    }
+
+    // ---- Chunked reassembly (large-media fix) -----------------------------------------------
+    // A relay/S3 blob is capped at MAX_BLOB = 256 MB, so large sealed videos are transferred as 8 MB
+    // chunks (see engine::upload_media / fetch_media_from_relay). On download we APPEND each chunk to a
+    // temp file on disk — the full sealed blob is NEVER held in RAM at once — then adopt it.
+
+    /// A fresh empty temp file to reassemble an incoming chunked (sealed) transfer for `reference`.
+    pub fn new_sealed_part(&self, reference: &str) -> PathBuf {
+        let p = self.dir.join(format!("incoming_{}.part", bare_id(reference)));
+        let _ = fs::remove_file(&p);
+        let _ = fs::File::create(&p);
+        p
+    }
+
+    /// Append one sealed chunk's bytes to the temp reassembly file (streaming — no full blob in RAM).
+    pub fn append_sealed_part(&self, part: &Path, bytes: &[u8]) -> bool {
+        use std::io::Write;
+        fs::OpenOptions::new()
+            .append(true)
+            .open(part)
+            .and_then(|mut f| f.write_all(bytes))
+            .is_ok()
+    }
+
+    /// Move a fully-reassembled sealed temp file into place under `reference`.
+    pub fn adopt_sealed_part(&self, reference: &str, part: &Path) -> bool {
+        let dst = self.dir.join(bare_id(reference));
+        fs::rename(part, &dst).is_ok()
     }
 
     /// Delete every stored media file (part of "start over").

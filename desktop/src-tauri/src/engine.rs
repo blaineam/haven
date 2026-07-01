@@ -102,6 +102,12 @@ pub struct Engine {
 }
 
 const MEDIA_CHUNK_SIZE: usize = 512 * 1024;
+/// Relay/S3 media chunk size — 8 MB, well under blobstore's MAX_BLOB (256 MB) and memory-safe.
+/// (Distinct from MEDIA_CHUNK_SIZE above, which is the peer-to-peer iroh frame chunk.)
+const MEDIA_CHUNK_BYTES: usize = 8 * 1024 * 1024;
+/// 9-byte ASCII magic marking a chunk manifest blob. A sealed envelope is JSON starting with '{',
+/// so it can never collide. Must be byte-identical across iOS/macOS + Android.
+const MEDIA_MANIFEST_MAGIC: &[u8] = b"HVCHUNK1\n";
 
 fn now_ms() -> u64 {
     SystemTime::now()
@@ -1850,6 +1856,35 @@ impl Engine {
     fn media_key(reference: &str) -> String {
         format!("haven/media/{reference}")
     }
+    fn media_chunk_key(reference: &str, i: usize) -> String {
+        format!("haven/media/{reference}/{i}")
+    }
+
+    // ---- Chunked media transfer (large-blob fix) -----------------------------------------------
+    // A relay/S3 blob is capped at MAX_BLOB = 256 MB (core/haven-net). Large sealed videos (600 MB+)
+    // stored as ONE blob under "haven/media/<ref>" exceed that → a GET truncates and the receiver can't
+    // play them. Fix: slice the SEALED bytes into 8 MB chunks under "haven/media/<ref>/<i>" and store a
+    // tiny manifest under "haven/media/<ref>". Download fetches chunks IN ORDER and appends to a temp file
+    // on disk (streaming — never the whole blob in RAM). Small media (<= one chunk) stays a single sealed
+    // blob (no manifest) for back-compat. BYTE-IDENTICAL to iOS/macOS + Android (same 8 MB size, key
+    // scheme, and manifest bytes: a 9-byte magic then JSON).
+    fn make_manifest(sizes: &[usize]) -> Vec<u8> {
+        let total: usize = sizes.iter().sum();
+        let json = serde_json::json!({ "v": 1, "chunks": sizes.len(), "total": total, "sizes": sizes });
+        let mut out = MEDIA_MANIFEST_MAGIC.to_vec();
+        out.extend_from_slice(&serde_json::to_vec(&json).unwrap_or_else(|_| b"{}".to_vec()));
+        out
+    }
+    /// If `blob` is a chunk manifest, return its chunk count; else None (legacy/small single blob).
+    fn parse_manifest(blob: &[u8]) -> Option<usize> {
+        if blob.len() <= MEDIA_MANIFEST_MAGIC.len() || &blob[..MEDIA_MANIFEST_MAGIC.len()] != MEDIA_MANIFEST_MAGIC {
+            return None;
+        }
+        let body = &blob[MEDIA_MANIFEST_MAGIC.len()..];
+        let obj: serde_json::Value = serde_json::from_slice(body).ok()?;
+        let n = obj.get("chunks")?.as_u64()? as usize;
+        if n > 0 { Some(n) } else { None }
+    }
 
     /// A symmetric key derived from the ACCOUNT seed — every one of the user's own devices derives the
     /// identical key, so own-device media chunks sealed with it always open on a sibling. KEM-sealing to
@@ -1944,36 +1979,93 @@ impl Engine {
     async fn upload_media(self: &Arc<Self>, circle_id: &str, reference: &str) {
         let Some(blob) = self.media.raw_sealed(reference) else { return };
         let key = Self::media_key(reference);
-        // Mirror the sealed media blob to every relay (redundancy).
+        let chunked = blob.len() > MEDIA_CHUNK_BYTES;
+        // Mirror the sealed media blob to every relay (redundancy). Large blobs are sliced into 8 MB
+        // chunks under "<key>/<i>" with a manifest at <key> so a GET never exceeds MAX_BLOB.
         for node_hex in self.relays_for(circle_id) {
             if let Some(client) = self.relay_client_for(&node_hex).await {
-                match client.put(key.clone(), blob.clone()).await {
+                let res: Result<(), ()> = async {
+                    if chunked {
+                        let mut sizes = Vec::new();
+                        for (i, slice) in blob.chunks(MEDIA_CHUNK_BYTES).enumerate() {
+                            client.put(Self::media_chunk_key(reference, i), slice.to_vec()).await.map_err(|_| ())?;
+                            sizes.push(slice.len());
+                        }
+                        client.put(key.clone(), Self::make_manifest(&sizes)).await.map_err(|_| ())
+                    } else {
+                        client.put(key.clone(), blob.clone()).await.map_err(|_| ())
+                    }
+                }
+                .await;
+                match res {
                     Ok(()) => self.mark_relay_ok(&node_hex),
-                    Err(_) => self.relay_failed(&node_hex).await,
+                    Err(()) => self.relay_failed(&node_hex).await,
                 }
             }
         }
         if let Some(s3) = self.s3_client().await {
-            let _ = s3.put(&key, &blob).await;
+            if chunked {
+                let mut sizes = Vec::new();
+                let mut ok = true;
+                for (i, slice) in blob.chunks(MEDIA_CHUNK_BYTES).enumerate() {
+                    if s3.put(&Self::media_chunk_key(reference, i), slice).await.is_err() { ok = false; break; }
+                    sizes.push(slice.len());
+                }
+                if ok { let _ = s3.put(&key, &Self::make_manifest(&sizes)).await; }
+            } else {
+                let _ = s3.put(&key, &blob).await;
+            }
         }
     }
 
     async fn fetch_media_from_relay(self: &Arc<Self>, circle_id: &str, reference: &str) -> bool {
         let key = Self::media_key(reference);
-        // Try each relay in turn; the first that has the blob wins (graceful fallback).
+        // Try each relay in turn; the first that has the (manifest or) blob wins (graceful fallback).
         for node_hex in self.relays_for(circle_id) {
             if let Some(client) = self.relay_client_for(&node_hex).await {
-                if let Some(blob) = client.get(key.clone()).await {
+                if let Some(head) = client.get(key.clone()).await {
+                    if let Some(count) = Self::parse_manifest(&head) {
+                        // Stream each chunk to a temp file on disk — never the whole blob in RAM.
+                        let part = self.media.new_sealed_part(reference);
+                        let mut ok = true;
+                        for i in 0..count {
+                            match client.get(Self::media_chunk_key(reference, i)).await {
+                                Some(chunk) if self.media.append_sealed_part(&part, &chunk) => {}
+                                _ => { ok = false; break; }
+                            }
+                        }
+                        if ok && self.media.adopt_sealed_part(reference, &part) {
+                            self.mark_relay_ok(&node_hex);
+                            return true;
+                        }
+                        let _ = std::fs::remove_file(&part);
+                        continue;
+                    }
                     self.mark_relay_ok(&node_hex);
-                    self.media.write_raw_sealed(reference, &blob);
+                    self.media.write_raw_sealed(reference, &head);
                     return true;
                 }
             }
         }
         if let Some(s3) = self.s3_client().await {
-            if let Ok(Some(blob)) = s3.get(&key).await {
-                self.media.write_raw_sealed(reference, &blob);
-                return true;
+            if let Ok(Some(head)) = s3.get(&key).await {
+                if let Some(count) = Self::parse_manifest(&head) {
+                    let part = self.media.new_sealed_part(reference);
+                    let mut ok = true;
+                    for i in 0..count {
+                        match s3.get(&Self::media_chunk_key(reference, i)).await {
+                            Ok(Some(chunk)) if self.media.append_sealed_part(&part, &chunk) => {}
+                            _ => { ok = false; break; }
+                        }
+                    }
+                    if ok && self.media.adopt_sealed_part(reference, &part) {
+                        return true;
+                    }
+                    let _ = std::fs::remove_file(&part);
+                } else {
+                    self.media.write_raw_sealed(reference, &head);
+                    return true;
+                }
             }
         }
         false

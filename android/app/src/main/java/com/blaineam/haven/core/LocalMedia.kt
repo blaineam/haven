@@ -106,6 +106,32 @@ object LocalMedia {
         runCatching { File(dir, bareId(ref)).writeBytes(blob) }
     }
 
+    // ---- Chunked reassembly (large-media fix) ---------------------------------------------------
+    // A relay/S3 blob is capped at MAX_BLOB = 256 MB, so large sealed videos are transferred as 8 MB
+    // chunks (see HavenNet.uploadMedia/fetchMediaFromRelay). On download we APPEND each chunk to a temp
+    // file on disk — the full sealed blob is NEVER held in RAM at once (an earlier all-in-RAM reassemble
+    // OOM-killed low-heap phones). Once every chunk has landed, adoptSealedPart moves it into place.
+
+    /** A fresh empty temp file to reassemble an incoming chunked (sealed) transfer for [ref]. */
+    fun newSealedPart(ref: String): File {
+        val f = File(dir, "incoming_${bareId(ref)}_${System.nanoTime()}.part")
+        runCatching { f.delete() }
+        runCatching { f.createNewFile() }
+        return f
+    }
+
+    /** Append one sealed chunk's bytes to the temp reassembly file (streaming — no full blob in RAM). */
+    fun appendSealedPart(part: File, bytes: ByteArray): Boolean =
+        runCatching { java.io.FileOutputStream(part, true).use { it.write(bytes) }; true }.getOrDefault(false)
+
+    /** Move a fully-reassembled sealed temp file into place under [ref] (load() opens it on read). */
+    fun adoptSealedPart(ref: String, part: File): Boolean =
+        runCatching {
+            val dst = File(dir, bareId(ref))
+            runCatching { dst.delete() }
+            part.renameTo(dst) || (part.copyTo(dst, overwrite = true).let { part.delete(); true })
+        }.getOrDefault(false)
+
     /** Delete every stored media file (part of "start over"). */
     fun clear() {
         runCatching { dir.listFiles()?.forEach { it.delete() } }
