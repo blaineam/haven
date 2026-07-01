@@ -91,6 +91,16 @@ impl Node {
         hex(self.endpoint.id().as_bytes())
     }
 
+    /// A relay/blob client that dials `node_hex` over THIS node's LONG-LIVED, DERP-established endpoint,
+    /// instead of `BlobClient::connect` binding a fresh endpoint per fetch (which cold-starts DERP every
+    /// time → cross-network relay GETs time out while warm messaging works). Reuses the same endpoint that
+    /// keeps the "Connected · Relay" path alive, so media fetches ride the established relay path.
+    pub fn blob_client(&self, node_hex: &str) -> Result<crate::blobstore::BlobClient> {
+        let bytes = decode_hex32(node_hex)?;
+        let id = EndpointId::from_bytes(&bytes).map_err(|e| anyhow!("{e:?}"))?;
+        crate::blobstore::BlobClient::over_endpoint(self.endpoint.clone(), EndpointAddr::new(id))
+    }
+
     // ---- In-process relay (blob mailbox) on THIS node's endpoint (no second iroh node) ----
 
     /// Start hosting the circle relay/mailbox in-process, rooted at `root`. Idempotent. The relay is

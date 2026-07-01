@@ -543,13 +543,14 @@ enum RelayClients {
             return nil
         }
         guard RelayHealth.shared.available(nodeHex) else { return nil }   // skip relays in backoff
-        // Connect to the mailbox as our ACCOUNT identity, not this device's transport key. Relays are
-        // ADDRESSED by a host's device id (which we dial), but authorize by circle MEMBERSHIP (account
-        // ids), so presenting the account id is always authorized — no dependency on the host having
-        // learned our device roster yet (that gap was making a sibling's uploads get rejected → the
-        // perpetual "Syncing…" + media never landing). The messaging node still uses the device key.
-        guard let seed = AccountStore.storedSeed() else { return nil }
-        guard let c = try? await RelayClient.connect(seed: seed, relayNodeHex: nodeHex) else {
+        // Dial the relay over our NODE's warm, DERP-established endpoint (node.relayClient) — NOT a fresh
+        // RelayClient.connect endpoint. A fresh per-fetch endpoint cold-starts its own DERP relay handshake
+        // every time, so cross-network relay GETs timed out at 30s even while the long-lived messaging
+        // endpoint on the same node showed "Connected · Relay". Reusing that warm endpoint is what lets media
+        // fetches actually complete over the internet. (Peer identity is now our device id; media keys are
+        // permissive so they serve regardless, and mailbox auth expands to device ids via the roster.)
+        guard let node = FeedStore.shared.node else { return nil }
+        guard let c = try? node.relayClient(relayNodeHex: nodeHex) else {
             RelayHealth.shared.recordFailure(nodeHex)
             HavenLog.relay("dial relay \(nodeHex.prefix(10)) → CONNECT FAIL")
             return nil

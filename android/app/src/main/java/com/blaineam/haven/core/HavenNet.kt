@@ -1371,7 +1371,11 @@ object HavenNet : InboundListener {
         if (runCatching { relayHost?.nodeIdHex() }.getOrNull() == nodeHex && nodeHex.isNotEmpty()) return null
         // Skip a relay that's in its backoff window — try the others instead.
         if (!relayAvailable(nodeHex)) return null
-        val c = runCatching { RelayClient.connect(core.seed, nodeHex) }.getOrNull()
+        // Dial over our NODE's WARM, DERP-established endpoint (node.relayClient) instead of a fresh
+        // RelayClient.connect endpoint that cold-starts DERP on every fetch — the reason cross-network relay
+        // GETs timed out (30s) while messaging showed "Connected · Relay". Reusing the warm endpoint is what
+        // lets media actually fetch over the internet. Parity with the iOS RelayHost change.
+        val c = runCatching { node?.relayClient(nodeHex) }.getOrNull()
         if (c == null) { markRelayFail(nodeHex); return null }
         markRelayOk(nodeHex)
         relayClients[nodeHex] = c

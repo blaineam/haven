@@ -556,6 +556,18 @@ impl BlobClient {
         Ok(Self { endpoint, dest })
     }
 
+    /// Reuse an EXISTING, warm endpoint (the messaging node's) instead of binding a fresh one. The
+    /// fresh-per-connection endpoint (`connect_addr`) had to cold-start its OWN DERP relay handshake +
+    /// discovery on every fetch, so a cross-network relay GET timed out (30s) even though the long-lived
+    /// messaging endpoint on the SAME node was already DERP-connected ("Connected · Relay"). Dialing the
+    /// blob ALPN over that warm endpoint uses the established DERP path, so media fetches actually complete.
+    pub fn over_endpoint(endpoint: Endpoint, dest: EndpointAddr) -> Result<Self> {
+        if endpoint.id() == dest.id {
+            anyhow::bail!("refusing to dial our own node id (blob self-connect guard)");
+        }
+        Ok(Self { endpoint, dest })
+    }
+
     async fn conn(&self) -> Result<Connection> {
         self.endpoint.connect(self.dest.clone(), BLOB_ALPN).await.ah()
     }

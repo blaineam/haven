@@ -780,6 +780,18 @@ impl HavenNode {
         self.node.node_id_hex()
     }
 
+    /// A relay client that dials `relay_node_hex` over THIS node's WARM, DERP-established endpoint, instead
+    /// of RelayClient::connect binding a fresh endpoint that cold-starts DERP on every fetch (the reason a
+    /// cross-network relay GET timed out at 30s while messaging showed "Connected · Relay"). Reuses the
+    /// same endpoint that keeps the messaging/relay path alive, so media fetches actually complete.
+    pub fn relay_client(&self, relay_node_hex: String) -> Result<Arc<RelayClient>, HavenError> {
+        let inner = self
+            .node
+            .blob_client(&relay_node_hex)
+            .map_err(|e| HavenError::Invalid { msg: format!("relay client: {e}") })?;
+        Ok(Arc::new(RelayClient { inner }))
+    }
+
     /// A shareable ticket a peer dials to reach this node (full address form).
     pub async fn ticket(&self) -> Result<String, HavenError> {
         self.node.ticket().await.map_err(|e| HavenError::Invalid { msg: e.to_string() })
