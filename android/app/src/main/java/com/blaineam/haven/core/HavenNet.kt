@@ -318,6 +318,7 @@ object HavenNet : InboundListener {
                 Wire.PRESIGN -> handlePresignBootstrap(body)
                 Wire.MEDIA_REQ -> handleMediaRequest(body)
                 Wire.MEDIA_CHUNK -> handleMediaChunk(body)
+                Wire.DEVICE_ROSTER -> handleDeviceRosterAnnounce(body)
                 CallWire.INVITE, CallWire.ACCEPT, CallWire.HANGUP, CallWire.OFFER,
                 CallWire.ANSWER, CallWire.ICE, CallWire.GROUP_INVITE ->
                     withContext(Dispatchers.Main) { callRouter?.invoke(type, body) }
@@ -691,7 +692,25 @@ object HavenNet : InboundListener {
         val nowMs = System.currentTimeMillis()
         val resendHistory = nowMs - lastHistoryResendMs > 180_000   // ~3 min, not every tick
         val snapshot = contacts.map { it.idHex }
-        for (idHex in snapshot) sendHello(DEFAULT_CIRCLE, idHex, resendHistory = resendHistory)
+        // Proactively announce MY device roster (type 27) so a friend can AUTHORIZE + dial my specific device
+        // under the per-device transport — without it a freshly-flipped device stays "forbidden" at friends'
+        // relays (the roster rode only rare circle key-commits before). Small, signed, idempotent. iOS parity.
+        val rosterWire = runCatching { social.myDeviceRosterWire() }.getOrDefault(ByteArray(0))
+        for (idHex in snapshot) {
+            sendHello(DEFAULT_CIRCLE, idHex, resendHistory = resendHistory)
+            if (rosterWire.isNotEmpty()) sendFrame(Wire.DEVICE_ROSTER, rosterWire, idHex)
+        }
+        // Bootstrap device-id exchange over the RELAY: a friend who flipped to the per-device transport no
+        // longer resolves by account id, but their relay node (== their device messaging endpoint, one-endpoint
+        // design) does. Push my roster there so they learn + authorize my device id — that's what then lets me
+        // read their mailbox (fetch their media). Parity with iOS. Skip s3 pseudo-relays + my own node.
+        if (rosterWire.isNotEmpty()) {
+            val myNode = runCatching { node?.nodeIdHex() }.getOrNull()
+            val relayTargets = LinkedHashSet<String>()
+            for (c in runCatching { social.circles() }.getOrDefault(emptyList()))
+                for (r in relaysFor(c.id)) if (!r.startsWith("s3:") && r != myNode) relayTargets.add(r)
+            for (r in relayTargets) sendFrame(Wire.DEVICE_ROSTER, rosterWire, r)
+        }
         if (resendHistory) lastHistoryResendMs = nowMs
         reannounceOwnRelay()   // frame 19 was a one-shot at relay start; re-emit so peers reliably learn it
         // Push MY media up to every circle relay periodically (idempotent — skips blobs already present),
@@ -1259,11 +1278,29 @@ object HavenNet : InboundListener {
             host.javaClass.methods.firstOrNull { it.name == "authorizeCircle" && it.parameterTypes.size == 3 }
         }.getOrNull() ?: return
         val me = runCatching { social.myNodeHex() }.getOrNull() ?: ""
+        val myDev = runCatching { social.myDeviceNodeHex() }.getOrNull() ?: ""
         for (c in runCatching { social.circles() }.getOrNull().orEmpty()) {
-            val members = social.contactNodeIds(c.id).toMutableList()
-            if (me.isNotEmpty() && !members.contains(me)) members.add(me)
-            runCatching { authorize.invoke(host, c.id, members, relaysFor(c.id)) }
+            val accounts = social.contactNodeIds(c.id).toMutableList()
+            if (me.isNotEmpty() && !accounts.contains(me)) accounts.add(me)
+            // Authorize each member by their DEVICE node ids too (per-device transport — a peer connects as
+            // its device id), keeping the account id for any pre-multidevice peer. Includes MY device id so a
+            // sibling can read. De-duplicated. Parity with iOS circleMemberships(); without it a friend on
+            // the device transport is "forbidden" at our relay even after we hold their roster.
+            val ids = LinkedHashSet<String>()
+            for (a in accounts) {
+                ids.add(a)
+                runCatching { social.deviceNodeIdsFor(a) }.getOrDefault(emptyList()).forEach { ids.add(it) }
+            }
+            if (myDev.isNotEmpty()) ids.add(myDev)
+            runCatching { authorize.invoke(host, c.id, ids.toList(), relaysFor(c.id)) }
         }
+    }
+
+    /** A friend announced their signed device roster (type 27). Ingest it so we learn their DEVICE node ids,
+     *  then refresh our relay's circle authorization — else a friend on the per-device transport connects
+     *  with a device id our member list doesn't recognize and every fetch is "forbidden". */
+    private fun handleDeviceRosterAnnounce(body: ByteArray) {
+        if (runCatching { social.ingestRosterWire(body) }.getOrDefault(false)) authorizeMembership()
     }
 
     fun stopHosting() {

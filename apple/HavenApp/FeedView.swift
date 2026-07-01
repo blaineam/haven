@@ -823,7 +823,11 @@ final class FeedStore: ObservableObject {
         // throttled to occasional — offline members get history from the mailbox/relay, and a freshly-added
         // contact is back-filled directly by the share-history flow, not this periodic sweep.
         let nowMs = now()
-        // The FLOOD was the per-contact IROH re-send (envs × contacts × every 20s) — throttle THAT.
+        // Proactively announce MY device roster to every contact each cycle (small, signed, idempotent —
+        // the receiver version-checks + dedups). Device-id transport means a friend can only AUTHORIZE +
+        // dial my specific device once they hold my roster; without this it rode only rare circle
+        // key-commits, so a freshly-flipped device stayed "forbidden" at friends' relays. Type 27.
+        let rosterWire = social.myDeviceRosterWire()
         // The nearby broadcast is a single LOCAL fan-out (not × contacts) and is the own-device
         // (iPhone↔Mac) sync path, so it stays every cycle.
         let resendHistory = nowMs - lastHistoryResendMs > 180_000   // ~3 min; gates the WHOLE history re-send
@@ -843,10 +847,22 @@ final class FeedStore: ObservableObject {
             }
             for nodeHex in targets {
                 sendIroh(0, hello, to: nodeHex)
+                if !rosterWire.isEmpty { sendIroh(27, rosterWire, to: nodeHex) }   // announce my device roster
                 // Per-contact history re-send is the flood — throttle it (offline members get history
                 // from the mailbox; new contacts via the share-history flow).
                 if !envs.isEmpty, ConnectionsStore.shared.sharesHistory(nodeHex) {
                     for env in envs { sendIroh(1, eventPayload(circle.id, env), to: nodeHex) }
+                }
+            }
+            // Bootstrap the device-id exchange over the RELAY. When a friend flips to the per-device
+            // transport their ACCOUNT id stops resolving, so a direct send can't reach them to deliver my
+            // roster — but their relay node (== their device messaging endpoint, one-endpoint design) IS
+            // reachable. Push my roster there so the relay-hosting friend learns + authorizes my device id
+            // (that's what lets me then read their mailbox). Skip my own hosted relay.
+            if !rosterWire.isEmpty {
+                for relayHex in RelayMailboxStore.shared.relays(forCircle: circle.id)
+                where relayHex != RelayHost.shared.nodeId && !relayHex.hasPrefix("s3:") {
+                    sendIroh(27, rosterWire, to: relayHex)
                 }
             }
             // Only the OPEN default circle broadcasts its handshake to nearby. Custom + DM
@@ -1125,7 +1141,18 @@ final class FeedStore: ObservableObject {
         case 24: handleDeviceEnrollmentRequest(payload)         // a device of mine asks to be authorized with its own key
         case 25: handleDeviceEnrollmentGrant(payload)           // the primary granted my device a credential
         case 26: handleRequestFullState(payload)                // a newly-linked device of mine asks for my full state
+        case 27: handleDeviceRosterAnnounce(payload)            // a friend's signed device roster (device-id auth/dial)
         default: break
+        }
+    }
+
+    /// A friend announced their signed device roster (type 27). Ingest it so we learn their DEVICE node
+    /// ids, then refresh our relay's circle authorization — otherwise a friend on the per-device transport
+    /// connects with a device id our relay's member list doesn't recognize and every fetch is "forbidden".
+    private func handleDeviceRosterAnnounce(_ payload: Data) {
+        guard let social else { return }
+        if social.ingestRosterWire(wire: payload) {
+            RelayHost.shared.authorizeMembership()   // authorize the newly-learned device ids at our relay
         }
     }
 

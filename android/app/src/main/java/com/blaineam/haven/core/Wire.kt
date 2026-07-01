@@ -24,6 +24,7 @@ object Wire {
     const val PRESIGN: Int = 20      // S3 pre-signed URL pool bootstrap
     const val DEVICE_ENROLL: Int = 24 // a device asks its primary to authorize it (multi-device, iOS-compat)
     const val DEVICE_GRANT: Int = 25  // the primary returns a signed credential to the requesting device
+    const val DEVICE_ROSTER: Int = 27 // a friend's signed device roster (device-id transport auth/dial), iOS-compat
     const val CALL_INVITE: Int = 10
     const val CALL_ACCEPT: Int = 11
     const val CALL_HANGUP: Int = 12
