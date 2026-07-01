@@ -1,14 +1,51 @@
 import SwiftUI
 
+/// Up to 6 pinned DM conversations, kept at the top of the Messages list (iMessage-style).
+/// Order in the array is pin order; persisted so pins survive relaunch.
+final class DMPinStore: ObservableObject {
+    static let shared = DMPinStore()
+    static let maxPins = 6
+    @Published private(set) var pinned: [String]
+    private let key = "haven.dm.pinned"
+    private init() { pinned = UserDefaults.standard.stringArray(forKey: key) ?? [] }
+    func isPinned(_ id: String) -> Bool { pinned.contains(id) }
+    var isFull: Bool { pinned.count >= Self.maxPins }
+    func toggle(_ id: String) {
+        if let i = pinned.firstIndex(of: id) { pinned.remove(at: i) }
+        else if pinned.count < Self.maxPins { pinned.append(id) }
+        UserDefaults.standard.set(pinned, forKey: key)
+    }
+    func remove(_ id: String) {
+        guard let i = pinned.firstIndex(of: id) else { return }
+        pinned.remove(at: i); UserDefaults.standard.set(pinned, forKey: key)
+    }
+}
+
 /// Direct messages. Each DM is a private 2-person circle, so it rides the same E2E
 /// engine, delivery, mesh relay, and persistence as everything else.
 struct MessagesView: View {
     let account: Account
     @ObservedObject private var store = FeedStore.shared
     @ObservedObject private var contacts = ContactsStore.shared
+    @ObservedObject private var pins = DMPinStore.shared
     @State private var showPicker = false
     @State private var newDM: String?      // chosen in the picker, opened after it closes
     @State private var pushedDM: String?   // pushed in THIS tab's stack → tab bar stays visible
+
+    /// Newest activity in a conversation (last message time), for recency sorting.
+    private func lastActivity(_ circleId: String) -> UInt64 {
+        store.messages(in: circleId).map(\.createdAt).max() ?? 0
+    }
+    /// Pinned ids that still exist, ordered most-recently-active first.
+    private var pinnedIds: [String] {
+        let all = Set(store.dmCircles.map(\.id))
+        return pins.pinned.filter(all.contains).sorted { lastActivity($0) > lastActivity($1) }
+    }
+    /// Everything not pinned, most-recently-active first.
+    private var unpinnedIds: [String] {
+        store.dmCircles.map(\.id).filter { !pins.isPinned($0) }
+            .sorted { lastActivity($0) > lastActivity($1) }
+    }
 
     var body: some View {
         ZStack {
@@ -19,14 +56,23 @@ struct MessagesView: View {
                         .font(.subheadline).foregroundStyle(.secondary)
                         .listRowBackground(Color.clear)
                 }
-                ForEach(store.dmCircles, id: \.id) { c in
-                    NavigationLink { DMThreadView(circleId: c.id) } label: { rowLabel(c.id) }
+                if !pinnedIds.isEmpty {
+                    pinnedGrid
                         .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 12, trailing: 16))
+                }
+                ForEach(unpinnedIds, id: \.self) { id in
+                    NavigationLink { DMThreadView(circleId: id) } label: { rowLabel(id) }
+                        .listRowBackground(Color.clear)
+                        .swipeActions(edge: .leading) {
+                            Button { pins.toggle(id) } label: { Label("Pin", systemImage: "pin") }.tint(.orange)
+                        }
                         .swipeActions {
-                            Button(role: .destructive) { store.deleteConversation(c.id) } label: {
+                            Button(role: .destructive) { store.deleteConversation(id) } label: {
                                 Label("Delete", systemImage: "trash")
                             }
                         }
+                        .contextMenu { conversationMenu(id) }
                 }
             }
             .scrollContentBackground(.hidden)
@@ -68,6 +114,36 @@ struct MessagesView: View {
                         .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
+        }
+    }
+
+    /// iMessage-style grid of pinned conversations (large avatars) above the list.
+    private var pinnedGrid: some View {
+        LazyVGrid(columns: [GridItem(.adaptive(minimum: 76, maximum: 110), spacing: 16)], spacing: 16) {
+            ForEach(pinnedIds, id: \.self) { id in
+                Button { pushedDM = id } label: {
+                    VStack(spacing: 6) {
+                        PeerAvatar(nodeHex: store.dmPartnerHex(id) ?? "", name: store.dmPartnerName(id), size: 60)
+                        Text(store.dmPartnerName(id)).font(.caption2).lineLimit(1)
+                            .foregroundStyle(.primary)
+                    }
+                }
+                .buttonStyle(.plain)
+                .contextMenu { conversationMenu(id) }
+            }
+        }
+    }
+
+    /// Shared long-press menu: pin/unpin (respecting the 6-pin cap) + delete.
+    @ViewBuilder private func conversationMenu(_ id: String) -> some View {
+        if pins.isPinned(id) {
+            Button { pins.toggle(id) } label: { Label("Unpin", systemImage: "pin.slash") }
+        } else {
+            Button { pins.toggle(id) } label: { Label("Pin", systemImage: "pin") }
+                .disabled(pins.isFull)
+        }
+        Button(role: .destructive) { pins.remove(id); store.deleteConversation(id) } label: {
+            Label("Delete", systemImage: "trash")
         }
     }
 }
