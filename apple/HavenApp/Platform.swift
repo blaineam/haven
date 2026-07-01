@@ -280,13 +280,21 @@ extension View {
 
     @ViewBuilder
     func havenFullScreenCover<Item: Identifiable, Content: View>(item: Binding<Item?>,
+                                                                 wide: Bool = false,
                                                                  onDismiss: (() -> Void)? = nil,
                                                                  @ViewBuilder content: @escaping (Item) -> Content) -> some View {
         #if os(iOS)
         self.fullScreenCover(item: item, onDismiss: onDismiss, content: content)
         #else
+        // Pickers/forms get a phone-ish frame; the MEDIA VIEWER (wide:true) gets a roomy landscape frame so
+        // wide photos/videos aren't crammed into a narrow portrait sliver on macOS.
         self.sheet(item: item, onDismiss: onDismiss) { it in
-            content(it).frame(minWidth: 460, idealWidth: 540, minHeight: 560, idealHeight: 680)
+            if wide {
+                content(it).frame(minWidth: 720, idealWidth: 1040, maxWidth: .infinity,
+                                  minHeight: 520, idealHeight: 760, maxHeight: .infinity)
+            } else {
+                content(it).frame(minWidth: 460, idealWidth: 540, minHeight: 560, idealHeight: 680)
+            }
         }
         #endif
     }

@@ -130,7 +130,11 @@ private struct CarouselVideo: View {
     @State private var looper: Any?
 
     var body: some View {
-        VideoPlayer(player: player)
+        // The SAME custom gesture player as the inline feed (hold-to-pause, drag-to-scrub, clean chrome)
+        // rather than AVKit's VideoPlayer with its stock airplay/volume/scrubber bar.
+        Group {
+            if let player { GestureVideoPlayer(player: player) } else { Color.black }
+        }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onAppear {
                 let p = AVPlayer(url: url)

@@ -2701,6 +2701,16 @@ struct PostCard: View {
     @ObservedObject private var audio = AudioCoordinator.shared
     @ObservedObject private var profile = ProfileStore.shared
     @ObservedObject private var feed = FeedStore.shared
+    #if os(iOS)
+    @Environment(\.horizontalSizeClass) private var hSizeClass
+    private var isPortraitPhone: Bool { hSizeClass == .compact }
+    #else
+    private var isPortraitPhone: Bool { false }
+    #endif
+    /// A single photo/video sizes to fill the WIDTH on a portrait phone (a tall shot fills the column
+    /// instead of shrinking to a narrow sliver), but fits the WHOLE image within a shorter cap on wider
+    /// layouts (iPad / landscape / macOS) so you can see all of it at once.
+    private var singleMediaMaxHeight: CGFloat { isPortraitPhone ? 680 : 460 }
     @State private var showAllComments = false
     @State private var commentText = ""
     @State private var commentMedia: [String] = []
@@ -2822,7 +2832,7 @@ struct PostCard: View {
         .onChange(of: audio.centeredPostId) { syncPlayback() }
         .onChange(of: currentPage) { if isActive { playVisibleVideo() } }
         .sheet(isPresented: $showEdit) { EditPostSheet(item: item).macSheetFrame() }
-        .havenFullScreenCover(item: $zoomTarget) { t in MediaZoomViewer(refs: t.refs, index: t.index) }
+        .havenFullScreenCover(item: $zoomTarget, wide: true) { t in MediaZoomViewer(refs: t.refs, index: t.index) }
         .alert("Edit comment", isPresented: Binding(get: { editCommentId != nil }, set: { if !$0 { editCommentId = nil } })) {
             TextField("Comment", text: $editCommentText)
             Button("Save") { if let id = editCommentId { feed.edit(id, editCommentText, media: editCommentMedia) }; editCommentId = nil }
@@ -2848,10 +2858,11 @@ struct PostCard: View {
                     mediaPage(ref)
                     if video { muteButton }
                 }
-                // Size to the media's own aspect (capped) so wide AND tall media show in full
-                // instead of being cropped to a fixed box.
+                // Size to the media's own aspect. On a portrait phone the taller cap lets a tall photo fill
+                // the column width (was capped at 480 → a narrow "square" sliver); wider layouts fit the
+                // whole image within a shorter cap.
                 .aspectRatio(singleAspect(ref), contentMode: .fit)
-                .frame(maxWidth: .infinity, maxHeight: 480)
+                .frame(maxWidth: .infinity, maxHeight: singleMediaMaxHeight)
                 .clipShape(RoundedRectangle(cornerRadius: 16))
                 // Tap-to-zoom only for images. For a video, the player owns the single tap
                 // (mute) / hold (pause) / drag (scrub); a zoom tap here would swallow them.

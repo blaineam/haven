@@ -358,7 +358,7 @@ struct DMThreadView: View {
         }
         .onAppear { store.forceSync() }
         .onDisappear { MusicPlayback.shared.stop() }   // leaving the thread silences any DM song
-        .havenFullScreenCover(item: $zoom) { t in MediaZoomViewer(refs: t.refs, index: t.index) }
+        .havenFullScreenCover(item: $zoom, wide: true) { t in MediaZoomViewer(refs: t.refs, index: t.index) }
         .sheet(item: $reactTarget) { t in
             ReactionPicker { e in store.reactMessage(in: circleId, t.id, e) }.macSheetFrame()
         }
