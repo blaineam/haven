@@ -19,6 +19,28 @@ final class DMPinStore: ObservableObject {
         guard let i = pinned.firstIndex(of: id) else { return }
         pinned.remove(at: i); UserDefaults.standard.set(pinned, forKey: key)
     }
+    /// Commit a user-chosen order (from the rearrange mode). Keeps only ids that are still pinned.
+    func setOrder(_ ids: [String]) {
+        let kept = ids.filter { pinned.contains($0) }
+        pinned = kept + pinned.filter { !kept.contains($0) }
+        UserDefaults.standard.set(pinned, forKey: key)
+    }
+}
+
+/// Drag-to-reorder delegate for the pinned grid (active only in rearrange mode).
+private struct PinDropDelegate: DropDelegate {
+    let item: String
+    @Binding var order: [String]
+    @Binding var dragging: String?
+    func dropEntered(info: DropInfo) {
+        guard let dragging, dragging != item,
+              let from = order.firstIndex(of: dragging), let to = order.firstIndex(of: item) else { return }
+        withAnimation(.easeInOut(duration: 0.18)) {
+            order.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
+        }
+    }
+    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
+    func performDrop(info: DropInfo) -> Bool { dragging = nil; return true }
 }
 
 /// Direct messages. Each DM is a private 2-person circle, so it rides the same E2E
@@ -31,6 +53,9 @@ struct MessagesView: View {
     @State private var showPicker = false
     @State private var newDM: String?      // chosen in the picker, opened after it closes
     @State private var pushedDM: String?   // pushed in THIS tab's stack → tab bar stays visible
+    @State private var rearranging = false // drag-to-reorder mode for the pinned grid
+    @State private var draftPins: [String] = []   // working order while rearranging (committed on Save)
+    @State private var draggingPin: String?
 
     /// Newest activity in a conversation (last message time), for recency sorting.
     private func lastActivity(_ circleId: String) -> UInt64 {
@@ -64,9 +89,6 @@ struct MessagesView: View {
                 ForEach(unpinnedIds, id: \.self) { id in
                     NavigationLink { DMThreadView(circleId: id) } label: { rowLabel(id) }
                         .listRowBackground(Color.clear)
-                        .swipeActions(edge: .leading) {
-                            Button { pins.toggle(id) } label: { Label("Pin", systemImage: "pin") }.tint(.orange)
-                        }
                         .swipeActions {
                             Button(role: .destructive) { store.deleteConversation(id) } label: {
                                 Label("Delete", systemImage: "trash")
@@ -74,14 +96,20 @@ struct MessagesView: View {
                         }
                         .contextMenu { conversationMenu(id) }
                 }
+                .disabled(rearranging)
             }
             .scrollContentBackground(.hidden)
         }
         .navigationTitle("Messages")
         .havenInlineNavTitle()
         .toolbar {
-            ToolbarItem(placement: .havenTrailing) {
-                Button { showPicker = true } label: { Image(systemName: "square.and.pencil") }
+            if rearranging {
+                ToolbarItem(placement: .havenLeading) { Button("Cancel") { cancelRearrange() } }
+                ToolbarItem(placement: .havenTrailing) { Button("Save") { saveRearrange() }.fontWeight(.semibold) }
+            } else {
+                ToolbarItem(placement: .havenTrailing) {
+                    Button { showPicker = true } label: { Image(systemName: "square.and.pencil") }
+                }
             }
         }
         // Open the new thread in the Messages tab's OWN stack (after the sheet closes) so
@@ -117,27 +145,43 @@ struct MessagesView: View {
         }
     }
 
-    /// iMessage-style grid of pinned conversations (large avatars) above the list.
+    /// iMessage-style grid of pinned conversations (large avatars) above the list. In rearrange mode the
+    /// tiles jiggle and can be dragged into a new order (committed via the toolbar Save button).
     private var pinnedGrid: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 76, maximum: 110), spacing: 16)], spacing: 16) {
-            ForEach(pinnedIds, id: \.self) { id in
-                Button { pushedDM = id } label: {
-                    VStack(spacing: 6) {
-                        PeerAvatar(nodeHex: store.dmPartnerHex(id) ?? "", name: store.dmPartnerName(id), size: 60)
-                        Text(store.dmPartnerName(id)).font(.caption2).lineLimit(1)
-                            .foregroundStyle(.primary)
+        let ids = rearranging ? draftPins : pinnedIds
+        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 76, maximum: 110), spacing: 16)], spacing: 16) {
+            ForEach(ids, id: \.self) { id in
+                pinnedTile(id)
+                    .opacity(draggingPin == id ? 0.35 : 1)
+                    .modifier(JiggleModifier(active: rearranging))
+                    .onTapGesture { if !rearranging { pushedDM = id } }
+                    .contextMenu { rearranging ? nil : conversationMenu(id) }
+                    .if(rearranging) { view in
+                        view.onDrag { draggingPin = id; return NSItemProvider(object: id as NSString) }
+                            .onDrop(of: [.text], delegate: PinDropDelegate(item: id, order: $draftPins, dragging: $draggingPin))
                     }
-                }
-                .buttonStyle(.plain)
-                .contextMenu { conversationMenu(id) }
             }
         }
     }
 
-    /// Shared long-press menu: pin/unpin (respecting the 6-pin cap) + delete.
+    private func pinnedTile(_ id: String) -> some View {
+        VStack(spacing: 6) {
+            PeerAvatar(nodeHex: store.dmPartnerHex(id) ?? "", name: store.dmPartnerName(id), size: 60)
+            Text(store.dmPartnerName(id)).font(.caption2).lineLimit(1).foregroundStyle(.primary)
+        }
+    }
+
+    private func beginRearrange() { draftPins = pinnedIds; withAnimation { rearranging = true } }
+    private func saveRearrange() { pins.setOrder(draftPins); withAnimation { rearranging = false }; draggingPin = nil }
+    private func cancelRearrange() { withAnimation { rearranging = false }; draggingPin = nil }
+
+    /// Shared long-press menu: pin/unpin (respecting the 6-pin cap), rearrange pins, delete.
     @ViewBuilder private func conversationMenu(_ id: String) -> some View {
         if pins.isPinned(id) {
             Button { pins.toggle(id) } label: { Label("Unpin", systemImage: "pin.slash") }
+            if pins.pinned.count > 1 {
+                Button { beginRearrange() } label: { Label("Rearrange Pins", systemImage: "arrow.up.arrow.down") }
+            }
         } else {
             Button { pins.toggle(id) } label: { Label("Pin", systemImage: "pin") }
                 .disabled(pins.isFull)
@@ -145,6 +189,26 @@ struct MessagesView: View {
         Button(role: .destructive) { pins.remove(id); store.deleteConversation(id) } label: {
             Label("Delete", systemImage: "trash")
         }
+    }
+}
+
+/// A subtle iMessage-style jiggle for tiles in rearrange mode.
+private struct JiggleModifier: ViewModifier {
+    let active: Bool
+    @State private var on = false
+    func body(content: Content) -> some View {
+        content
+            .rotationEffect(.degrees(active ? (on ? 1.6 : -1.6) : 0))
+            .animation(active ? .easeInOut(duration: 0.14).repeatForever(autoreverses: true) : .default, value: on)
+            .onChange(of: active) { _, a in on = a }
+            .onAppear { if active { on = true } }
+    }
+}
+
+extension View {
+    /// Conditionally apply a modifier chain (keeps the pinned-grid drag wiring readable).
+    @ViewBuilder func `if`<T: View>(_ condition: Bool, transform: (Self) -> T) -> some View {
+        if condition { transform(self) } else { self }
     }
 }
 
