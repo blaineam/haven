@@ -718,6 +718,7 @@ fun MediaViewer(circleId: String, refs: List<String>, startIndex: Int, onClose: 
             userScrollEnabled = scale <= 1f,
         ) { page ->
             val ref = refs[page]
+            android.util.Log.i("VideoTile", "VIEWER page=$page ref=$ref isVideo=${LocalMedia.isVideo(ref)}")
             if (LocalMedia.isVideo(ref)) {
                 // Full-screen player: VideoTile autoplays (start() in onPreparedListener), loops, has an
                 // onErrorListener logging to tag "VideoTile", and a sound toggle. This is why grid videos
@@ -956,10 +957,12 @@ fun VideoTile(circleId: String, ref: String, modifier: Modifier = Modifier) {
     val soundOn = profile.videoSoundOn
     var file by remember(ref) { mutableStateOf<java.io.File?>(null) }
     val player = remember(ref) { mutableStateOf<android.media.MediaPlayer?>(null) }
+    android.util.Log.i("VideoTile", "COMPOSE ref=$ref circle=${circleId.take(14)} isVideo=${LocalMedia.isVideo(ref)}")
     LaunchedEffect(ref, circleId) {
         file = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             LocalMedia.videoFile(circleId, ref)
         }
+        android.util.Log.i("VideoTile", "FILE ref=$ref file=${file?.absolutePath ?: "NULL"} exists=${file?.exists() == true} size=${file?.length() ?: -1}")
     }
     // Re-apply the global mute state whenever it flips or the player becomes ready.
     LaunchedEffect(soundOn, player.value) {
