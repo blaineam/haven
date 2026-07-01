@@ -549,7 +549,7 @@ enum RelayClients {
         // endpoint on the same node showed "Connected · Relay". Reusing that warm endpoint is what lets media
         // fetches actually complete over the internet. (Peer identity is now our device id; media keys are
         // permissive so they serve regardless, and mailbox auth expands to device ids via the roster.)
-        guard let node = FeedStore.shared.node else { return nil }
+        guard let node = FeedStore.shared.transportNode else { return nil }
         guard let c = try? node.relayClient(relayNodeHex: nodeHex) else {
             RelayHealth.shared.recordFailure(nodeHex)
             HavenLog.relay("dial relay \(nodeHex.prefix(10)) → CONNECT FAIL")
