@@ -516,11 +516,15 @@ final class FeedStore: ObservableObject {
         listener = bridge
         Task { @MainActor in
             do {
-                // Bind the iroh transport to the ACCOUNT seed, so our node id == the account id our invite
-                // link advertises — a friend who scans the link (account id, no relay yet) can dial us for
-                // the first hello. Correct for iOS/macOS and works. (The Android media-fetch problem is an
-                // Android-side relay bug, NOT this binding.)
-                let n = try await HavenNode.start(accountSeed: seed, listener: bridge)
+                // Bind the iroh transport to the per-DEVICE seed, so this device's node id (and therefore the
+                // relay it hosts) is UNIQUE per device — never the account id. On a multi-device account
+                // (iPhone + Mac) the account-id binding made both devices publish the SAME node id, so a friend
+                // couldn't pin the specific device holding media (the relay collided). The account id stays the
+                // trust/sealing anchor + contact handle; friends resolve it to our device node id(s) via the
+                // device roster (contact_device_node_ids). The engine already runs on the device identity
+                // (useDeviceIdentity above), so transport + engine now share one collision-free per-device id.
+                let deviceSeed = DeviceKeyStore.deviceAccount().secretSeed()
+                let n = try await HavenNode.start(accountSeed: deviceSeed, listener: bridge)
                 self.node = n
                 self.internetReady = true
                 self.online = true
