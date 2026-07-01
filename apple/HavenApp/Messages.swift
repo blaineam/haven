@@ -36,20 +36,16 @@ final class DMPinStore: ObservableObject {
     }
 }
 
-/// Drag-to-reorder delegate for the pinned grid (active only in rearrange mode).
-private struct PinDropDelegate: DropDelegate {
-    let item: String
-    @Binding var order: [String]
-    @Binding var dragging: String?
-    func dropEntered(info: DropInfo) {
-        guard let dragging, dragging != item,
-              let from = order.firstIndex(of: dragging), let to = order.firstIndex(of: item) else { return }
-        withAnimation(.easeInOut(duration: 0.18)) {
-            order.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
-        }
+private extension View {
+    /// Force a List into active edit mode so `.onMove` shows reorder handles. `\.editMode` is iOS-only;
+    /// macOS List reorders by drag without it, so this is a no-op there.
+    @ViewBuilder func havenEditModeActive() -> some View {
+        #if os(iOS)
+        environment(\.editMode, .constant(.active))
+        #else
+        self
+        #endif
     }
-    func dropUpdated(info: DropInfo) -> DropProposal? { DropProposal(operation: .move) }
-    func performDrop(info: DropInfo) -> Bool { dragging = nil; return true }
 }
 
 /// Direct messages. Each DM is a private 2-person circle, so it rides the same E2E
@@ -64,7 +60,6 @@ struct MessagesView: View {
     @State private var pushedDM: String?   // pushed in THIS tab's stack → tab bar stays visible
     @State private var rearranging = false // drag-to-reorder mode for the pinned grid
     @State private var draftPins: [String] = []   // working order while rearranging (committed on Save)
-    @State private var draggingPin: String?
 
     /// Newest activity in a conversation (last message time), for recency sorting.
     private func lastActivity(_ circleId: String) -> UInt64 {
@@ -170,24 +165,28 @@ struct MessagesView: View {
         }
     }
 
-    /// Full-screen drag-to-reorder grid (rearrange mode). Lives OUTSIDE any List so each tile drags on its
-    /// own — inside a List the drag grabbed the whole row instead of a single pinned circle.
+    /// Reorder pinned conversations via SwiftUI's native List `.onMove` with edit mode forced on — reliable
+    /// drag handles on both iOS and macOS. (The earlier custom grid drag-and-drop left a tile stuck/dimmed
+    /// after one move because the drag state never reset.) The Messages list still DISPLAYS pins as a grid;
+    /// this is just the editing surface. Save/Cancel in the nav bar commit or discard `draftPins`.
     private var rearrangeView: some View {
-        ScrollView {
-            Text("Drag to reorder your pinned conversations")
-                .font(.footnote).foregroundStyle(.secondary).padding(.top, 12)
-            LazyVGrid(columns: pinColumns, spacing: 20) {
+        List {
+            Section {
                 ForEach(draftPins, id: \.self) { id in
-                    pinnedTile(id)
-                        .opacity(draggingPin == id ? 0.35 : 1)
-                        .modifier(JiggleModifier(active: true))
-                        .onDrag { draggingPin = id; return NSItemProvider(object: id as NSString) }
-                        .onDrop(of: [.text], delegate: PinDropDelegate(item: id, order: $draftPins, dragging: $draggingPin))
+                    HStack(spacing: 12) {
+                        PeerAvatar(nodeHex: store.dmPartnerHex(id) ?? "", name: store.dmPartnerName(id), size: 40)
+                        Text(store.dmPartnerName(id)).font(.subheadline.weight(.medium))
+                        Spacer()
+                    }
+                    .listRowBackground(Color.clear)
                 }
+                .onMove { from, to in draftPins.move(fromOffsets: from, toOffset: to) }
+            } header: {
+                Text("Drag to reorder your pinned conversations")
             }
-            .padding(20)
-            .animation(.easeInOut(duration: 0.18), value: draftPins)
         }
+        .scrollContentBackground(.hidden)
+        .havenEditModeActive()
     }
 
     private func pinnedTile(_ id: String) -> some View {
@@ -198,8 +197,8 @@ struct MessagesView: View {
     }
 
     private func beginRearrange() { draftPins = pinnedIds; withAnimation { rearranging = true } }
-    private func saveRearrange() { pins.setOrder(draftPins); withAnimation { rearranging = false }; draggingPin = nil }
-    private func cancelRearrange() { withAnimation { rearranging = false }; draggingPin = nil }
+    private func saveRearrange() { pins.setOrder(draftPins); withAnimation { rearranging = false } }
+    private func cancelRearrange() { withAnimation { rearranging = false } }
 
     /// Shared long-press menu: pin/unpin (respecting the 6-pin cap), rearrange pins, delete.
     @ViewBuilder private func conversationMenu(_ id: String) -> some View {
@@ -218,25 +217,6 @@ struct MessagesView: View {
     }
 }
 
-/// A subtle iMessage-style jiggle for tiles in rearrange mode.
-private struct JiggleModifier: ViewModifier {
-    let active: Bool
-    @State private var on = false
-    func body(content: Content) -> some View {
-        content
-            .rotationEffect(.degrees(active ? (on ? 1.6 : -1.6) : 0))
-            .animation(active ? .easeInOut(duration: 0.14).repeatForever(autoreverses: true) : .default, value: on)
-            .onChange(of: active) { _, a in on = a }
-            .onAppear { if active { on = true } }
-    }
-}
-
-extension View {
-    /// Conditionally apply a modifier chain (keeps the pinned-grid drag wiring readable).
-    @ViewBuilder func `if`<T: View>(_ condition: Bool, transform: (Self) -> T) -> some View {
-        if condition { transform(self) } else { self }
-    }
-}
 
 /// Pick a contact to start a DM with. Hands the new circle id back to the caller so the
 /// thread opens in the Messages tab's own stack (tab bar visible), not inside this sheet.
