@@ -25,6 +25,15 @@ final class DMPinStore: ObservableObject {
         pinned = kept + pinned.filter { !kept.contains($0) }
         UserDefaults.standard.set(pinned, forKey: key)
     }
+    /// Adopt a pinned list synced from one of my other devices (via SelfSyncCoordinator, last-writer-wins).
+    func applySynced(_ ids: [String]) {
+        let next = Array(ids.prefix(Self.maxPins))
+        guard next != pinned else { return }
+        DispatchQueue.main.async {
+            self.pinned = next
+            UserDefaults.standard.set(next, forKey: self.key)
+        }
+    }
 }
 
 /// Drag-to-reorder delegate for the pinned grid (active only in rearrange mode).
@@ -75,32 +84,35 @@ struct MessagesView: View {
     var body: some View {
         ZStack {
             HavenBackground()
-            List {
-                if store.dmCircles.isEmpty {
-                    Text("No messages yet. Tap the pencil to start one.")
-                        .font(.subheadline).foregroundStyle(.secondary)
-                        .listRowBackground(Color.clear)
-                }
-                if !pinnedIds.isEmpty {
-                    pinnedGrid
-                        .listRowBackground(Color.clear)
-                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 12, trailing: 16))
-                }
-                ForEach(unpinnedIds, id: \.self) { id in
-                    NavigationLink { DMThreadView(circleId: id) } label: { rowLabel(id) }
-                        .listRowBackground(Color.clear)
-                        .swipeActions {
-                            Button(role: .destructive) { store.deleteConversation(id) } label: {
-                                Label("Delete", systemImage: "trash")
+            if rearranging {
+                rearrangeView   // dedicated draggable grid — NOT inside a List (a List would drag the whole row)
+            } else {
+                List {
+                    if store.dmCircles.isEmpty {
+                        Text("No messages yet. Tap the pencil to start one.")
+                            .font(.subheadline).foregroundStyle(.secondary)
+                            .listRowBackground(Color.clear)
+                    }
+                    if !pinnedIds.isEmpty {
+                        pinnedGrid
+                            .listRowBackground(Color.clear)
+                            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 12, trailing: 16))
+                    }
+                    ForEach(unpinnedIds, id: \.self) { id in
+                        NavigationLink { DMThreadView(circleId: id) } label: { rowLabel(id) }
+                            .listRowBackground(Color.clear)
+                            .swipeActions {
+                                Button(role: .destructive) { store.deleteConversation(id) } label: {
+                                    Label("Delete", systemImage: "trash")
+                                }
                             }
-                        }
-                        .contextMenu { conversationMenu(id) }
+                            .contextMenu { conversationMenu(id) }
+                    }
                 }
-                .disabled(rearranging)
+                .scrollContentBackground(.hidden)
             }
-            .scrollContentBackground(.hidden)
         }
-        .navigationTitle("Messages")
+        .navigationTitle(rearranging ? "Rearrange Pins" : "Messages")
         .havenInlineNavTitle()
         .toolbar {
             if rearranging {
@@ -145,22 +157,36 @@ struct MessagesView: View {
         }
     }
 
-    /// iMessage-style grid of pinned conversations (large avatars) above the list. In rearrange mode the
-    /// tiles jiggle and can be dragged into a new order (committed via the toolbar Save button).
+    private let pinColumns = [GridItem(.adaptive(minimum: 76, maximum: 110), spacing: 16)]
+
+    /// iMessage-style grid of pinned conversations (large avatars) shown above the list (tap to open).
     private var pinnedGrid: some View {
-        let ids = rearranging ? draftPins : pinnedIds
-        return LazyVGrid(columns: [GridItem(.adaptive(minimum: 76, maximum: 110), spacing: 16)], spacing: 16) {
-            ForEach(ids, id: \.self) { id in
+        LazyVGrid(columns: pinColumns, spacing: 16) {
+            ForEach(pinnedIds, id: \.self) { id in
                 pinnedTile(id)
-                    .opacity(draggingPin == id ? 0.35 : 1)
-                    .modifier(JiggleModifier(active: rearranging))
-                    .onTapGesture { if !rearranging { pushedDM = id } }
-                    .contextMenu { rearranging ? nil : conversationMenu(id) }
-                    .if(rearranging) { view in
-                        view.onDrag { draggingPin = id; return NSItemProvider(object: id as NSString) }
-                            .onDrop(of: [.text], delegate: PinDropDelegate(item: id, order: $draftPins, dragging: $draggingPin))
-                    }
+                    .onTapGesture { pushedDM = id }
+                    .contextMenu { conversationMenu(id) }
             }
+        }
+    }
+
+    /// Full-screen drag-to-reorder grid (rearrange mode). Lives OUTSIDE any List so each tile drags on its
+    /// own — inside a List the drag grabbed the whole row instead of a single pinned circle.
+    private var rearrangeView: some View {
+        ScrollView {
+            Text("Drag to reorder your pinned conversations")
+                .font(.footnote).foregroundStyle(.secondary).padding(.top, 12)
+            LazyVGrid(columns: pinColumns, spacing: 20) {
+                ForEach(draftPins, id: \.self) { id in
+                    pinnedTile(id)
+                        .opacity(draggingPin == id ? 0.35 : 1)
+                        .modifier(JiggleModifier(active: true))
+                        .onDrag { draggingPin = id; return NSItemProvider(object: id as NSString) }
+                        .onDrop(of: [.text], delegate: PinDropDelegate(item: id, order: $draftPins, dragging: $draggingPin))
+                }
+            }
+            .padding(20)
+            .animation(.easeInOut(duration: 0.18), value: draftPins)
         }
     }
 

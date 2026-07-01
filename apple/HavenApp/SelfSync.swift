@@ -73,6 +73,10 @@ final class SelfSyncCoordinator {
         m["setting:autoOptimize"] = Data([s.autoOptimize ? 1 : 0])
         m["setting:silent"] = Data([s.silent ? 1 : 0])
         m["setting:retentionDays"] = withUnsafeBytes(of: Int32(s.retentionDays).littleEndian) { Data($0) }
+        // Pinned DM conversations (ordered) sync across my devices, last-writer-wins. Only broadcast when
+        // non-empty so a fresh device can't blank a sibling's pins (absence ≠ authoritative).
+        let pins = DMPinStore.shared.pinned
+        if !pins.isEmpty { m["setting:pinnedDMs"] = Data(pins.joined(separator: "\n").utf8) }
         // Roster: contacts (full card) + blocked list.
         for c in ContactsStore.shared.contacts {
             if let data = try? JSONEncoder().encode(c) { m["contact:\(c.idHex)"] = data }
@@ -133,6 +137,9 @@ final class SelfSyncCoordinator {
         if let v = h.get(key: "setting:retentionDays"), v.count == 4 {
             let n = Int(Int32(littleEndian: v.withUnsafeBytes { $0.loadUnaligned(as: Int32.self) }))
             if n != s.retentionDays { s.retentionDays = n }
+        }
+        if let v = h.get(key: "setting:pinnedDMs"), let str = String(data: v, encoding: .utf8) {
+            DMPinStore.shared.applySynced(str.split(separator: "\n").map(String.init))
         }
 
         // Roster reconciliation (set-like — enumerate the converged state via entries()).

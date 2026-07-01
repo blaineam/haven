@@ -741,7 +741,7 @@ final class MediaStore: ObservableObject {
     }
 
     /// Extract a poster frame so videos show something before playback.
-    static func poster(for url: URL) -> PlatformImage? {
+    nonisolated static func poster(for url: URL) -> PlatformImage? {
         let asset = AVURLAsset(url: url)
         let gen = AVAssetImageGenerator(asset: asset)
         gen.appliesPreferredTrackTransform = true
