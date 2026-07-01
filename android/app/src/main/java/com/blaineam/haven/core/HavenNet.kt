@@ -1355,6 +1355,11 @@ object HavenNet : InboundListener {
         // or a second device — still self-dialed.) Same root cause + fix as iOS/macOS.
         val mine = runCatching { node?.nodeIdHex() ?: social.myNodeHex() }.getOrNull()?.trim()?.lowercase()
         if (!mine.isNullOrEmpty() && nodeHex.trim().lowercase() == mine) return null
+        // We CONNECT as our ACCOUNT identity (core.seed) below, so dialing a relay whose id == our own ACCOUNT
+        // id is the account dialing itself — the same path-discovery runaway. Under device-seed transport the
+        // guard above only catches our DEVICE id, so a stale relay entry equal to our account id would leak.
+        val myAccount = runCatching { social.myNodeHex() }.getOrNull()?.trim()?.lowercase()
+        if (!myAccount.isNullOrEmpty() && nodeHex.trim().lowercase() == myAccount) return null
         if (runCatching { relayHost?.nodeIdHex() }.getOrNull() == nodeHex && nodeHex.isNotEmpty()) return null
         // Skip a relay that's in its backoff window — try the others instead.
         if (!relayAvailable(nodeHex)) return null

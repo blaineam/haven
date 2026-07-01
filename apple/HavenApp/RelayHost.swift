@@ -532,6 +532,13 @@ enum RelayClients {
         // device's relay is a different id, so we CAN read it (no longer stranded).
         let mine = FeedStore.shared.transportNodeHex.lowercased()   // our OWN relay's id (account id if host, else device id)
         if !mine.isEmpty, nodeHex.lowercased() == mine { return nil }
+        // We CONNECT below as our ACCOUNT identity (storedSeed), so dialing a relay whose id == our own
+        // ACCOUNT id is the account dialing ITSELF — the same iroh path-discovery runaway (tens of GB). Under
+        // the device-seed transport the guard above only catches our DEVICE id, so a stale relay entry equal
+        // to our account id (left over from the pre-device-seed transport, when the relay WAS the account id)
+        // would self-connect and leak. Skip it explicitly.
+        let myAccount = (FeedStore.shared.social?.myNodeHex() ?? "").lowercased()
+        if !myAccount.isEmpty, nodeHex.lowercased() == myAccount { return nil }
         if RelayHost.shared.serving, !RelayHost.shared.nodeId.isEmpty, nodeHex == RelayHost.shared.nodeId {
             return nil
         }
