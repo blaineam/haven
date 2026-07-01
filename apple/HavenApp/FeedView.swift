@@ -529,8 +529,19 @@ final class FeedStore: ObservableObject {
                 // The node's reachable address (direct addrs + iroh relay url). If this is empty or has no
                 // relay, NOTHING can reach us regardless of identity — that's a network/discovery problem.
                 Task {
-                    if let t = try? await n.ticket(), !t.isEmpty { HavenLog.net("node TICKET ok len=\(t.count): \(t.prefix(160))") }
-                    else { HavenLog.net("node TICKET = EMPTY/NONE — no reachable path (discovery/relay down?)") }
+                    // REACHABILITY PROBE: keep re-reading the ticket (discovery + DERP take a few seconds to
+                    // populate) and dump it to a readable file so we can SEE whether this device node has an
+                    // internet-reachable path (a DERP relay url in the ticket) at all — the fact that decides
+                    // whether relay timeouts are the network or a node-publish bug. Remove once settled.
+                    for delay in [0.0, 3.0, 8.0, 20.0] {
+                        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                        let t = (try? await n.ticket()) ?? ""
+                        let report = "nodeId=\(n.nodeIdHex())\naccount=\(social?.myNodeHex() ?? "?")\nticketLen=\(t.count)\nticket=\(t)\n"
+                        if let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first {
+                            try? report.write(to: dir.appendingPathComponent("haven-node-ticket.txt"), atomically: true, encoding: .utf8)
+                        }
+                        HavenLog.net(t.isEmpty ? "node TICKET = EMPTY (no reachable path)" : "node TICKET len=\(t.count)")
+                    }
                 }
                 self.startSyncTimer()
                 // Sync soon (discovery needs a moment to resolve), then keep retrying.
