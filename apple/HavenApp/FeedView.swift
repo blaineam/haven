@@ -2867,10 +2867,39 @@ struct PostCard: View {
                 // Tap-to-zoom only for images. For a video, the player owns the single tap
                 // (mute) / hold (pause) / drag (scrub); a zoom tap here would swallow them.
                 .modifier(ConditionalTap(enabled: !video) { zoomTarget = ZoomTarget(refs: media, index: 0) })
+            } else if media.count <= 7, allSameAspect(media) {
+                mediaCarousel(media)   // uniform-aspect set → a swipeable pager (autoplays the visible video)
             } else if !media.isEmpty {
-                masonry   // up to 30 photos/videos in a staggered grid; tap any to zoom
+                masonry   // mixed aspects or a big set → the staggered grid; tap any to zoom
             }
         }
+    }
+
+    /// True when a small media set all share (near-)equal aspect ratios — the case where a full-width
+    /// swipeable carousel looks clean (vs a staggered grid for mixed shapes).
+    private func allSameAspect(_ media: [String]) -> Bool {
+        guard let a0 = media.first.map(singleAspect) else { return false }
+        return media.allSatisfy { abs(singleAspect($0) - a0) < 0.06 }
+    }
+
+    /// A full-width swipeable pager for a uniform-aspect set. The visible page's video autoplays as you
+    /// swipe (playVisibleVideo keys off `currentPage`), matching the single-media behavior.
+    @ViewBuilder private func mediaCarousel(_ media: [String]) -> some View {
+        let aspect = singleAspect(media[0])
+        TabView(selection: $currentPage) {
+            ForEach(Array(media.enumerated()), id: \.offset) { i, ref in
+                ZStack(alignment: .bottomTrailing) {
+                    mediaPage(ref)
+                    if isVideo(ref) { muteButton }
+                }
+                .modifier(ConditionalTap(enabled: !isVideo(ref)) { zoomTarget = ZoomTarget(refs: media, index: i) })
+                .tag(i)
+            }
+        }
+        .havenPagedTabViewStyle(showsIndex: media.count > 1)
+        .aspectRatio(aspect, contentMode: .fit)
+        .frame(maxWidth: .infinity, maxHeight: singleMediaMaxHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
     /// Horizontally-scrolling staggered gallery: items flow across two fixed-height rows and
