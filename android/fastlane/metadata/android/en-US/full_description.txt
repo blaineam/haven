@@ -4,7 +4,9 @@ Everything you share is end-to-end encrypted with hybrid post-quantum cryptograp
 
 • Private circles — share with family and close friends in separate, invite-only circles
 • Posts, photos, videos & stories — with a modern camera, easy captions, and a song
-• Direct messages & voice calls — 1:1, peer-to-peer, with no call server in the middle
+• Direct & group messages — sender names, timestamps, delivery checks, plus scheduled and screenshot-protected secret messages
+• Group voice & video calls — 1:1 and group, with screen sharing, peer-to-peer, with no call server in the middle
+• All your devices in sync — start on your phone, pick up on a tablet or desktop
 • Disappearing posts — you decide how long things stick around
 • Nearby sharing — works with no internet at all, phone to phone
 • Bring your own storage — keep memories alive on your own S3 bucket or a relay you run

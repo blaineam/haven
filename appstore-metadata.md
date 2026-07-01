@@ -15,10 +15,12 @@ Everything you share is end-to-end encrypted with hybrid post-quantum cryptograp
 
 • Private circles — share with family and close friends in separate, invite‑only circles
 • Posts, photos, videos & stories — with a modern camera, easy captions, and a song
-• Direct messages & voice calls — 1:1, peer‑to‑peer, with no call server in the middle
+• Direct & group messages — with sender names, timestamps, and delivery checks, plus scheduled and screenshot‑protected secret messages
+• Group voice & video calls — 1:1 and group, with screen sharing, peer‑to‑peer, no call server in the middle
+• All your devices in sync — start on iPhone, pick up on iPad or Mac; your posts and messages follow you
 • Disappearing posts — you decide how long things stick around
 • Nearby sharing — works with no internet at all, phone to phone
-• Bring your own storage — keep memories alive on your own iCloud or S3 bucket
+• Bring your own storage — keep memories alive on your own S3 bucket or a relay you run
 • No account, no phone number, no email — your identity lives only on your device
 
 Haven is a stronghold for the people you love. It's built so that no one — not advertisers, not data brokers, not even the people who made it — can get between you and your circle.
@@ -31,16 +33,14 @@ A private, end‑to‑end encrypted home for your closest people. No ads, no tra
 
 ## whats_new
 What's new:
-• Direct messages and peer‑to‑peer voice calls
-• A modern story camera — add a song and a caption, then share to your circle
-• Stories that disappear after 24 hours
-• Trim and mute videos before you share them
-• Multiple circles — keep family and friends separate
-• Mesh relay so messages reach further, even around offline gaps
-• A "volunteer as tribute" shared store to keep your circle's memories alive
-• Quiet local notifications — never a server in the middle
+• Your own devices now stay in sync — posts and messages you make on one device show up on the rest
+• Group DMs show who sent each message, when, and whether it was delivered
+• Pin up to 6 conversations to the top of Messages and reorder them your way
+• Group voice & video calls with screen sharing — still peer‑to‑peer, no call server
+• Scheduled messages and screenshot‑protected secret messages
+• Smoother, faster feed scrolling
 
-Now also on Mac, with a matching web app.
+Native on iPhone, iPad, and Mac — with Android and Windows/Linux desktop apps too.
 
 ## marketing_url
 https://wemiller.com/apps/haven/

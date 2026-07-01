@@ -130,10 +130,18 @@ capture_sim() {
     env SIMCTL_CHILD_HAVEN_DEMO=1 SIMCTL_CHILD_HAVEN_SKIP_ONBOARDING=1 SIMCTL_CHILD_HAVEN_NO_NET=1 \
         SIMCTL_CHILD_HAVEN_TAB="$tab" SIMCTL_CHILD_HAVEN_SCENE="$scene" \
         xcrun simctl launch "$udid" "$BUNDLE_ID" >/dev/null 2>&1
-    # Scenes that auto-present a sheet/overlay/full-screen cover settle a touch longer so we
-    # never capture a spinner or a mid-animation frame.
-    sleep 8
-    xcrun simctl io "$udid" screenshot "$OUT/$key/$file" >/dev/null 2>&1 && echo "  $key/$file"
+    # The demo seed re-runs on every launch and blanks the UI until it finishes; on a cold/slow sim the
+    # first scenes were captured as a blank white screen (which compresses to a tiny ~90KB PNG, vs
+    # 2-4MB of real content). Wait, then RE-CAPTURE until the shot is substantial — robust to seed timing.
+    sleep 9
+    local tries=0 sz=0
+    while :; do
+      xcrun simctl io "$udid" screenshot "$OUT/$key/$file" >/dev/null 2>&1
+      sz=$(stat -f%z "$OUT/$key/$file" 2>/dev/null || echo 0)
+      if [ "$sz" -ge 400000 ] || [ "$tries" -ge 5 ]; then break; fi
+      tries=$((tries + 1)); sleep 4
+    done
+    echo "  $key/$file ($((sz / 1024))KB${tries:+, $tries retries})"
   done
 
   cap_clear_statusbar "$udid"
