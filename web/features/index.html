@@ -55,7 +55,7 @@
         <a class="pill" href="#circles">Circles</a>
         <a class="pill" href="#posts">Posts &amp; feed</a>
         <a class="pill" href="#stories">Stories &amp; camera</a>
-        <a class="pill" href="#messages">Messages</a>
+        <a class="pill" href="#messages">Direct &amp; group DMs</a>
         <a class="pill" href="#calls">Voice &amp; video calls</a>
         <a class="pill" href="#music">Music on posts</a>
         <a class="pill" href="#reactions">Reactions &amp; comments</a>
@@ -159,21 +159,26 @@
         <article class="card wrow reveal" id="messages">
           <div class="num" aria-hidden="true">💬</div>
           <div>
-            <h3>Direct messages <span class="badge ok">Built &amp; shipping</span></h3>
+            <h3>Direct &amp; group messages <span class="badge ok">Built &amp; shipping</span></h3>
             <p>
-              Send a private one-to-one message to anyone in your circles. Same warmth as the feed,
-              just for two — text, photos, and videos, all locked down end-to-end. There are even
-              screenshot-protected secret messages for the things meant for one set of eyes.
+              Message anyone in your circles one-to-one, or start a group chat with several people at
+              once. Same warmth as the feed — text, photos, and videos, all locked down end-to-end.
+              Each message shows who sent it, when, and a delivery checkmark so you know it landed.
+              You can even <b>schedule a message</b> to send later, and send screenshot-protected
+              <b>secret messages</b> for the things meant for one set of eyes.
             </p>
             <p class="why"><b>Why it matters:</b> private means private. No "for your eyes only" disclaimer
               on a server that could be read by someone else — the message is mathematically yours.</p>
             <details class="tech">
               <summary><span class="tag-tech">How this works</span><span class="chev">›</span></summary>
               <div class="tbody">
-                <p>A DM is modeled as a tiny two-person circle (a deterministic <code>dm:</code> group),
-                  so it reuses the exact same sealing, signing and delivery path as group posts — one
-                  battle-tested code path, not a special case. Secret messages render in a
-                  screenshot-protected view (a secure field on iOS, <code>FLAG_SECURE</code> on Android).</p>
+                <p>A DM is modeled as a tiny circle (a deterministic <code>dm:</code> group); a group DM
+                  is the same construct with more members — so both reuse the exact same sealing, signing
+                  and delivery path as group posts, one battle-tested code path, not a special case. Every
+                  message carries its author's signed identity, a timestamp, and a delivery receipt.
+                  Scheduled messages are sealed up front and released at the send time; secret messages
+                  render in a screenshot-protected view (a secure field on iOS, <code>FLAG_SECURE</code>
+                  on Android).</p>
               </div>
             </details>
           </div>
@@ -309,10 +314,12 @@
         <article class="card wrow reveal" id="devices">
           <div class="num" aria-hidden="true">🔗</div>
           <div>
-            <h3>Multi-device <span class="badge soon">Switching &amp; move-to-device shipping · live sync ahead</span></h3>
+            <h3>Multi-device sync <span class="badge ok">Built &amp; shipping</span></h3>
             <p>
-              Use Haven on your phone, your iPad, your Mac. Move your identity to a new device with a
-              quick transfer code or QR scan, and your contacts never even notice — you're still you to
+              Use Haven on your phone, your iPad, your Mac. Your own devices now <b>converge and stay in
+              sync</b> — post from your phone and it shows up on your iPad; your circles, profile and
+              conversations line up across every device you own. Move your identity to a new device with
+              a quick transfer code or QR scan, and your contacts never even notice — you're still you to
               everyone in your circles.
             </p>
             <p class="why"><b>Why it matters:</b> your life isn't on one screen. Haven follows you across
@@ -320,10 +327,12 @@
             <details class="tech">
               <summary><span class="tag-tech">How this works</span><span class="chev">›</span></summary>
               <div class="tbody">
-                <p>Today: a multi-identity switcher, move-to-device via a transfer code / QR
+                <p>A multi-identity switcher, move-to-device via a transfer code / QR
                   (<code>haven-seed:…</code>), iCloud-Keychain backup/restore of identity history (the
                   active seed stays device-only), and multi-token push so every linked device gets
-                  notifications and authored events self-sync.</p>
+                  notifications. A user's own devices self-sync their circles, posts and profile so they
+                  converge to the same state — the sync path is strictly additive, so a freshly-restored
+                  or empty device can never tombstone content that already exists elsewhere.</p>
                 <p>The target design gives each device its <em>own</em> key, signed into an account
                   device-list by your long-term identity key — so adding or revoking a device (e.g. a
                   lost phone) is instant and never changes who you are to your contacts. No private key
@@ -365,10 +374,11 @@
       </div>
 
       <div class="callout reveal" style="margin-top:26px">
-        <b>A note on honesty:</b> Haven is an alpha that ships fast. Most features above are built and
-        running today; the <span class="badge soon">amber tags</span> mark the few that are partly wired
-        (the structure is there; a platform entitlement or the next milestone finishes them). We'd rather
-        tell you exactly where things stand. See the <a class="inline" href="../docs/#roadmap">roadmap</a>.
+        <b>A note on honesty:</b> Haven is in beta and ships fast. Everything above is built and running
+        today; a <span class="badge ok">green tag</span> means it's shipping. When something is only
+        partly wired, we say so with an <span class="badge soon">amber tag</span> rather than
+        overpromising. The app is free while in beta and will be a one-time paid app at launch — never a
+        subscription. See the <a class="inline" href="../docs/#roadmap">roadmap</a>.
       </div>
 
       <div class="center" style="margin-top:34px">

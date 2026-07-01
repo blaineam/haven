@@ -281,6 +281,9 @@ a.inline:hover{text-decoration:underline}
   margin-top:22px;font-size:13.5px;color:var(--text3);font-weight:600;letter-spacing:.02em;
 }
 .mag-byline b{color:var(--text2)}
+/* Hero disclaimer under the download button — free beta / paid-at-launch, honest and calm. */
+.hero-note{margin-top:20px;font-size:14px;color:var(--text2);max-width:52ch;line-height:1.55}
+.hero-note b{color:var(--text)}
 
 /* ── Device render frames (art already includes bezel) ────────────────── */
 .render{display:block;width:100%;height:auto;filter:drop-shadow(0 40px 70px rgba(0,0,0,.62))}
