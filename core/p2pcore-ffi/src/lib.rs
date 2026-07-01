@@ -32,6 +32,32 @@ const TAG_DEVICE_ROSTER: u8 = 0x04; // an account's signed device roster (Device
 
 uniffi::setup_scaffolding!();
 
+/// DIAGNOSTIC: install a tracing subscriber that appends iroh/noq connection-level logs to
+/// `<dir>/iroh-trace.log`, so a specific relay dial can be watched step-by-step (candidate paths,
+/// hole-punch attempts, DERP fallback, connect, and the blob accept/serve on the far side). Idempotent;
+/// safe no-op if a subscriber is already set. Never panics (falls back to a sink on file error).
+#[uniffi::export]
+pub fn init_logging(dir: String) {
+    use std::sync::Once;
+    static ONCE: Once = Once::new();
+    ONCE.call_once(|| {
+        let path = std::path::PathBuf::from(&dir).join("iroh-trace.log");
+        let filter = tracing_subscriber::EnvFilter::new(
+            "iroh=debug,iroh_relay=debug,iroh_net=debug,noq=info,haven_net=debug",
+        );
+        let _ = tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_ansi(false)
+            .with_writer(move || -> Box<dyn std::io::Write> {
+                match std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                    Ok(f) => Box::new(f),
+                    Err(_) => Box::new(std::io::sink()),
+                }
+            })
+            .try_init();
+    });
+}
+
 /// Multi-device (D16): device-credential + account-state self-sync FFI surface.
 /// `pub` so the desktop backend (which links this crate directly) can call the shared
 /// circle encoder + S3 helpers without going through UniFFI.

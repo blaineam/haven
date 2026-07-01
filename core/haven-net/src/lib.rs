@@ -70,9 +70,16 @@ impl Node {
     pub async fn spawn(secret: [u8; 32], handler: InboundHandler) -> Result<Self> {
         // Bind ONE endpoint for BOTH protocols — social messaging and the blob relay mailbox — so an
         // in-process relay never needs a second iroh node (the source of the path-churn leak).
+        // ENABLE QUIC MULTIPATH. iroh defaults it OFF, but iroh's own DERP+hole-punch path manager ASSUMES
+        // it's on: when a connection has a working relay path and iroh tries to add a direct path, multipath
+        // isn't negotiated → `MultipathNotNegotiated` → it drops the outbound datagrams instead of using the
+        // relay path. That made every cross-network relay GET 30s-time-out (proven by iroh trace) even though
+        // the DERP relay was forwarding both ways. Enabling multipath (min 13) lets path negotiation succeed
+        // so the blob request actually goes out. Both peers must enable it — they do, via this one spawn path.
         let endpoint = Endpoint::builder(N0)
             .secret_key(SecretKey::from_bytes(&secret))
             .alpns(vec![ALPN.to_vec(), blobstore::BLOB_ALPN.to_vec()])
+            .transport_config(iroh::endpoint::QuicTransportConfig::builder().max_concurrent_multipath_paths(16).build())
             .bind()
             .await
             .ah()?;

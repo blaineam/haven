@@ -190,6 +190,8 @@ object HavenNet : InboundListener {
     /** Start the iroh node and begin syncing. Safe to call repeatedly. */
     fun start() {
         if (node != null) return
+        // DIAGNOSTIC: capture iroh/noq connection-level logs to filesDir/iroh-trace.log BEFORE the node starts.
+        runCatching { uniffi.haven_ffi.initLogging(appContext.filesDir.path) }
         scope.launch {
             try {
                 // TRANSPORT = per-DEVICE seed → unique per-device relay/node id (never the account id). The
@@ -197,6 +199,19 @@ object HavenNet : InboundListener {
                 node = HavenNode.start(DeviceKeyStore.deviceAccount().secretSeed(), this@HavenNet)
                 withContext(Dispatchers.Main) { started.value = true }
                 Log.i(TAG, "node started: ${node?.nodeIdHex()}")
+                // REACHABILITY PROBE: dump this node's ticket (published addrs + DERP relay url) so we can SEE
+                // whether the Android node has an internet-reachable path — the same probe as the Mac. If the
+                // Nokia has a DERP url and the Mac has a DERP url, they SHOULD reach each other; a timeout then
+                // is a code path difference, not the network. Pull: adb shell run-as ... cat files/node-ticket.txt
+                scope.launch {
+                    for (d in listOf(0L, 3000L, 8000L, 20000L)) {
+                        delay(d)
+                        val t = runCatching { node?.ticket() }.getOrNull() ?: ""
+                        val rep = "nodeId=${node?.nodeIdHex()}\naccount=${runCatching { social.myNodeHex() }.getOrNull()}\nticketLen=${t.length}\nticket=$t\n"
+                        runCatching { java.io.File(appContext.filesDir, "node-ticket.txt").writeText(rep) }
+                        Log.i("MediaSync", "node TICKET len=${t.length}")
+                    }
+                }
                 syncWithContacts()
                 pollMailbox()
                 requestMissingMedia()   // back-fill media for posts already in the feed
