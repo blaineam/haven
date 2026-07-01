@@ -848,8 +848,10 @@ final class FeedStore: ObservableObject {
         Task.detached(priority: .utility) { [weak self, social] in
             var work: [(String, [Data])] = []
             for cid in cidsForNearby {
-                let envs = social.syncEnvelopes(circleId: cid).suffix(50)
-                if !envs.isEmpty { work.append((cid, Array(envs))) }
+                // export_recent_envelopes = ALL authors (mine + received), so a sibling catches up on friends'
+                // posts/DMs I received too — not just my own (which syncEnvelopes was limited to).
+                let envs = social.exportRecentEnvelopes(circleId: cid, limit: 50)
+                if !envs.isEmpty { work.append((cid, envs)) }
             }
             await MainActor.run {
                 guard let self else { return }
@@ -898,9 +900,10 @@ final class FeedStore: ObservableObject {
         for circle in circles {
             guard let hello = helloPayload(circleId: circle.id, circleName: circle.name) else { continue }
             if circle.id == "default" { nearbyBroadcast(0, hello) }   // only the open circle broadcasts handshake
-            // DMs included — sealed, so only the recipient + the user's own devices open them; this is how a
-            // DM syncs to a freshly-connected linked device.
-            for env in social.syncEnvelopes(circleId: circle.id) { nearbyBroadcast(1, eventPayload(circle.id, env)) }
+            // DMs + RECEIVED events included — export_recent_envelopes re-broadcasts ALL authors' recent
+            // events (not just mine), so a freshly-connected sibling catches up on friends' posts/DMs I
+            // received too. Sealed, so a nearby non-member just drops it.
+            for env in social.exportRecentEnvelopes(circleId: circle.id, limit: 150) { nearbyBroadcast(1, eventPayload(circle.id, env)) }
         }
         pushOwnMediaNearby(freshPeer: true)   // a newly-connected sibling has nothing — push it my media now
         refresh()

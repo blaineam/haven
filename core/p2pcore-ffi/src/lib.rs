@@ -1710,6 +1710,15 @@ impl HavenSocial {
     /// the key commits need — they ride the same sync/backfill path as events, so no platform
     /// networking change is required.
     fn epoch_sync_bundle(&self, circle_id: &str) -> Vec<Vec<u8>> {
+        self.epoch_sync_bundle_impl(circle_id, true, 0)
+    }
+
+    /// `mine_only=false` re-seals EVERY member's events (not just mine) — for OWN-DEVICE sync, so a linked
+    /// device gets the posts/DMs I RECEIVED from friends too, which sync_envelopes (mine-only) never sent.
+    /// Re-sealing under my epoch preserves each event's own author + signature (the epoch seal is symmetric,
+    /// not per-author), so a forwarded friend event still verifies + displays as theirs. `limit` caps to the
+    /// most recent N events so this stays cheap when called periodically.
+    fn epoch_sync_bundle_impl(&self, circle_id: &str, mine_only: bool, limit: u32) -> Vec<Vec<u8>> {
         let mut st = self.state.lock().unwrap();
         let me_hex = hex(&st.me.public().node_id_bytes());
         let Some(idx) = st.circles.iter().position(|c| c.id == circle_id) else { return vec![] };
@@ -1733,14 +1742,31 @@ impl HavenSocial {
         if let Ok(commit) = seal_key_commit(&st.me, &members, circle_id, epoch, &key, &secret) {
             out.push(tagged(TAG_KEY_COMMIT, &commit.to_bytes()));
         }
-        let my_events: Vec<Event> =
-            st.circles[idx].events.iter().filter(|e| e.author == me_hex).cloned().collect();
-        for e in &my_events {
+        let mut events: Vec<Event> = st.circles[idx]
+            .events
+            .iter()
+            .filter(|e| !mine_only || e.author == me_hex)
+            .cloned()
+            .collect();
+        if limit > 0 {
+            let n = limit as usize;
+            if events.len() > n {
+                events = events.split_off(events.len() - n); // keep the most recent N
+            }
+        }
+        for e in &events {
             if let Ok(env) = seal_event_in_epoch(&st.me, circle_id, epoch, &key, e) {
                 out.push(tagged(TAG_EPOCH_EVENT, &env.to_bytes()));
             }
         }
         out
+    }
+
+    /// Recent events from EVERY member of a circle (mine + received), re-sealed under my epoch, capped to
+    /// `limit` — for own-device catch-up over nearby (a sibling gets friends' posts/DMs I received, not just
+    /// my own). NOT for sending to friends (that stays mine-only via sync_envelopes).
+    pub fn export_recent_envelopes(&self, circle_id: String, limit: u32) -> Vec<Vec<u8>> {
+        self.epoch_sync_bundle_impl(&circle_id, false, limit)
     }
 
     /// Ingest a sealed envelope received from the network. Routes by wire tag: a key commit (stores
