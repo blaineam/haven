@@ -36,18 +36,21 @@ encrypted bytes. The transport is interchangeable; the crypto is transport-blind
 | `identity` | On-device keypair (Ed25519 + ML-DSA-65 + X25519 + ML-KEM-768); public `HavenId`; routable node id; tamper-check hash | ✅ implemented + tested |
 | `crypto` | Hybrid-PQ KEM (X25519 + ML-KEM-768 → HKDF) and AES-256-GCM seal/open | ✅ implemented + tested |
 | `link` | `haven://` and `https://` reach-me links/QR; parse, verify, MITM check | ✅ implemented + tested |
-| `social` | Circles, posts, stories, comments, reactions, edit/unsend, DMs, media + music refs — events sealed E2E to all members (per-member hybrid-KEM wrap), hybrid-signed; `build_feed` reducer | ✅ implemented + tested |
+| `social` | Circles, posts, stories, comments, reactions, edit/unsend, DMs, media + music refs — events sealed E2E under a per-circle epoch key (group keying), hybrid-signed; `build_feed` reducer | ✅ implemented + tested |
+| `groupkey` | Epoch sender-keys: per-circle epoch key distributed via the hybrid KEM (KeyCommit), per-event key derivation, rotation on add/remove for cryptographic revocation + bounded forward secrecy | ✅ implemented + tested |
+| `device` / `selfsync` | Per-device credentials + signed device list; `AccountState` CRDT self-sealed to the account's own devices (roster/contacts/profile/settings/blocked/read state converge across devices) | ✅ implemented + tested |
 | `transport` (`haven-net`) | iroh QUIC `Node` (listen/dial, sealed payloads); mesh-relay frames; S3-over-iroh tunnel | ✅ implemented + tested |
-| `groups` (MLS) | Harden the multi-recipient PKE layer to `mls-rs` with a hybrid-PQ ciphersuite (forward secrecy / efficient membership) | ⏳ planned |
+| `groups` (MLS) | Harden the epoch-key layer to `mls-rs` with a hybrid-PQ ciphersuite (per-message forward secrecy / efficient membership) | ⏳ planned |
 | `discovery` | Resolve a node id to a live address (iroh n0 today; signed DHT records later) | 🟡 iroh discovery in use |
 | `blobs` | Content-addressed (BLAKE3) chunked media transfer (512 KB sealed chunks) | ✅ implemented |
 | FFI | UniFFI → Swift (Apple) + Kotlin (Android) | ✅ implemented |
 
 ## How a photo gets from A to B (target flow)
 
-> **Today vs. target:** the implemented engine seals each event with a fresh content key
-> wrapped per-member via the hybrid KEM (multi-recipient PKE), *not* yet MLS. The MLS
-> hardening (forward secrecy / efficient membership) is planned; the flow below reads
+> **Today vs. target:** the implemented engine seals each event under a rotating per-circle
+> **epoch key** (sender-keys group keying — see [`GROUP-KEYING.md`](GROUP-KEYING.md)), which
+> already gives cryptographic revocation and bounded forward secrecy. Full MLS hardening
+> (per-message forward secrecy / efficient membership) is still planned; the flow below reads
 > "group/MLS" as the target shape.
 
 1. **A** has **B**'s `HavenId` (from a prior QR/link approval). A is a member of the
@@ -76,15 +79,19 @@ Because there's no central store, large content for an offline peer falls throug
 
 ## Clients
 
-- **Apple (iOS + macOS):** SwiftUI on the Rust core via UniFFI. Full transport ladder
-  (nearby MultipeerConnectivity + iroh + relay), Keychain key storage, MusicKit,
-  WebRTC calls, on-device `SensitiveContentAnalysis`. macOS ships today via **Mac
-  Catalyst**; a **native AppKit/SwiftUI port is in progress** (see
-  [`MACOS-NATIVE-PORT.md`](MACOS-NATIVE-PORT.md)).
+- **Apple (iOS / iPadOS + macOS):** SwiftUI on the Rust core via UniFFI. Full transport
+  ladder (nearby MultipeerConnectivity + iroh + relay), Secure-Enclave-wrapped seed +
+  Keychain, MusicKit, WebRTC calls, on-device `SensitiveContentAnalysis`. macOS ships from
+  a **native AppKit/SwiftUI target** (`HavenMac`); **Mac Catalyst was dropped 2026-06-23**
+  (see [`MACOS-NATIVE-PORT.md`](MACOS-NATIVE-PORT.md)). A user's own Apple devices take
+  per-device transport identities and converge their epoch keys, so posts/DMs sync across
+  them (see [`MULTI-DEVICE.md`](MULTI-DEVICE.md)).
 - **Android (native, in progress):** Jetpack Compose + the *same* Rust core via UniFFI
-  Kotlin bindings — a real iroh peer, not a browser. Android Keystore for keys. The web
-  client was abandoned (browsers can't be iroh peers); `web/` is now an invite-landing
-  page only.
+  Kotlin bindings — a real iroh peer, not a browser. Android Keystore for keys. Feed, DMs
+  (incl. the delete-watermark, group-DM sender rows, pinned+sorted conversations, and
+  own-device sync), stories, media chunks, WebRTC calls, notifications, and nearby are
+  ported. The web client was abandoned (browsers can't be iroh peers); `web/` is now an
+  invite-landing page only.
 - **Windows / Linux (Tauri 2, in progress):** a WebView2/WebKit frontend over a **Rust**
   backend that links the core **directly** (`haven_ffi` as a crate — no UniFFI hop, since
   the process is itself Rust). The iroh peer runs natively, so this is a real peer, not a
@@ -105,5 +112,7 @@ service. Full detail in [`RELAY-AND-DEPLOY.md`](RELAY-AND-DEPLOY.md).
   community member's, never required to be yours.
 
 Both run with **hardened, no-log, identity-blind defaults**; IPs are never logged or
-linked to identities, with a planned (not-yet-shipped) opt-in onion mode for full IP hiding. A
-**`haven-relay`** deployment tool stands either role up on most clouds in one command.
+linked to identities. Today's IP privacy is **relay-mediated** (peers never see each
+other's IP) plus run-behind-your-own-VPN; a Tor/onion transport is *not* shipped (iroh is
+UDP/QUIC and Tor's SOCKS can't carry UDP). A **`haven-relay`** deployment tool stands
+either role up on most clouds in one command.

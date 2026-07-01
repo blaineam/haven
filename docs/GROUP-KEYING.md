@@ -85,6 +85,14 @@ delivery model admits without breaking offline use.
    under my current epoch; `remove`/`block` rotate my epoch (next commit excludes the removed node);
    `receive` routes tagged envelopes (key commit / epoch event / legacy) with a pending buffer for
    out-of-order delivery. Engine test proves a removed member can't read post-removal content.
+
+   > **Own-device caveat + fix (important for multi-device).** Because `ensure_epoch` mints a *random*
+   > epoch key per device, a user's own devices (which share the account seed but each run their own
+   > sender-key sequence) generate **different** keys for the same circle+epoch and can't open each
+   > other's events. `receive_key_commit` resolves this by **converging** an own-authored commit onto
+   > the numerically-larger epoch key + circle secret (both devices pick the same winner independently),
+   > so own-device posts/DMs sync. See [`MULTI-DEVICE.md`](MULTI-DEVICE.md) → *Own-device event
+   > convergence*.
 3. ✅ **Wire/migration (read path).** 1-byte wire tag (`0x02` epoch event, `0x03` key commit; untagged
    `{…}` = legacy). Circles bootstrap epoch 0 on first post; legacy envelopes still open. *Alpha cutover:*
    new posts are epoch-sealed, so peers must be on a build that understands the tags — acceptable for alpha.

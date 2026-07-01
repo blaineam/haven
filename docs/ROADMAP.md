@@ -60,6 +60,11 @@ signatures. 6 core tests green.
   "Message unsent" (see DECISIONS D11).
 - ✅ Contact approval + blocking (client-side enforcement); per-circle privacy
   (Spotlight + Face ID lock).
+- ✅ **Messages UX**: recency-sorted conversations + iMessage-style **pinning** (up to 6,
+  drag-to-rearrange on iOS/macOS); pins **self-sync across your devices**. A DM-delete
+  **watermark** (a local "cleared before" mark — true network deletion is impossible in
+  P2P) so restarting a conversation doesn't restore old messages. **Group DMs** show each
+  message's sender name + timestamp + delivery checkmark.
 - ⏭️ Harden to **`mls-rs`** with a hybrid-PQ ciphersuite (forward secrecy / efficient
   membership) — the current layer is multi-recipient PKE, not yet MLS.
 - ⏭️ **Scheduled "send later"** (D17, `SCHEDULED-MESSAGES.md`): queue plaintext, seal+send
@@ -82,28 +87,31 @@ signatures. 6 core tests green.
     account-signed `DeviceCredential`, versioned signed `DeviceList` (add/revoke,
     higher-version-wins, rollback-defended), verified against the pinned account key —
     MLS-independent, unit-tested.
-  - 🟡 **Phase 3: convergence engine** in core (`p2pcore::selfsync`): an `AccountState`
-    CRDT (LWW roster/contacts/profile/settings/blocked + grow-only read cursors) with a
-    commutative/associative/idempotent merge, self-encrypted via a seed-derived key only
-    the user's devices can derive — concurrent edits provably converge. Unit-tested.
-    Remaining: mailbox channel + sync loop + FFI + client wiring.
-  - 🟡 **Phase 2: FFI export** done (`p2pcore-ffi::multidevice`): `issue/verify_device_credential`,
+  - ✅ **Phase 3: convergence engine** in core (`p2pcore::selfsync`): an `AccountState`
+    CRDT (LWW roster/contacts/profile/settings/blocked/**pinned conversations** + grow-only
+    read cursors) with a commutative/associative/idempotent merge, self-encrypted via a
+    seed-derived key only the user's devices can derive — **wired end to end on iOS/iPadOS,
+    macOS, Android, and desktop**. Plus **own-device event convergence**: each device takes a
+    per-device transport id, and divergent per-device epoch keys converge on the
+    numerically-larger key, so posts/DMs authored or received on one device sync to the others.
+  - ✅ **Phase 2: FFI export** done (`p2pcore-ffi::multidevice`): `issue/verify_device_credential`,
     `sign/verify_device_list`, `device_list_is_authorized`, an `AccountStateHandle` object +
-    `seal/open_account_state` — device + self-sync types now callable from Swift/Kotlin/desktop.
+    `seal/open_account_state` — device + self-sync types callable from Swift/Kotlin/desktop.
     Remaining: enrollment QR/verify flow + UI.
-  - ⏭️ Phase 3 finish (mailbox channel + client wiring) · Phase 4 live device-to-device delivery ·
-    Phase 5 MLS leaf/commit hardening (forward + post-compromise secrecy; gated on MLS).
+  - ⏭️ Phase 4 live device-to-device delivery + personal forwarder · Phase 5 MLS leaf/commit
+    hardening (per-message forward + post-compromise secrecy; gated on MLS).
   - See `MULTI-DEVICE.md` → *Implementation phases*.
 - ⏭️ **Always-on device as personal store-and-forward** (ordered backlog cache; Phase 4).
 - See `MULTI-DEVICE.md`
 
 ## ✅ M3 — Apple app (DONE, on TestFlight)
 
-iOS + macOS (Mac Catalyst) SwiftUI app on the real Rust core via a UniFFI XCFramework.
-On TestFlight and used device-to-device over the internet.
+iOS / iPadOS + native-macOS SwiftUI app on the real Rust core via a UniFFI XCFramework.
+On TestFlight and used device-to-device over the internet. (Mac Catalyst was dropped
+2026-06-23; macOS now ships from the native `HavenMac` target — see `MACOS-NATIVE-PORT.md`.)
 
 - ✅ `rustup` + iOS targets, **UniFFI** crate `haven_ffi`, `HavenFFI.xcframework`
-  (device + sim + Mac Catalyst + native-macOS slices), `build-rust-xcframework.sh`
+  (device + sim + native-macOS `aarch64-apple-darwin` slices), `build-rust-xcframework.sh`
 - ✅ On-device identity, `haven://` QR + reach-me link, Keychain-persisted master seed,
   on-device hybrid-PQ self-test (covered by `HavenUITests`)
 - ✅ Networked feed/DMs/media over iroh on real devices; circles; stories; calls
@@ -198,11 +206,14 @@ app); the WASM client and `web/engine/` were removed.
 
 - 🟡 **Android native** via UniFFI → Kotlin/JNI — **in progress** (`android/`, Jetpack
   Compose + Material 3, minSdk 29). Identity, circles, feed, DMs, reactions/comments,
-  stories, QR handshake working and on-device verified; cross-device media bytes,
-  mailbox, calls, and notifications remain. (No WASM — the web client was abandoned.)
-- ✅ **macOS** ships today via **Mac Catalyst** from the SwiftUI codebase; a **native
-  AppKit/SwiftUI port is in progress** (Phase 0 underway — native-macOS FFI slice added,
-  `HavenMac` target — see `MACOS-NATIVE-PORT.md`).
+  stories, QR handshake, cross-device media chunks + mailbox, WebRTC calls
+  (Telecom/ConnectionService), notifications (WorkManager), and nearby are ported, along
+  with the DM parity + own-device sync (delete-watermark, group-DM sender rows,
+  pinned+sorted messages, device roster, sync-light). Remaining: on-device polish + full
+  cross-platform field testing. (No WASM — the web client was abandoned.)
+- ✅ **macOS native** — ships from the **native AppKit/SwiftUI `HavenMac` target**; Mac
+  Catalyst was **dropped 2026-06-23**. See `MACOS-NATIVE-PORT.md`. (Backfill in flight:
+  native camera / in-call video / Apple Music / screen share views.)
 - 🟡 **Windows / Linux desktop** — **in progress** (`desktop/`, Tauri 2; the Rust backend
   links the core directly — a real iroh peer, not a web client). GUI at near-parity (feed,
   circles, DMs, stories, camera, media, WebRTC group calls + **screen share**, tray,
@@ -236,7 +247,7 @@ app); the WASM client and `web/engine/` were removed.
 
 ## Toolchain prerequisites (this machine)
 
-Installed: Rust (rustup) + Apple targets (iOS device/sim, Mac Catalyst, native macOS),
+Installed: Rust (rustup) + Apple targets (iOS device/sim, native macOS `aarch64-apple-darwin`),
 `uniffi-bindgen`, cargo, Xcode, XcodeGen, swift.
 Still needed (when their milestone arrives):
 - Android NDK + `cargo-ndk` + JDK 17 pin — for M8 (the native Android client)

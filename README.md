@@ -38,7 +38,7 @@ S3-compatible bucket, or a direct peer-to-peer link.
 
 ## Status
 
-Alpha. It runs on iPhone **and** macOS, is on TestFlight, and has been used
+Alpha. It runs on iPhone, iPad, and Mac, is on TestFlight, and has been used
 device-to-device over the real internet and a nearby Bluetooth/Wi-Fi mesh. Done so far:
 
 - **Hybrid post-quantum core** (`p2pcore`) — identity (Ed25519+ML-DSA, X25519+ML-KEM-768),
@@ -46,21 +46,35 @@ device-to-device over the real internet and a nearby Bluetooth/Wi-Fi mesh. Done 
 - **Real P2P transport** — sealed posts, DMs, reactions, comments, and media move
   peer-to-peer over iroh QUIC (with a nearby Bluetooth/Wi-Fi mesh fallback and a
   ttl-bounded mesh-relay), decrypted byte-identical.
-- **Apple app (iOS + macOS via Mac Catalyst)** — SwiftUI on the real Rust core via a
+- **Group keying (sender keys + epochs)** — posts and DMs are sealed under a rotating
+  per-circle epoch key distributed via the hybrid KEM; removing/blocking a member rotates
+  the epoch so they can't decrypt content posted after (cryptographic revocation), with
+  bounded forward secrecy. See [`docs/GROUP-KEYING.md`](docs/GROUP-KEYING.md).
+- **Own-device sync that converges** — a user's own iPhone/iPad/Mac share the account
+  identity but take **per-device transport identities**, and their divergent per-device
+  epoch keys now deterministically converge (both devices adopt the numerically-larger
+  key + circle secret), so posts and DMs authored — or received — on one device show up
+  on the others. See [`docs/MULTI-DEVICE.md`](docs/MULTI-DEVICE.md).
+- **Apple app (iOS / iPadOS native, macOS native)** — SwiftUI on the real Rust core via a
   UniFFI XCFramework: circles + multi-circle feed, stories (multi-clip + captions),
-  DMs, in-app camera with filters, Apple Music on posts, **WebRTC 1:1 and group calls**
+  DMs with recency sorting + iMessage-style conversation pinning (self-syncs across your
+  devices), group DMs with per-message sender name / timestamp / delivery checkmark,
+  in-app camera with filters, Apple Music on posts, **WebRTC 1:1 and group calls**
   (audio+video, screen share), **multi-identity switcher** with per-identity profiles,
   a blind-APNs notification relay with on-device NSE decrypt, and an in-app/standalone
-  store-and-forward relay.
+  store-and-forward relay. macOS ships from a **native AppKit/SwiftUI target** (`HavenMac`);
+  Mac Catalyst was dropped 2026-06-23.
+- **Apple Watch companion** (`apple/HavenWatch`) — a thin WCSession client for messages,
+  photos, reactions, and quick replies (the phone keeps the iroh node + identity).
 
-In progress: a **native AppKit/SwiftUI macOS port** (replacing Mac Catalyst — see
-[`docs/MACOS-NATIVE-PORT.md`](docs/MACOS-NATIVE-PORT.md)), a **native Android client**
-(`android/`, Jetpack Compose + the same Rust core via UniFFI/Kotlin), and a **Windows /
-Linux desktop client** (`desktop/`, Tauri 2 — the Rust backend links the core *directly*
-and the same binary runs headless as your circle's relay; see
-[`docs/WINDOWS-PORT.md`](docs/WINDOWS-PORT.md)). The web client was abandoned (a browser
-can't be an iroh peer); `web/` is now just an invite-landing page. See
-[`docs/ROADMAP.md`](docs/ROADMAP.md) and [`apple/README.md`](apple/README.md).
+In progress: a **native Android client** (`android/`, Jetpack Compose + the same Rust core
+via UniFFI/Kotlin — feed, DMs, stories, media bytes, WebRTC calls, notifications, nearby,
+and the DM parity + own-device sync all ported) and a **Windows / Linux desktop client**
+(`desktop/`, Tauri 2 — the Rust backend links the core *directly* and the same binary runs
+headless as your circle's relay; see [`docs/WINDOWS-PORT.md`](docs/WINDOWS-PORT.md)). The
+web client was abandoned (a browser can't be an iroh peer); `web/` is now just an
+invite-landing page. See [`docs/ROADMAP.md`](docs/ROADMAP.md) and
+[`apple/README.md`](apple/README.md).
 
 ## Repository layout
 
@@ -90,8 +104,9 @@ cargo test
 
 One Rust core (`p2pcore`) powers every client, so new platforms are mostly UI:
 
-- **iOS / macOS** — SwiftUI + UniFFI (primary; macOS ships today via Mac Catalyst, with
-  a native AppKit/SwiftUI port in progress)
+- **iOS / iPadOS** — SwiftUI + UniFFI (primary)
+- **macOS** — native AppKit-backed SwiftUI (`HavenMac` target; Mac Catalyst dropped
+  2026-06-23 — see [`docs/MACOS-NATIVE-PORT.md`](docs/MACOS-NATIVE-PORT.md))
 - **Android** — native Jetpack Compose + the same core via UniFFI→Kotlin (in progress)
 - **Windows / Linux** — Tauri 2 (Rust backend links the core directly; WebView2/WebKitGTK
   UI). GUI client *and* a headless circle-relay in one binary (in progress). Linux ships on
@@ -114,9 +129,11 @@ noncommercial restriction is the difference). Contributions require a CLA/DCO.
 
 - [`docs/DECISIONS.md`](docs/DECISIONS.md) — the architectural decisions and why
 - [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — how the pieces fit together
+- [`docs/SECURITY.md`](docs/SECURITY.md) — the security model in one place (crypto, what a relay can/can't do, deterrents)
 - [`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md) — what we defend against, and abuse resistance
+- [`docs/GROUP-KEYING.md`](docs/GROUP-KEYING.md) — epoch sender-keys: revocation + bounded forward secrecy (PQ-preserving)
 - [`docs/LINK-SYSTEM.md`](docs/LINK-SYSTEM.md) — the reach-me link / QR design
-- [`docs/MULTI-DEVICE.md`](docs/MULTI-DEVICE.md) — multi-identity switcher today; many-device account design ahead
+- [`docs/MULTI-DEVICE.md`](docs/MULTI-DEVICE.md) — per-device transport identity + own-device sync convergence; many-device account design ahead
 - [`docs/SCHEDULED-MESSAGES.md`](docs/SCHEDULED-MESSAGES.md) — "send later" without a server
 - [`docs/MEDIA-AND-MUSIC.md`](docs/MEDIA-AND-MUSIC.md) — in-app camera, Apple Music on posts, audio crossfade
 - [`docs/NOTIFICATIONS.md`](docs/NOTIFICATIONS.md) — blind APNs relay + on-device NSE decrypt

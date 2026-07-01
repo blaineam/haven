@@ -9,17 +9,27 @@ The native client is underway in `android/` (Jetpack Compose + Material 3, minSd
 the Rust core via UniFFI Kotlin bindings (`android/build-rust.sh` mirrors the Apple xcframework
 script). Verified on a physical **Nokia 6.1 (Android 15)**.
 
-- ✅ **Done + on-device verified:** toolchain + Rust→Kotlin FFI; theme/nav/onboarding; identity
-  in the Android Keystore; QR invite show/scan + MITM-guarded handshake; circle feed + composer;
-  reactions + comments; DMs (deterministic `dm:` circle); photo attach (sealed-at-rest local
-  store); profile editing; settings (retention, block list, start over); stories (tray + viewer).
-- 🧪 **Tests:** byte-exact wire-format unit tests + a 10-case on-device instrumented suite
-  (handshake, post/DM exchange, persistence, sealed-media round-trip, story flag).
-- 🚧 **Remaining:** cross-device media bytes (type-3/5 MediaReq/Chunk) + the offline mailbox;
-  in-app browser for links; **video/audio calls (Wave 5)**; music redesign, Nearby, notifications.
+- ✅ **Done:** toolchain + Rust→Kotlin FFI; theme/nav/onboarding; identity in the Android
+  Keystore; QR invite show/scan + MITM-guarded handshake; circle feed + composer; reactions +
+  comments; DMs (deterministic `dm:` circle); profile editing; settings (retention, block list,
+  start over); stories (tray + viewer); **cross-device media chunks (type-3/5 MediaReq/Chunk) +
+  the offline mailbox** (relay + S3-as-relay config); **WebRTC audio/video calls** with the
+  system call UI via Telecom/`ConnectionService`; **notifications** (WorkManager `SyncWorker` +
+  `NotificationManager`); **Nearby** transport; and the **DM parity + own-device sync** wave —
+  delete-watermark, group-DM sender/timestamp/checkmark rows, pinned + recency-sorted messages
+  (`DmPins`), device roster, and self-sync (sync-light).
+- 🧪 **Tests:** byte-exact wire-format unit tests + an on-device instrumented suite (handshake,
+  post/DM exchange, persistence, sealed-media round-trip, story flag).
+- 🚧 **Remaining:** in-app browser for links; the music redesign (portable reference model);
+  broader cross-platform field testing and on-device polish.
 
-Direct P2P over iroh works when both peers are online + handshaked; text posts/DMs/reactions/
-comments already flow peer-to-peer. Photo *bytes* and offline delivery are the next infra piece.
+> **Build gotcha (do not skip):** the Android Rust `.so` + UniFFI bindings are gitignored and are
+> **not** rebuilt by `assembleDebug`. Run `android/build-rust.sh` after **any** `core/` change or
+> a locally-built APK ships a stale core (this broke cross-platform decrypt after the epoch group-
+> keying / own-device changes). CI rebuilds the core itself, so CI is fine.
+
+Direct P2P over iroh works when both peers are online + handshaked; posts, DMs, reactions,
+comments, and media bytes flow peer-to-peer, with the relay/S3 mailbox as the offline backstop.
 
 ---
 

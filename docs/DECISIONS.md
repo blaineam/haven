@@ -183,14 +183,15 @@ time-delayed). Swap-in is a one-file change.
 **Decision:** Because all security-critical logic lives in `p2pcore` (Rust), new
 clients are mostly UI:
 
-> **Updated (2026-06-22):** the web (WASM) client was dropped — a browser can't be an
+> **Updated (2026-06-23):** the web (WASM) client was dropped — a browser can't be an
 > iroh peer (see [`WEB-PARITY.md`](WEB-PARITY.md)). Android is now a *native* UniFFI →
-> Kotlin client (in progress, `android/`), and macOS ships via Mac Catalyst today with a
-> native AppKit/SwiftUI port underway (see [`MACOS-NATIVE-PORT.md`](MACOS-NATIVE-PORT.md)).
+> Kotlin client (in progress, `android/`), and macOS ships from a **native AppKit/SwiftUI
+> target** (`HavenMac`) — **Mac Catalyst was dropped 2026-06-23** (see
+> [`MACOS-NATIVE-PORT.md`](MACOS-NATIVE-PORT.md)).
 
 | Platform | How | Effort |
 |---|---|---|
-| iOS / macOS | SwiftUI + UniFFI (XCFramework); macOS via Catalyst (native port in progress) | primary |
+| iOS / iPadOS / macOS | SwiftUI + UniFFI (XCFramework); macOS is a **native** AppKit-backed target (Catalyst dropped) | primary |
 | **Android** | **native** Jetpack Compose + **UniFFI → Kotlin/JNI** over the *same* core | low–medium |
 | ~~Web~~ | ~~wasm-bindgen → WASM~~ — **abandoned** (no browser iroh peer) | n/a |
 | **Windows / Linux desktop** | native client reusing the Rust core | low–medium |

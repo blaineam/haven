@@ -14,18 +14,29 @@
 > existing per-recipient hybrid-KEM sealing can already encrypt to, so it works on today's
 > engine and the MLS hardening (Phase 5) layers on without changing these signatures.
 >
-> **Phase 3 (core done):** the **convergence engine** is implemented and unit-tested —
-> [`p2pcore::selfsync`](../core/p2pcore/src/selfsync.rs): an `AccountState` CRDT (last-write-wins
-> registers for roster / contacts / profile / settings / blocked, grow-only max read cursors)
-> with a commutative/associative/idempotent `merge`, plus self-encryption via a seed-derived
-> [`Identity::self_sync_key`] only the user's own devices can derive. So concurrent edits on two
-> devices provably converge, and the mailbox only ever sees ciphertext. Remaining for Phase 3:
-> the mailbox read/write channel + sync loop, FFI export, and per-client wiring.
+> **Phase 3 (shipped, all platforms):** the **convergence engine**
+> [`p2pcore::selfsync`](../core/p2pcore/src/selfsync.rs) — an `AccountState` CRDT (last-write-wins
+> registers for roster / contacts / profile / settings / blocked / **pinned conversations**,
+> grow-only max read cursors) with a commutative/associative/idempotent `merge`, plus
+> self-encryption via a seed-derived [`Identity::self_sync_key`] only the user's own devices can
+> derive — is now wired end to end. The mailbox channel + sync loop run on **iOS/iPadOS, macOS,
+> Android, and desktop**, so profile/settings/contacts/blocked/circles/message-pins converge and
+> the mailbox only ever sees ciphertext.
 >
-> **Still ahead:** enrollment flow + UI (Phase 2), the mailbox channel + client wiring that
-> drives the Phase 3 engine, live device-to-device delivery + a personal forwarder (Phase 4),
-> and the MLS leaf/commit hardening for forward secrecy + post-compromise security (Phase 5).
-> See **Implementation phases** below.
+> **Own-device event sync (shipped):** posts and DMs — authored *or received* on one device — now
+> flow to the user's other devices. Two fixes made this real: (1) each device takes a **per-device
+> transport identity** so multiple devices can run under one account without colliding on iroh
+> discovery (the account seed stays the trust anchor / roster signer, never a transport address),
+> and (2) **epoch-key convergence** — `ensure_epoch` mints a *random* epoch key per device, so a
+> user's iPhone and Mac each generated a different key for the same circle+epoch and could never
+> open each other's events; both devices now deterministically adopt the numerically-larger epoch
+> key + circle secret ([`receive_key_commit`](../core/p2pcore-ffi/src/lib.rs)), so buffered events
+> drain and future re-seals use the agreed key. Consistent across iOS/macOS, Android (shared `.so`),
+> and desktop (links the crate directly).
+>
+> **Still ahead:** enrollment flow + UI (Phase 2), live device-to-device delivery + a personal
+> forwarder (Phase 4), and the MLS leaf/commit hardening for per-message forward secrecy +
+> post-compromise security (Phase 5). See **Implementation phases** below.
 
 ## Implementation phases (D16)
 
@@ -33,7 +44,7 @@
 |---|---|---|---|
 | **1. Device-credential trust layer** | Per-device keys; account-signed `DeviceCredential`; versioned signed `DeviceList` (add/revoke, higher-version-wins, rollback defense); verify against the pinned account key. | `p2pcore::device` | **✅ core done & tested** |
 | **2. Enrollment & UI** | FFI export (done): `issue/verify_device_credential`, `sign/verify_device_list`, `device_list_is_authorized`, plus an `AccountStateHandle` object + `seal/open_account_state`. Ahead: QR/short-code link of a new device + out-of-band verification phrase; the authorizing device issues the credential and publishes a new `DeviceList`; "Blaine linked a new device" notice. Per-client (iOS → Android → desktop). | `p2pcore-ffi::multidevice` + clients | 🟡 **FFI export done**; enrollment QR/verify + UI ahead |
-| **3. Account-state self-sync** | A per-account state blob (roster, circles, contacts, profile, settings, blocked list, read state) **self-sealed to the account's own devices** and synced via the mailbox; CRDT/LWW merge so devices converge. Gives "my devices show the same thing." | `p2pcore::selfsync` + relay channel | ✅ **all platforms**: iOS/macOS + desktop (relay+S3) + Android (relay) converge profile + settings + contacts + blocked + circles |
+| **3. Account-state self-sync** | A per-account state blob (roster, circles, contacts, profile, settings, blocked list, read state, **pinned conversations**) **self-sealed to the account's own devices** and synced via the mailbox; CRDT/LWW merge so devices converge. Gives "my devices show the same thing." Plus **own-device event convergence** (per-device epoch keys converge on the numerically-larger key) so authored/received posts + DMs sync across devices. | `p2pcore::selfsync` + `p2pcore-ffi::receive_key_commit` + relay/nearby channel | ✅ **all platforms**: iOS/macOS + desktop (relay+S3) + Android (relay) converge profile + settings + contacts + blocked + circles + message-pins, and own-device posts/DMs sync |
 | **4. Device-aware circle sealing + revocation** | A circle's epoch key seals to each member's AUTHORIZED **device** bundles (`recipients_with_devices`), never a revoked one; receive accepts a member's authorized device as committer/sender; ingest/store signed rosters (rollback-defended) + rotate epochs on add/revoke; rosters ride the sync bundle (`TAG_DEVICE_ROSTER`). | `p2pcore::device` + `p2pcore-ffi` | ✅ **core done & tested** — `linked_device_receives_then_revocation_cuts_it_off` proves a device receives content and revocation cuts it off. App side ahead: enrollment (device keypair + issue credential on link) + Authorized-Devices UI/revoke. |
 | **4b. Live delivery + personal forwarder** | Real-time device-to-device push when both are online; an always-on device (Mac) as the user's ordered store-and-forward node, complementing the relay. | `haven-net` + clients | ⏭️ |
 | **5. MLS hardening** | Each device becomes an MLS leaf; Add/Remove **commits** give forward secrecy + post-compromise security on link/revoke. Gated on the separate MLS (D3) work. | `p2pcore` (mls-rs) | ⏭️ (after MLS) |
@@ -87,6 +98,35 @@ Account identity key  (long-term; represents you to contacts; escrowed for recov
 - **Device credential** — `{account_id, device_pubkey, device_name, created_at}`
   signed by the account identity key. Proves "this device is authorized by this
   account."
+
+## Per-device transport identity (why your devices don't collide)
+
+iroh discovery is **one-owner-per-id**: two devices publishing under the same account node id
+collide, and the loser becomes unreachable. So the **account seed is the identity only** — the
+signing key and the contact card friends pin — and is **never used as a transport address**.
+Instead, each running client instance takes its **own per-device transport id** (derived from a
+per-install `DeviceKeyStore` seed via `useDeviceIdentity`) and hosts its relay/mailbox on that id.
+Friends reach each of a user's devices through the circle's relay list (the set of these ids),
+learned from the device roster. Sealing stays account-based, so any of the user's devices can open
+account-sealed content regardless of which transport id it is currently using.
+
+## Own-device event convergence (the bug that broke device-to-device sync)
+
+The epoch group-keying overhaul (see [`GROUP-KEYING.md`](GROUP-KEYING.md)) had each device run its
+**own** epoch sequence, and `ensure_epoch` mints a **random** epoch key per epoch. That meant a
+user's iPhone and Mac each generated a *different* key for the same circle+epoch. A naive "keep my
+existing key, ignore the other" merge kept each device's stale key and refused its sibling's — so a
+device could never open its own other device's events, and every self-forwarded post/DM buffered
+forever ("my Mac never shows my iPhone's latest post / a received DM").
+
+The fix is **deterministic convergence**: when a device receives a KeyCommit it authored itself
+(same node id), it adopts the **numerically-larger** epoch key and circle secret. Because both
+devices pick the same winner independently, they converge without coordination; adopting a new key
+counts as "new" so buffered events drain and future re-seals use the agreed key. Received friends'
+events are re-broadcast to the user's own devices as **self-sealed forwards** (author preserved,
+sender = me), which the ingest path now accepts. This lives in the shared core
+([`receive_key_commit`](../core/p2pcore-ffi/src/lib.rs) / `receive_epoch_event`), so iOS, macOS,
+Android, and desktop all inherit it.
 
 ## Linking a new device (no PII)
 

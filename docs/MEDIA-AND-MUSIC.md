@@ -72,18 +72,21 @@ encryption boundary; it's just more sealed bytes.
 
 **Implemented:**
 - ✅ `TrackRef` + `music`/`media` on posts in `p2pcore` + FFI (sealed-event payload).
-- ✅ Feed media rendering + **now-playing pill with audio animation** (Simulator-verified).
+- ✅ Feed media rendering + **now-playing pill with audio animation**.
 - ✅ Composer attach: Photos/Videos picker (`PHPicker`), in-app **camera**
   (`AVCaptureSession`, tap=photo / hold=video / flip), **song picker**.
 - ✅ `AudioCoordinator` + video-volume crossfade; muted-video-while-music model.
 - ✅ Privacy usage strings (camera/mic/photos/Apple Music).
+- ✅ **Real Apple Music**: the **MusicKit capability + `com.apple.developer.musickit`
+  entitlement** are **granted on the App ID**; live catalog + library picker, attach, and
+  playback are shipped.
+- ✅ **Cross-device media send**: media is chunked (512 KB sealed chunks), content-addressed
+  (BLAKE3), sealed E2E, and moves peer-to-peer over iroh / nearby with the relay or the
+  user's own S3 bucket as the offline backstop. A **media-request throttle** stops missing
+  media from being re-requested forever, so requests settle.
 
-**Device-verified / follow-ups (security-relevant):**
-- ⏭️ **EXIF/GPS stripping must run at the seal-and-send boundary.** Today media is
-  local-only (never sent), so nothing leaks; when media send is wired (with networking),
-  strip metadata *before* sealing. Tracked here so it isn't missed.
-- ⏭️ **Real Apple Music** needs the **MusicKit capability + `com.apple.developer.musickit`
-  entitlement** on the App ID. Until enabled, the picker uses sample songs and the
-  `MusicPlayback` seam is a no-op (pill + crossfade structure already work). NOT added
-  to the entitlements yet so TestFlight signing stays green — enable on the App ID first.
-- ⏭️ Camera + MusicKit playback verify on a real device (not the Simulator).
+**Follow-ups (security-relevant):**
+- ⏭️ **EXIF/GPS stripping at the seal-and-send boundary.** Strip location + identifying
+  maker tags *before* sealing so nothing leaks with a shared photo/video. Tracked here so it
+  isn't missed.
+- ⏭️ On-device `SensitiveContentAnalysis` guards (per-circle toggles).
