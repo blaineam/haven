@@ -148,6 +148,13 @@ struct DMThreadView: View {
     struct ReactTarget: Identifiable { let id: String }
     @FocusState private var focused: Bool
 
+    /// A GROUP DM has more than one OTHER participant — then each incoming message needs a sender name so
+    /// the group knows who said what (a 1:1 DM doesn't).
+    private var isGroupDM: Bool { store.memberHexes(circleId: circleId).count > 1 }
+    private func senderName(_ m: FeedItemFfi) -> String {
+        ContactsStore.shared.name(forNodePrefix: m.authorShort) ?? "Someone"
+    }
+
     /// Thread title + presence ("Online" / "Last seen …"). Placed centered on iOS, leading on macOS.
     @ViewBuilder private var dmHeader: some View {
         let p = store.dmPresence(circleId)
@@ -254,6 +261,11 @@ struct DMThreadView: View {
         HStack {
             if m.isMe { Spacer(minLength: 50) }
             VStack(alignment: m.isMe ? .trailing : .leading, spacing: 4) {
+                // In a group DM, label each INCOMING message with who sent it.
+                if isGroupDM && !m.isMe {
+                    Text(senderName(m)).font(.caption2.weight(.semibold))
+                        .foregroundStyle(HavenTheme.pink).padding(.leading, 4)
+                }
                 if !m.media.isEmpty { dmMedia(m) }
                 if let t = m.music { DMSongChip(track: t, isMe: m.isMe) }
                 if m.unsent {
