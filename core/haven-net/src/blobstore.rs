@@ -532,6 +532,12 @@ fn collect_keys(root: &Path, dir: &Path, out: &mut Vec<String>) {
 pub struct BlobClient {
     endpoint: Endpoint,
     dest: EndpointAddr,
+    /// ONE warm QUIC connection to `dest`, reused across every get/put/list. Without this, `conn()`
+    /// re-dialed a fresh connection on EVERY call — a 297 MB chunked video is 1 manifest + 36 chunk gets =
+    /// 37 cold dials to the relay, ×N videos = hundreds of connections, each spinning up iroh's connect +
+    /// (failing) hole-punch machinery. That connection storm is what made cross-NAT media sync collapse
+    /// under load (early fetches succeed, later ones TimedOut). Reuse keeps it to one connection per relay.
+    conn: Arc<tokio::sync::Mutex<Option<Connection>>>,
 }
 
 impl BlobClient {
@@ -560,7 +566,7 @@ impl BlobClient {
         if endpoint.id() == dest.id {
             anyhow::bail!("refusing to dial our own node id (blob self-connect guard)");
         }
-        Ok(Self { endpoint, dest })
+        Ok(Self { endpoint, dest, conn: Arc::new(tokio::sync::Mutex::new(None)) })
     }
 
     /// Reuse an EXISTING, warm endpoint (the messaging node's) instead of binding a fresh one. The
@@ -572,11 +578,21 @@ impl BlobClient {
         if endpoint.id() == dest.id {
             anyhow::bail!("refusing to dial our own node id (blob self-connect guard)");
         }
-        Ok(Self { endpoint, dest })
+        Ok(Self { endpoint, dest, conn: Arc::new(tokio::sync::Mutex::new(None)) })
     }
 
+    /// Return the ONE warm connection to `dest`, reusing it if still open, else dialing (and caching) a
+    /// fresh one. Reusing avoids a cold dial per get/put — the connection storm that broke cross-NAT media.
     async fn conn(&self) -> Result<Connection> {
-        self.endpoint.connect(self.dest.clone(), BLOB_ALPN).await.ah()
+        let mut guard = self.conn.lock().await;
+        if let Some(c) = guard.as_ref() {
+            if c.close_reason().is_none() {
+                return Ok(c.clone());
+            }
+        }
+        let c = self.endpoint.connect(self.dest.clone(), BLOB_ALPN).await.ah()?;
+        *guard = Some(c.clone());
+        Ok(c)
     }
 
     /// Store a (sealed) blob at `key`. The relay stores it verbatim.

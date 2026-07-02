@@ -129,13 +129,18 @@ object HavenNet : InboundListener {
         fun recordSuccess() { fails = 0; nextRetryMs = 0L }
         fun recordFailure(nowMs: Long) {
             fails += 1
-            val shift = minOf(fails - 1, 6)   // cap the exponent so the shift never overflows
+            // Don't park a relay on the FIRST failure — a single transient miss/timeout mid-transfer (common
+            // over a DERP relay for a large chunked video) shouldn't lock the relay out for the rest of the
+            // sync, stranding every remaining chunk with client=NULL. Only start backing off on sustained
+            // failure. With the reused warm BlobClient connection, retrying costs no new dial.
+            if (fails < 2) { nextRetryMs = 0L; return }
+            val shift = minOf(fails - 2, 6)   // cap the exponent so the shift never overflows
             val backoff = minOf(BASE_BACKOFF_MS shl shift, MAX_BACKOFF_MS)
             nextRetryMs = nowMs + backoff
         }
         companion object {
-            const val BASE_BACKOFF_MS = 5_000L      // first failure → 5s cool-off
-            const val MAX_BACKOFF_MS = 300_000L     // capped at 5 minutes
+            const val BASE_BACKOFF_MS = 1_500L      // 2nd failure → 1.5s cool-off (gentle; reused conn)
+            const val MAX_BACKOFF_MS = 120_000L     // capped at 2 minutes
         }
     }
     private val relayHealth = HashMap<String, RelayHealth>()
